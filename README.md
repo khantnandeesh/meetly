@@ -46,3 +46,18 @@ Media never touches this app: browsers connect straight to LiveKit with the shor
 Any Node host works (Vercel is the simplest). Set `LIVEKIT_URL`, `LIVEKIT_API_KEY` and
 `LIVEKIT_API_SECRET` as environment variables on the host. The site must be served over HTTPS
 for browsers to allow camera and microphone access.
+
+### Cloudflare Workers
+
+The app also builds for Cloudflare Workers with [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare)
+(`wrangler.jsonc`, `open-next.config.ts`). `npm run dev` / `build` / `start` are unchanged.
+
+```bash
+npm run preview   # build .open-next/ and run it locally in workerd (http://localhost:8787)
+npm run deploy    # build and deploy the `meetly` Worker (workers.dev + meet.nandeesh.dev)
+```
+
+`npm run deploy` needs `wrangler login` or `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers"
+template covers it). Secrets are set once per Worker with `npx wrangler secret put <NAME>` and are
+read as `process.env.<NAME>`; non-secret values go under `vars` in `wrangler.jsonc`. For local
+preview, put them in `.dev.vars` (git-ignored).

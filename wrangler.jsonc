@@ -1,0 +1,31 @@
+/**
+ * Cloudflare Workers configuration for Meetly (built with @opennextjs/cloudflare).
+ * `npm run deploy` builds .open-next/ and uploads it; `npm run preview` runs it locally in workerd.
+ */
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "meetly",
+	"account_id": "439a27349e5028092af2cfd5a45bdac1",
+	"main": ".open-next/worker.js",
+	"compatibility_date": "2026-11-01",
+	// nodejs_compat: node:crypto and the server SDKs used by the route handlers.
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+	"assets": {
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
+	},
+	"workers_dev": true,
+	"preview_urls": false,
+	// Workers custom domain: creates the DNS record and certificate for the hostname.
+	"routes": [{ "pattern": "meet.nandeesh.dev", "custom_domain": true }],
+	"observability": { "enabled": true },
+	"upload_source_maps": true
+
+	// Non-secret configuration goes in "vars"; secrets are set with `wrangler secret put <NAME>`
+	// (never in this file). Both are read as process.env.<NAME> in route handlers.
+	// "vars": { "EXAMPLE_PUBLIC_SETTING": "value" },
+
+	// KV namespace (create with `wrangler kv namespace create <name>`, paste the id here), read via
+	// getCloudflareContext().env.<BINDING> from "@opennextjs/cloudflare".
+	// "kv_namespaces": [{ "binding": "MEETLY_KV", "id": "<namespace id>" }]
+}
