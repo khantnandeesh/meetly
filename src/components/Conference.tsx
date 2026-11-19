@@ -164,7 +164,14 @@ function Call({ code, token }: { code: string; token: string }) {
   for (const t of tracks) if (t.source === Track.Source.Camera) cameras.set(t.participant.identity, t);
   const selfTile = cameras.get(localParticipant.identity);
   const everyone = ordered.flatMap((id) => cameras.get(id) ?? []);
-  const selfInGrid = settings.selfView === "grid" || participants.length === 1;
+  // Speaker-led: a pin or share, else whoever is talking, else the last speaker, else anyone.
+  const firstRemote = everyone.find((t) => !t.participant.isLocal);
+  const main = focus ?? (stageSpeaker ? cameras.get(stageSpeaker) : undefined) ?? firstRemote ?? selfTile;
+  // On a phone a screen share sits above a grid of people (see Stage). A floating self view would
+  // have nowhere to go but on top of somebody, so there it takes a cell like everyone else.
+  const stackedShare = phone && view === "sidebar" && main?.source === Track.Source.ScreenShare;
+  const selfInGrid =
+    settings.selfView === "grid" || participants.length === 1 || (stackedShare && settings.selfView === "float");
   const people = selfInGrid ? everyone : everyone.filter((t) => !t.participant.isLocal);
 
   // Tiled: screen shares lead, then people, a page at a time.
@@ -173,14 +180,12 @@ function Call({ code, token }: { code: string; token: string }) {
   const currentPage = Math.min(page, pageCount - 1);
   const goToPage = useCallback((next: number) => setPage(Math.max(0, next)), []);
 
-  // Speaker-led: a pin or share, else whoever is talking, else the last speaker, else anyone.
-  const firstRemote = everyone.find((t) => !t.participant.isLocal);
-  const main = focus ?? (stageSpeaker ? cameras.get(stageSpeaker) : undefined) ?? firstRemote ?? selfTile;
   const others = main ? [...screenShares, ...people].filter((t) => t !== main) : [];
   const floatSelf =
     !!selfTile &&
     participants.length > 1 &&
     main !== selfTile &&
+    !stackedShare &&
     (settings.selfView === "float" || (view === "spotlight" && settings.selfView === "grid"));
 
   const toggleHand = useCallback(() => {
