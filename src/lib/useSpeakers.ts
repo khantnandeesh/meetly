@@ -151,11 +151,14 @@ export function useSpeakers(room: Room, participantCount: number, visible: Visib
     };
   }, [room]);
 
+  // The local identity is empty until the room connects. It has to be a dependency: someone alone
+  // in a call gets no other change that would recompute the list, and would never see themselves.
+  const localId = room.localParticipant.identity;
   const ordered = useMemo(
-    () => reconcile(order, room.localParticipant.identity, Array.from(room.remoteParticipants.keys())),
+    () => reconcile(order, localId, Array.from(room.remoteParticipants.keys())),
     // participantCount stands in for "the remote participant map changed".
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [order, room, participantCount],
+    [order, room, localId, participantCount],
   );
 
   const stageSpeaker = stage && room.remoteParticipants.has(stage) ? stage : null;

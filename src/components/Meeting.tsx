@@ -113,6 +113,12 @@ function LeftScreen({
 }) {
   const { minutes, dropped, removed } = departure;
   const Icon = removed ? UserX : dropped ? Unplug : LogOut;
+  const home = (
+    <Link href="/" className={`btn ${removed ? "btn-primary" : "btn-secondary"}`}>
+      <Home className="size-[1.125rem]" aria-hidden="true" />
+      Back to home
+    </Link>
+  );
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
       <header className="mx-auto flex w-full max-w-6xl px-5 py-5 sm:px-8">
@@ -132,15 +138,14 @@ function LeftScreen({
             {minutes >= 1 && ` · ${minutes} min in the call`}
           </p>
         </div>
+        {/* Someone the host removed is shown the way out first; coming straight back is the quieter option. */}
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
-          <button className="btn btn-primary" onClick={onRejoin} autoFocus>
+          {removed && home}
+          <button className={`btn ${removed ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!removed}>
             <RotateCcw className="size-[1.125rem]" aria-hidden="true" />
             Rejoin
           </button>
-          <Link href="/" className="btn btn-secondary">
-            <Home className="size-[1.125rem]" aria-hidden="true" />
-            Back to home
-          </Link>
+          {!removed && home}
         </div>
         <p className="text-sm text-faint">The meeting stays open for others until everyone has left.</p>
       </main>

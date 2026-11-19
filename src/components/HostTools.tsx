@@ -141,6 +141,7 @@ export function HostMenu({ participant, micOn, variant }: { participant: Partici
             <MicOff className="size-4 text-muted" aria-hidden="true" />
             {micOn ? "Mute microphone" : "Already muted"}
           </Dropdown.Item>
+          <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant)}>
             <UserX className="size-4" aria-hidden="true" />
             Remove from call

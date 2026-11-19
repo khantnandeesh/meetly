@@ -113,7 +113,7 @@ export function ControlBar({
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
     <Tip label="Leave call">
-      <button className="ctrl ctrl-danger md:w-16" aria-label="Leave call" onClick={() => room.disconnect()}>
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => room.disconnect()}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
