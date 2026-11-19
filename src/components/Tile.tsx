@@ -1,0 +1,199 @@
+"use client";
+
+import {
+  VideoTrack,
+  isTrackReference,
+  useConnectionQualityIndicator,
+  useIsSpeaking,
+  useParticipantAttribute,
+  useParticipantInfo,
+  type TrackReferenceOrPlaceholder,
+} from "@livekit/components-react";
+import { ConnectionQuality, Track } from "livekit-client";
+import { Crown, Hand, MicOff, MonitorUp, Pin, PinOff, SignalLow } from "lucide-react";
+import { memo, useEffect, useRef, useState } from "react";
+import type { Rect } from "@/lib/motion";
+import { HAND, useMediaState } from "@/lib/participant";
+import { HostMenu, useHost } from "./HostTools";
+import { avatarColor, initials } from "./ui/Avatar";
+import { Tip } from "./ui/Tip";
+
+type TileProps = {
+  trackRef: TrackReferenceOrPlaceholder;
+  pinned?: boolean;
+  /** Must be referentially stable; tiles are memoised so large grids don't re-render on every event. */
+  onTogglePin?: (ref: TrackReferenceOrPlaceholder) => void;
+  className?: string;
+  /** On the stage: where the tile sits. Applied as a transform, so moving a tile never costs layout. */
+  rect?: Rect;
+  slot?: "main" | "strip" | "grid";
+  children?: React.ReactNode;
+};
+
+export const Tile = memo(TileView, (a, b) =>
+  a.trackRef.participant === b.trackRef.participant &&
+  a.trackRef.source === b.trackRef.source &&
+  a.trackRef.publication === b.trackRef.publication &&
+  a.pinned === b.pinned &&
+  a.onTogglePin === b.onTogglePin &&
+  a.className === b.className &&
+  a.children === b.children &&
+  a.slot === b.slot &&
+  a.rect?.x === b.rect?.x &&
+  a.rect?.y === b.rect?.y &&
+  a.rect?.w === b.rect?.w &&
+  a.rect?.h === b.rect?.h,
+);
+
+function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect, slot, children }: TileProps) {
+  const { participant, source } = trackRef;
+  const { name: rawName } = useParticipantInfo({ participant });
+  const name = rawName || "Guest";
+  const speaking = useIsSpeaking(participant);
+  const { micOn, camOn } = useMediaState(participant);
+  const handRaised = useParticipantAttribute(HAND, { participant }) === "1";
+  const { quality } = useConnectionQualityIndicator({ participant });
+  const weak = quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost;
+
+  // Touch has no hover: a tap on the tile reveals its actions for a few seconds.
+  const [revealed, setRevealed] = useState(false);
+  const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  function reveal(event: React.PointerEvent) {
+    if (event.pointerType === "mouse") return;
+    clearTimeout(hideTimer.current);
+    setRevealed(true);
+    hideTimer.current = setTimeout(() => setRevealed(false), 3500);
+  }
+
+  const { hostId, isHost } = useHost();
+  const isScreen = source === Track.Source.ScreenShare;
+  const isLocal = participant.isLocal;
+  const showVideo = isScreen || camOn;
+  const color = avatarColor(participant.identity);
+  const who = isLocal ? "You" : name;
+  const label = isScreen
+    ? isLocal
+      ? "Your screen"
+      : `${name}'s screen`
+    : [isLocal ? `${name} (you)` : name, !micOn && "muted", handRaised && "hand raised", speaking && "speaking"]
+        .filter(Boolean)
+        .join(", ");
+
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      data-tile
+      data-key={`${participant.identity}:${source}`}
+      data-slot={slot}
+      data-placed={rect ? "" : undefined}
+      data-source={source}
+      data-speaking={!isScreen && speaking && micOn}
+      data-mirror={isLocal && !isScreen}
+      data-pinned={pinned}
+      data-revealed={revealed}
+      onPointerUp={reveal}
+      className={`tile ${isScreen ? "bg-black" : ""} ${className}`}
+      style={rect ? { width: rect.w, height: rect.h, transform: `translate(${rect.x}px, ${rect.y}px)` } : undefined}
+    >
+      {/* Picture layer. While the tile glides between sizes it is counter-scaled, so nothing in it stretches. */}
+      <div className="tile-media absolute inset-0">
+      {/* The avatar stays underneath the video, so a stream that is still starting never shows black. */}
+      {!isScreen && (
+        <div
+          className="absolute inset-0 grid place-items-center"
+          style={{
+            background: `radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, ${color} 18%, var(--surface-2)), var(--surface) 75%)`,
+          }}
+        >
+          <span
+            aria-hidden="true"
+            className="avatar-disc"
+            style={
+              {
+                "--c": color,
+                width: "clamp(2.5rem, 32cqmin, 8.5rem)",
+                fontSize: "clamp(1rem, 13cqmin, 3.5rem)",
+              } as React.CSSProperties
+            }
+          >
+            {initials(name)}
+          </span>
+        </div>
+      )}
+      {isTrackReference(trackRef) && showVideo && <FadeInVideo trackRef={trackRef} />}
+      </div>
+
+      {(onTogglePin || (isHost && !isLocal && !isScreen)) && (
+        <div className="tile-actions absolute top-2 right-2 z-30 flex origin-top-right gap-1.5">
+          {!isScreen && <HostMenu participant={participant} micOn={micOn} variant="tile" />}
+          {onTogglePin && (
+          <Tip label={pinned ? "Unpin" : "Pin to main view"} side="bottom">
+            <button
+              aria-label={pinned ? `Unpin ${isScreen ? label : who}` : `Pin ${isScreen ? label : who}`}
+              aria-pressed={pinned}
+              onClick={() => onTogglePin(trackRef)}
+              className={`grid size-10 cursor-pointer place-items-center rounded-xl backdrop-blur-md pointer-coarse:size-11 transition-colors ${
+                pinned ? "bg-accent text-accent-ink" : "bg-[rgb(11_11_15/0.72)] text-text hover:bg-[rgb(40_40_52/0.9)]"
+              }`}
+            >
+              {pinned ? <PinOff className="size-[1.125rem]" /> : <Pin className="size-[1.125rem]" />}
+            </button>
+          </Tip>
+          )}
+        </div>
+      )}
+
+      {children}
+
+      <div className="tile-meta absolute bottom-2 left-2 z-30 flex max-w-[calc(100%-1rem)] origin-bottom-left items-center gap-1.5">
+        {handRaised && !isScreen && (
+          <span className="anim-pop grid size-7 shrink-0 place-items-center rounded-lg bg-accent text-accent-ink" aria-hidden="true">
+            <Hand className="size-4" />
+          </span>
+        )}
+        <span className="chip min-w-0" aria-hidden="true">
+          {isScreen ? (
+            <MonitorUp className="size-3.5 shrink-0 text-accent" />
+          ) : !micOn ? (
+            <MicOff className="size-3.5 shrink-0 text-danger-text" />
+          ) : speaking ? (
+            <span className="bars shrink-0 text-accent">
+              <i />
+              <i />
+              <i />
+            </span>
+          ) : null}
+          <span className="truncate">{isScreen ? (isLocal ? "Your screen" : `${name}'s screen`) : isLocal ? `${name} (You)` : name}</span>
+          {!isScreen && hostId === participant.identity && <Crown className="size-3.5 shrink-0 text-accent" />}
+          {weak && <SignalLow className="size-3.5 shrink-0 text-warn" />}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Video that stays transparent until it has a frame to show, then fades in over the avatar
+ * underneath. Without this a tile cuts from avatar to picture whenever a stream starts or resumes.
+ * The flag is set straight on the element: a page of sixteen videos becoming ready should not
+ * mean sixteen React renders.
+ */
+function FadeInVideo({ trackRef }: { trackRef: Extract<TrackReferenceOrPlaceholder, { publication: object }> }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    const show = () => video.setAttribute("data-ready", "true");
+    if (video.readyState >= 2 && video.videoWidth > 0) show();
+    const events = ["loadeddata", "playing", "resize"] as const;
+    events.forEach((name) => video.addEventListener(name, show));
+    // Belt and braces: never leave a playing video hidden because an event was missed.
+    const timer = setTimeout(show, 2500);
+    return () => {
+      events.forEach((name) => video.removeEventListener(name, show));
+      clearTimeout(timer);
+    };
+  }, []);
+  return <VideoTrack ref={ref} trackRef={trackRef} />;
+}

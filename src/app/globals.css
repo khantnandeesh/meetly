@@ -1,26 +1,671 @@
 @import "tailwindcss";
 
+/* ------------------------------------------------------------------ tokens */
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #0b0b0f;
+  --surface: #14141a;
+  --surface-2: #1c1c25;
+  --surface-3: #272733;
+  --border: #2a2a36;
+  --border-strong: #3f3f50;
+  --text: #f4f3ef;
+  --muted: #a9a8b8;
+  --faint: #8a899b;
+  --accent: #cdf24f;
+  --accent-hover: #dcf87c;
+  --accent-ink: #12160a;
+  --danger: #e5484d;
+  --danger-hover: #f05a5f;
+  --danger-text: #ff9c99;
+  --warn: #ffc34d;
+
+  /* Motion. Every animation in the app is built from these, so it reads as one system.
+     Only transform and opacity are animated; exits run faster than entrances. */
+  --dur-instant: 80ms; /* press and hover feedback */
+  --dur-fast: 140ms; /* exits, tooltips, speaking ring on */
+  --dur-base: 200ms; /* menus, toasts, chips, cross-fades */
+  --dur-move: 260ms; /* tiles gliding, panels, page slides, dialogs */
+  --dur-slow: 360ms; /* sheets, layout changes, speaking ring off */
+  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1); /* decelerate: things arriving */
+  --ease-exit: cubic-bezier(0.3, 0, 0.8, 0.15); /* accelerate: things leaving */
+  --ease-move: cubic-bezier(0.2, 0, 0, 1); /* on-screen, from A to B */
+  --ease-out: var(--ease-move);
+  --dist-xs: 4px;
+  --dist-sm: 8px;
+  --dist-md: 16px;
+  --dist-page: 32px;
+  --scale-press: 0.96;
+  --scale-enter: 0.96;
+  color-scheme: dark;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--muted);
+  --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-danger: var(--danger);
+  --color-danger-text: var(--danger-text);
+  --color-warn: var(--warn);
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Bricolage Grotesque Variable", "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --ease-out: var(--ease-move);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* -------------------------------------------------------------------- base */
+
+html {
+  background: var(--bg);
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss03";
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* In the base layer so components and utilities (e.g. `outline-none`) can override it. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+}
+
+/* Thin, quiet scrollbars inside panels. */
+.scroll-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-3) transparent;
+}
+
+/* Soft light pooled behind the marketing-style screens. */
+.backdrop-glow {
+  background:
+    radial-gradient(60rem 32rem at 85% -10%, color-mix(in srgb, var(--accent) 9%, transparent), transparent 70%),
+    radial-gradient(48rem 30rem at -10% 110%, rgb(140 120 255 / 0.08), transparent 70%), var(--bg);
+}
+
+@layer components {
+  /* ---------------------------------------------------------------- buttons */
+  .btn {
+    @apply inline-flex h-12 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-2xl px-5 text-[0.9375rem] font-semibold whitespace-nowrap select-none;
+    transition:
+      background-color var(--dur-fast),
+      border-color var(--dur-fast),
+      color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-move);
+  }
+  .btn:active:not(:disabled) {
+    transform: scale(var(--scale-press));
+    transition-duration: var(--dur-instant);
+  }
+  .btn:disabled,
+  .btn[aria-disabled="true"] {
+    @apply cursor-not-allowed opacity-45;
+  }
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn-primary:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .btn-secondary {
+    background: var(--surface-2);
+    color: var(--text);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--surface-3);
+  }
+  .btn-quiet {
+    color: var(--text);
+  }
+  .btn-quiet:hover:not(:disabled) {
+    background: var(--surface-2);
+  }
+
+  /* Square icon button used in panels, tiles and headers. */
+  .icon-btn {
+    @apply inline-grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl text-muted;
+    transition:
+      background-color var(--dur-fast),
+      color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-move);
+  }
+  .icon-btn:active {
+    transform: scale(var(--scale-press));
+    transition-duration: var(--dur-instant);
+  }
+  .icon-btn:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  /* --------------------------------------------------------------- controls */
+  .ctrl {
+    @apply relative inline-flex h-12 min-w-12 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-2xl px-3 text-text select-none;
+    background: var(--surface-2);
+    transition:
+      background-color var(--dur-fast),
+      color var(--dur-fast),
+      transform var(--dur-fast) var(--ease-move);
+  }
+  .ctrl:hover {
+    background: var(--surface-3);
+  }
+  .ctrl:active {
+    transform: scale(var(--scale-press));
+    transition-duration: var(--dur-instant);
+  }
+  .ctrl[data-ctl="off"],
+  .ctrl[data-off="true"] {
+    background: color-mix(in srgb, var(--danger) 22%, var(--surface));
+    color: var(--danger-text);
+  }
+  .ctrl[data-ctl="off"]:hover,
+  .ctrl[data-off="true"]:hover {
+    background: color-mix(in srgb, var(--danger) 32%, var(--surface));
+  }
+  .ctrl[data-ctl="active"] {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .ctrl[data-ctl="active"]:hover {
+    background: var(--accent-hover);
+  }
+  .ctrl[aria-expanded="true"] {
+    background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
+    color: var(--accent);
+  }
+  .ctrl-danger {
+    background: var(--danger);
+    color: #fff;
+  }
+  .ctrl-danger:hover {
+    background: var(--danger-hover);
+  }
+  /* Joined toggle + device-menu chevron. */
+  .ctrl-split {
+    @apply inline-flex shrink-0 gap-px;
+  }
+  .ctrl-split > .ctrl:first-child {
+    @apply rounded-r-md;
+  }
+  .ctrl-split > .ctrl:last-child {
+    @apply w-8 min-w-0 rounded-l-md px-0;
+  }
+
+  /* ----------------------------------------------------------------- fields */
+  .field {
+    @apply h-12 w-full min-w-0 rounded-2xl bg-surface px-4 text-[0.9375rem] text-text;
+    box-shadow: inset 0 0 0 1px var(--border);
+    transition: box-shadow var(--dur-fast);
+  }
+  .field::placeholder {
+    color: var(--faint);
+  }
+  .field:hover {
+    box-shadow: inset 0 0 0 1px var(--border-strong);
+  }
+  .field:focus-visible {
+    outline: none;
+    box-shadow:
+      inset 0 0 0 1px var(--accent),
+      0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
+  }
+  .field[aria-invalid="true"] {
+    box-shadow: inset 0 0 0 1px var(--danger);
+  }
+
+  .kbd {
+    @apply inline-grid h-5 min-w-5 place-items-center rounded-md px-1 font-mono text-[0.6875rem] font-medium;
+    background: rgb(255 255 255 / 0.1);
+    color: var(--text);
+  }
+
+  .eyebrow {
+    @apply text-xs font-semibold tracking-[0.14em] text-faint uppercase;
+  }
+
+  /* -------------------------------------------------------- menus & tooltips */
+  .menu {
+    @apply z-50 max-w-[min(22rem,calc(100vw-1.5rem))] min-w-56 overflow-y-auto rounded-2xl p-1.5 text-sm;
+    max-height: min(28rem, var(--radix-dropdown-menu-content-available-height, 28rem));
+    background: var(--surface-2);
+    box-shadow:
+      inset 0 0 0 1px var(--border-strong),
+      0 18px 50px -12px rgb(0 0 0 / 0.7);
+    transform-origin: var(--radix-dropdown-menu-content-transform-origin);
+    animation: pop-in var(--dur-base) var(--ease-enter);
+  }
+  .menu[data-state="closed"] {
+    animation: pop-out var(--dur-fast) var(--ease-exit) forwards;
+  }
+  .menu-item {
+    @apply relative flex min-h-10 cursor-pointer items-center gap-3 rounded-xl py-2 pr-3 pl-3 outline-none select-none;
+  }
+  .menu-item[data-highlighted],
+  .menu-item[data-state="open"] {
+    background: var(--surface-3);
+  }
+  .menu-item[data-disabled] {
+    @apply cursor-default text-faint;
+  }
+  .menu-label {
+    @apply flex items-center gap-2 px-3 pt-2.5 pb-1.5 text-xs font-semibold tracking-wide text-faint uppercase;
+  }
+  .menu-sep {
+    @apply mx-2 my-1.5 h-px bg-border-strong;
+  }
+
+  .tooltip {
+    @apply z-50 flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs font-medium;
+    background: #ecebe6;
+    color: #15151b;
+    box-shadow: 0 6px 20px -6px rgb(0 0 0 / 0.6);
+    transform-origin: var(--radix-tooltip-content-transform-origin);
+    animation: pop-in var(--dur-fast) var(--ease-enter);
+  }
+  .tooltip .kbd {
+    background: rgb(0 0 0 / 0.12);
+    color: #15151b;
+  }
+
+  /* ------------------------------------------------------------------ tiles */
+  .tile {
+    @apply relative isolate overflow-hidden rounded-[1.25rem] bg-surface;
+    container-type: size;
+  }
+  /* Tiles on the stage are placed by transform (see Stage.tsx), so moving one never costs layout. */
+  .tile[data-placed] {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    contain: layout style;
+  }
+  /* Hairline edge, above the video so it is never clipped by it. */
+  .tile::after {
+    content: "";
+    @apply pointer-events-none absolute inset-0 z-20 rounded-[inherit];
+    box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
+  }
+  /* Speaking ring: painted once, shown by opacity. On quickly, off slowly, so it holds between words. */
+  .tile::before {
+    content: "";
+    @apply pointer-events-none absolute inset-0 z-20 rounded-[inherit];
+    box-shadow:
+      inset 0 0 0 2.5px var(--accent),
+      inset 0 0 28px -6px color-mix(in srgb, var(--accent) 45%, transparent);
+    opacity: 0;
+    transition: opacity var(--dur-slow) ease-out 150ms;
+  }
+  .tile[data-speaking="true"]::before {
+    opacity: 1;
+    transition: opacity 100ms ease-out;
+  }
+  [data-dense="true"] .tile::before {
+    box-shadow: inset 0 0 0 2px var(--accent);
+  }
+  .tile video,
+  .tile canvas {
+    @apply absolute inset-0 size-full object-cover;
+  }
+  /* Video fades in over the avatar once its first frame has arrived. */
+  .tile video {
+    opacity: 0;
+    transition: opacity var(--dur-base) ease-out;
+  }
+  .tile video[data-ready="true"] {
+    opacity: 1;
+  }
+  .tile[data-source="screen_share"] video,
+  .tile[data-source="screen_share"] canvas {
+    @apply object-contain;
+  }
+  .tile[data-mirror="true"] video,
+  .tile[data-mirror="true"] canvas {
+    transform: scaleX(-1);
+  }
+  /* A still copy of a tile, left behind for the length of a cross-fade. */
+  .tile-ghost {
+    pointer-events: none;
+    z-index: 0;
+  }
+  .tile-ghost::before {
+    display: none;
+  }
+  .avatar-disc {
+    @apply relative grid aspect-square place-items-center rounded-full font-display font-semibold text-[#16161d] select-none;
+    background: var(--c);
+  }
+  .avatar-disc::before {
+    content: "";
+    @apply pointer-events-none absolute inset-0 rounded-full;
+    box-shadow: 0 0 0 0.4rem color-mix(in srgb, var(--c) 28%, transparent);
+    opacity: 0;
+    transition: opacity var(--dur-slow) ease-out 150ms;
+  }
+  .tile[data-speaking="true"] .avatar-disc::before {
+    opacity: 1;
+    transition: opacity 100ms ease-out;
+  }
+  /* Hidden by opacity only, so the buttons stay reachable by keyboard (focus reveals them). */
+  .tile-actions {
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur-fast);
+  }
+  .tile:focus-within .tile-actions,
+  .tile[data-pinned="true"] .tile-actions,
+  .tile[data-revealed="true"] .tile-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  @media (hover: hover) {
+    .tile:hover .tile-actions {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  }
+  .chip {
+    @apply inline-flex h-7 max-w-full items-center gap-1.5 rounded-lg px-2 text-[0.8125rem] font-medium;
+    background: rgb(11 11 15 / 0.72);
+    backdrop-filter: blur(10px);
+    color: var(--text);
+  }
+  /* Blurring live video behind every name label is the single most expensive thing a dense grid can do. */
+  [data-dense="true"] .tile .chip,
+  .tile-ghost .chip {
+    background: rgb(11 11 15 / 0.86);
+    backdrop-filter: none;
+  }
+}
+
+/* -------------------------------------------------------------- speaking bars */
+.bars {
+  display: inline-flex;
+  height: 0.75rem;
+  align-items: center;
+  gap: 2px;
+}
+.bars > i {
+  width: 2.5px;
+  height: 100%;
+  border-radius: 2px;
+  background: currentColor;
+  transform-origin: center;
+  animation: bar 0.9s ease-in-out infinite;
+}
+.bars > i:nth-child(1) {
+  animation-delay: -0.3s;
+}
+.bars > i:nth-child(3) {
+  animation-delay: -0.6s;
+}
+
+/* ------------------------------------------------------------------- motion */
+@keyframes bar {
+  0%,
+  100% {
+    transform: scaleY(0.35);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: scale(var(--scale-enter));
+  }
+}
+@keyframes pop-out {
+  to {
+    opacity: 0;
+    transform: scale(var(--scale-enter));
+  }
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes fade-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--dist-md));
+  }
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--dist-sm) * -1)) scale(var(--scale-enter));
+  }
+}
+@keyframes toast-out {
+  to {
+    opacity: 0;
+    transform: translateY(calc(var(--dist-xs) * -1)) scale(var(--scale-enter));
+  }
+}
+@keyframes panel-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--dist-md));
+  }
+}
+@keyframes panel-out {
+  to {
+    opacity: 0;
+    transform: translateX(var(--dist-md));
+  }
+}
+@keyframes sheet-in {
+  from {
+    transform: translateY(var(--sheet-from, 100%));
+  }
+}
+@keyframes sheet-out {
+  to {
+    transform: translateY(var(--sheet-to, 100%));
+  }
+}
+@keyframes dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--dist-sm)) scale(var(--scale-enter));
+  }
+}
+@keyframes dialog-out {
+  to {
+    opacity: 0;
+    transform: translateY(var(--dist-xs)) scale(var(--scale-enter));
+  }
+}
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    transform: translateY(var(--dist-sm));
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes shimmer {
+  50% {
+    opacity: 0.55;
+  }
+}
+@keyframes float {
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.anim-rise {
+  animation: rise-in var(--dur-slow) var(--ease-enter) backwards;
+}
+.anim-fade {
+  animation: fade-in var(--dur-base) ease-out backwards;
+}
+.anim-pop {
+  animation: pop-in var(--dur-base) var(--ease-enter) backwards;
+}
+/* Anything that pops in can pop back out: see usePresence. */
+[data-leaving="true"].anim-pop,
+[data-leaving="true"].anim-rise {
+  animation: pop-out var(--dur-fast) var(--ease-exit) forwards;
+}
+[data-leaving="true"].anim-fade {
+  animation: fade-out var(--dur-fast) var(--ease-exit) forwards;
+}
+.anim-msg {
+  animation: msg-in var(--dur-base) var(--ease-enter) backwards;
+}
+.anim-spin {
+  animation: spin 0.8s linear infinite;
+}
+.anim-shimmer {
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+.anim-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.toast {
+  animation: toast-in var(--dur-base) var(--ease-enter) backwards;
+}
+.toast[data-leaving="true"] {
+  animation: toast-out var(--dur-fast) var(--ease-exit) forwards;
+}
+
+/* Side panel on desktop, bottom sheet on phones. */
+.panel {
+  animation: panel-in var(--dur-move) var(--ease-enter) backwards;
+}
+.panel[data-leaving="true"] {
+  animation: panel-out var(--dur-fast) var(--ease-exit) forwards;
+}
+.panel-scrim {
+  animation: fade-in var(--dur-base) ease-out backwards;
+}
+.panel-scrim[data-leaving="true"] {
+  animation: fade-out var(--dur-base) ease-in forwards;
+}
+@media (width < 48rem) {
+  .panel {
+    animation: sheet-in var(--dur-slow) var(--ease-enter) backwards;
+  }
+  .panel[data-leaving="true"] {
+    animation: sheet-out var(--dur-base) var(--ease-exit) forwards;
+  }
+  .panel[data-dragging="true"] {
+    animation: none;
+  }
+}
+
+.dialog-overlay {
+  animation: fade-in var(--dur-base) ease-out backwards;
+}
+.dialog-overlay[data-state="closed"] {
+  animation: fade-out var(--dur-fast) ease-in forwards;
+}
+.dialog {
+  animation: dialog-in var(--dur-move) var(--ease-enter) backwards;
+}
+.dialog[data-state="closed"] {
+  animation: dialog-out var(--dur-fast) var(--ease-exit) forwards;
+}
+
+/* The call fades in over the pre-join screen's background rather than cutting to it. */
+.screen-in {
+  animation: fade-in var(--dur-move) ease-out backwards;
+}
+
+/*
+ * Reduced motion: movement is replaced, not removed. Distances and scales collapse so every
+ * entrance and exit becomes a short fade; state still changes visibly and exit handlers that
+ * wait for animationend still fire. Looping decoration stops; the spinner keeps turning because
+ * a frozen spinner reads as a hang.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 0ms;
+    --dur-fast: 100ms;
+    --dur-base: 120ms;
+    --dur-move: 120ms;
+    --dur-slow: 120ms;
+    --dist-xs: 0px;
+    --dist-sm: 0px;
+    --dist-md: 0px;
+    --dist-page: 0px;
+    --scale-press: 1;
+    --scale-enter: 1;
+    --sheet-from: 0%;
+    --sheet-to: 0%;
+  }
+  html {
+    scroll-behavior: auto !important;
+  }
+  .anim-float,
+  .anim-shimmer,
+  .bars > i {
+    animation: none;
+  }
+  .bars > i {
+    transform: scaleY(0.7);
+  }
+  .anim-spin {
+    animation-duration: 1.4s;
+  }
+  @media (width < 48rem) {
+    .panel {
+      animation-name: fade-in;
+    }
+    .panel[data-leaving="true"] {
+      animation-name: fade-out;
+    }
+  }
+}
+
+/* In a call on a phone, notifications sit below the top bar. */
+@media (width < 48rem) {
+  :root:has([data-in-call]) {
+    --toast-top: calc(max(0.5rem, env(safe-area-inset-top)) + 3.25rem);
+  }
+}
+
+/* Dense galleries: shrink tile furniture when a tile gets small. */
+@container (width < 11rem) {
+  .tile .chip {
+    height: 1.375rem;
+    padding-inline: 0.375rem;
+    font-size: 0.6875rem;
+    background: rgb(11 11 15 / 0.86);
+    backdrop-filter: none;
+  }
 }

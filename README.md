@@ -1,36 +1,48 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Meetly
 
-## Getting Started
+Link-based video meetings built on [LiveKit](https://livekit.io) and Next.js.
 
-First, run the development server:
+- Start a meeting, share the link (`/abc-defg-hij`), no accounts
+- Pre-join screen with camera preview and device selection
+- Adaptive video grid, screen sharing with a focus layout
+- In-call chat with unread badge, participant list, raise hand
+- Layouts for large calls: Auto, Tiled (paginated gallery), Spotlight and Sidebar, with a debounced
+  active speaker on the main tile; only on-screen cameras are streamed
+- People list with search (windowed, fine at 100+), host can mute or remove (first person in is host)
+- Simulcast, dynacast and adaptive stream enabled for larger calls
+
+## Run locally
 
 ```bash
+cp .env.example .env.local   # fill in LiveKit URL, key and secret
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Get credentials from [LiveKit Cloud](https://cloud.livekit.io) (Settings → Keys), or run a local
+server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `secret`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How it fits together
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+| Piece | Where |
+| --- | --- |
+| Token minting (server only, holds the API secret) | `src/app/api/token/route.ts` |
+| Pre-join → in-call → left flow | `src/components/Meeting.tsx` |
+| Pre-join screen (preview, device pickers) | `src/components/PreJoin.tsx`, `src/lib/usePreviewMedia.ts` |
+| Stage, panels, toasts, shortcuts | `src/components/Conference.tsx` |
+| Tiles, grid and control bar | `src/components/Tile.tsx`, `TileGrid.tsx`, `ControlBar.tsx` |
+| Chat / people side panels | `src/components/ChatPanel.tsx`, `PeoplePanel.tsx` |
+| Layout modes, paging, self-view settings | `src/lib/useCallSettings.ts`, `src/components/LayoutMenu.tsx`, `FocusStage.tsx` |
+| Active-speaker debounce and stable tile order | `src/lib/useSpeakers.ts` |
+| Pausing off-screen video | `src/lib/videoDemand.ts` |
+| Host rule and moderation (server-verified) | `src/lib/host.server.ts`, `src/app/api/host/route.ts`, `src/components/HostTools.tsx` |
+| Design tokens, motion, shared UI primitives | `src/app/globals.css`, `src/components/ui/` |
+| Meeting code format | `src/lib/code.ts` |
 
-## Learn More
+Media never touches this app: browsers connect straight to LiveKit with the short-lived token.
 
-To learn more about Next.js, take a look at the following resources:
+## Deploy
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Any Node host works (Vercel is the simplest). Set `LIVEKIT_URL`, `LIVEKIT_API_KEY` and
+`LIVEKIT_API_SECRET` as environment variables on the host. The site must be served over HTTPS
+for browsers to allow camera and microphone access.
