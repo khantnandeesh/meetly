@@ -39,6 +39,7 @@ export function ControlBar({
   panel,
   headcount,
   handRaised,
+  hands,
   onToggleHand,
   onTogglePanel,
   onCopyLink,
@@ -51,6 +52,8 @@ export function ControlBar({
   panel: Panel;
   headcount: number;
   handRaised: boolean;
+  /** Large screens: the raised-hands summary, shown beside the people control. */
+  hands?: React.ReactNode;
   onToggleHand: () => void;
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
   onCopyLink: () => void;
@@ -124,7 +127,13 @@ export function ControlBar({
         </Dropdown.Trigger>
       </Tip>
       <Dropdown.Portal>
-        <Dropdown.Content side="top" align={phone ? "end" : "center"} sideOffset={10} collisionPadding={12} className="menu">
+        <Dropdown.Content
+          side="top"
+          align={phone ? "end" : "center"}
+          sideOffset={10}
+          collisionPadding={12}
+          className={phone ? "menu menu-tall w-80" : "menu"}
+        >
           <Dropdown.Item className="menu-item" onSelect={onCopyLink}>
             <Link2 className="size-4 text-muted" aria-hidden="true" />
             Copy meeting link
@@ -205,7 +214,8 @@ export function ControlBar({
         {leaveButton}
       </div>
 
-      <div className="flex items-center justify-end gap-2">
+      <div className="flex min-w-0 items-center justify-end gap-2">
+        {hands}
         <Dropdown.Root>
           <Tip label="Change layout" hoverOnly>
             <Dropdown.Trigger className="ctrl" aria-label="Change layout">
@@ -213,7 +223,7 @@ export function ControlBar({
             </Dropdown.Trigger>
           </Tip>
           <Dropdown.Portal>
-            <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu w-72">
+            <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu menu-tall w-80">
               <LayoutMenuItems settings={settings} onChange={onSettings} showTileLimit />
             </Dropdown.Content>
           </Dropdown.Portal>
@@ -222,7 +232,7 @@ export function ControlBar({
           <button
             id="toggle-people"
             className="ctrl px-3.5"
-                        aria-expanded={panel === "people"}
+            aria-expanded={panel === "people"}
             aria-label="Show everyone"
             onClick={() => onTogglePanel("people")}
           >

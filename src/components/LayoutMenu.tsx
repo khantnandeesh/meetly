@@ -12,7 +12,7 @@ const LAYOUTS: { value: LayoutMode; label: string; hint: string; icon: React.Rea
 ];
 
 const SELF_VIEWS: { value: SelfView; label: string; icon: React.ReactNode }[] = [
-  { value: "grid", label: "With everyone", icon: <UserSquare2 className="size-4" /> },
+  { value: "grid", label: "In the grid", icon: <UserSquare2 className="size-4" /> },
   { value: "float", label: "Floating", icon: <PictureInPicture2 className="size-4" /> },
   { value: "hidden", label: "Hidden", icon: <EyeOff className="size-4" /> },
 ];
@@ -73,16 +73,20 @@ export function LayoutMenuItems({
 
       <div className="menu-sep" />
       <Dropdown.Label className="menu-label">Your own video</Dropdown.Label>
-      <Dropdown.RadioGroup value={settings.selfView} onValueChange={(value) => onChange({ selfView: value as SelfView })}>
+      {/* Three short choices side by side, so the whole menu fits without scrolling. */}
+      <Dropdown.RadioGroup
+        className="grid grid-cols-3 gap-1 px-1.5 pb-1"
+        value={settings.selfView}
+        onValueChange={(value) => onChange({ selfView: value as SelfView })}
+      >
         {SELF_VIEWS.map((view) => (
-          <Dropdown.RadioItem key={view.value} value={view.value} className="menu-item pr-10">
-            <span className="text-muted" aria-hidden="true">
-              {view.icon}
-            </span>
+          <Dropdown.RadioItem
+            key={view.value}
+            value={view.value}
+            className="flex min-h-14 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl bg-surface-3/50 px-1 py-2 text-center text-xs leading-tight font-medium outline-none data-[highlighted]:bg-surface-3 data-[state=checked]:bg-accent data-[state=checked]:text-accent-ink"
+          >
+            <span aria-hidden="true">{view.icon}</span>
             {view.label}
-            <Dropdown.ItemIndicator className="absolute right-3 text-accent">
-              <Check className="size-4" aria-hidden="true" />
-            </Dropdown.ItemIndicator>
           </Dropdown.RadioItem>
         ))}
       </Dropdown.RadioGroup>

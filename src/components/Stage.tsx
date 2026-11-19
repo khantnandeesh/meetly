@@ -21,6 +21,8 @@ const PAGE_BAR = 44;
 const PAGE_BAR_GAP = 8;
 /** How long a hand-over waits for the incoming video's first frame before fading in regardless. */
 const READY_WAIT_MS = 400;
+/** Phones, screen share on top: how many cells (people, plus "+N more") sit underneath it. */
+const STACK_LIMIT = 6;
 
 export function refKey(ref: TrackReferenceOrPlaceholder): string {
   return `${ref.participant.identity}:${ref.source}`;
@@ -85,6 +87,13 @@ function gridRects(count: number, w: number, h: number, gap: number, minRatio: n
     });
   }
   return rects;
+}
+
+/** Height that fits a landscape screen share exactly at this width; 0 if it is not landscape. */
+function shareHeight(ref: TrackReferenceOrPlaceholder, width: number): number {
+  const size = ref.publication?.dimensions;
+  const ratio = size && size.width > 0 && size.height > 0 ? size.width / size.height : 16 / 9;
+  return ratio > 1.2 ? Math.round(width / Math.min(ratio, 2.4)) : 0;
 }
 
 type StageProps = {
@@ -163,18 +172,34 @@ export function Stage({
     const showStrip = view === "sidebar" && others.length > 0;
     // Strip tiles are 224×126 in a column on large screens, 104×96 in a row on phones.
     const cell = phone ? { w: 104, h: 96 } : { w: 224, h: 126 };
+    // A landscape screen share on an upright phone would be a thin band in a tall black box.
+    // It gets a box of its own shape instead, and the people take the room that frees up.
+    const shareH = phone && showStrip && main.source === Track.Source.ScreenShare ? shareHeight(main, box.w) : 0;
+    const stacked = shareH > 0 && box.h - shareH - STRIP_GAP >= cell.h * 2;
     const mainRect: Rect = !showStrip
       ? { x: 0, y: 0, w: box.w, h: box.h }
-      : phone
-        ? { x: 0, y: 0, w: box.w, h: Math.max(0, box.h - cell.h - STRIP_GAP) }
-        : { x: 0, y: 0, w: Math.max(0, box.w - cell.w - STRIP_GAP), h: box.h };
+      : stacked
+        ? { x: 0, y: 0, w: box.w, h: shareH }
+        : phone
+          ? { x: 0, y: 0, w: box.w, h: Math.max(0, box.h - cell.h - STRIP_GAP) }
+          : { x: 0, y: 0, w: Math.max(0, box.w - cell.w - STRIP_GAP), h: box.h };
     slots.push({
       key: refKey(main),
       ref: main,
       rect: roundRect(mainRect),
       role: "main",
     });
-    if (showStrip) {
+    if (showStrip && stacked) {
+      const top = shareH + STRIP_GAP;
+      const overflowing = others.length > STACK_LIMIT;
+      const shown = overflowing ? others.slice(0, STACK_LIMIT - 1) : others;
+      const rects = gridRects(shown.length + (overflowing ? 1 : 0), box.w, box.h - top, STRIP_GAP, 0.7);
+      const at = (index: number): Rect => ({ ...rects[index], y: rects[index].y + top });
+      shown.forEach((ref, index) => {
+        if (rects[index]) slots.push({ key: refKey(ref), ref, rect: at(index), role: "strip" });
+      });
+      if (overflowing && rects[shown.length]) more = { rect: at(shown.length), hidden: others.slice(STACK_LIMIT - 1) };
+    } else if (showStrip) {
       const extent = phone ? box.w : box.h;
       const unit = phone ? cell.w : cell.h;
       const capacity = Math.max(1, Math.floor((extent + STRIP_GAP) / (unit + STRIP_GAP)));

@@ -260,6 +260,30 @@ function Call({ code, token }: { code: string; token: string }) {
     );
   }, [code, toast]);
 
+  /* ---------------------------------------------------------- notifications */
+  // On large screens notifications rise from the stage's bottom-right corner (see globals.css).
+  // They stay clear of an open side panel and of whatever already sits in that corner.
+  const cornerLift =
+    participants.length === 1
+      ? 9.25 // the invite card
+      : view === "tiled" && pageCount > 1
+        ? floatSelf
+          ? 10
+          : 3.25 // the page bar, and the self view above it
+        : floatSelf && view !== "sidebar"
+          ? 7.25
+          : 0;
+  const panelInset = shown ? 23.25 : 0;
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty("--toast-inset", `${panelInset}rem`);
+    root.style.setProperty("--toast-lift", `${cornerLift}rem`);
+    return () => {
+      root.style.removeProperty("--toast-inset");
+      root.style.removeProperty("--toast-lift");
+    };
+  }, [panelInset, cornerLift]);
+
   /* -------------------------------------------------------------- shortcuts */
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const shortcutsOn = settings.shortcuts;
@@ -343,16 +367,19 @@ function Call({ code, token }: { code: string; token: string }) {
             <span className="truncate">{code}</span>
             <Link2 className="size-4 shrink-0" aria-hidden="true" />
           </button>
-          <button
-            id="toggle-people"
-            onClick={() => togglePanel("people")}
-            aria-expanded={panel === "people"}
-            aria-label="Show everyone"
-            className="inline-flex h-11 shrink-0 cursor-pointer items-center gap-2 rounded-xl bg-surface-2 px-3.5 text-sm font-semibold tabular-nums active:bg-surface-3"
-          >
-            <Users className="size-[1.125rem]" aria-hidden="true" />
-            {participants.length}
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <RaisedHands hands={raisedHands} onShow={showPeople} compact />
+            <button
+              id="toggle-people"
+              onClick={() => togglePanel("people")}
+              aria-expanded={panel === "people"}
+              aria-label="Show everyone"
+              className="inline-flex h-11 shrink-0 cursor-pointer items-center gap-2 rounded-xl bg-surface-2 px-3.5 text-sm font-semibold tabular-nums active:bg-surface-3"
+            >
+              <Users className="size-[1.125rem]" aria-hidden="true" />
+              {participants.length}
+            </button>
+          </div>
         </header>
       )}
 
@@ -385,8 +412,6 @@ function Call({ code, token }: { code: string; token: string }) {
             }
             onHide={hideSelf}
           />
-
-          <RaisedHands hands={raisedHands} />
 
           {alone && <InviteCard code={code} onCopy={copyLink} />}
 
@@ -454,6 +479,7 @@ function Call({ code, token }: { code: string; token: string }) {
         panel={panel}
         headcount={participants.length}
         handRaised={handRaised}
+        hands={<RaisedHands hands={raisedHands} onShow={showPeople} />}
         onToggleHand={toggleHand}
         onTogglePanel={togglePanel}
         onCopyLink={copyLink}
@@ -575,31 +601,50 @@ function FloatingSelf({
   );
 }
 
-function RaisedHands({ hands }: { hands: Participant[] }) {
+/**
+ * Who has a hand up, as a button that opens the people list (where the queue is). It lives with
+ * the people control, in the bar on large screens and the top bar on phones, never over video.
+ */
+function RaisedHands({ hands, onShow, compact = false }: { hands: Participant[]; onShow: () => void; compact?: boolean }) {
   const presence = usePresence(hands.length > 0);
   const [kept, setKept] = useState(hands);
   if (hands.length > 0 && hands !== kept) setKept(hands);
   const list = hands.length > 0 ? hands : kept;
   if (!presence.mounted) return null;
-  return (
-    <div
+  // Room for one name beside the controls; the rest are a count, and the list has them all.
+  const namesClass = compact ? "sr-only" : "flex min-w-0 gap-1 max-lg:sr-only";
+  const button = (
+    <button
+      onClick={onShow}
       data-leaving={presence.leaving}
       onAnimationEnd={presence.onAnimationEnd}
-      className="anim-pop chip pointer-events-none absolute top-3 left-3 z-30 h-8 max-w-[min(22rem,calc(100%-1.5rem))] gap-2 pr-3 pl-1 shadow-lg"
+      className={`anim-pop inline-flex min-w-0 shrink cursor-pointer items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--accent)_16%,var(--surface-2))] pr-3 pl-1.5 text-sm font-medium text-text transition-colors hover:bg-[color-mix(in_srgb,var(--accent)_26%,var(--surface-2))] ${compact ? "h-11" : "h-12 rounded-2xl pl-2"}`}
     >
-      <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent text-accent-ink">
-        <Hand className="size-3.5" aria-hidden="true" />
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-ink">
+        <Hand className="size-[1.125rem]" aria-hidden="true" />
       </span>
-      <ul className="flex min-w-0 gap-1" aria-label="Raised hands">
-        {list.slice(0, 2).map((p, index, shown) => (
-          <li key={p.identity} className="truncate">
+      <ul className={namesClass} aria-label="Raised hands">
+        {list.slice(0, 1).map((p) => (
+          <li key={p.identity} className="max-w-28 truncate">
             {p.isLocal ? "You" : displayName(p)}
-            {index < shown.length - 1 && ","}
           </li>
         ))}
-        {list.length > 2 && <li className="shrink-0 text-muted">+{list.length - 2}</li>}
+        {list.slice(1).map((p) => (
+          <li key={p.identity} className="sr-only">
+            {p.isLocal ? "You" : displayName(p)}
+          </li>
+        ))}
       </ul>
-    </div>
+      <span className={`shrink-0 font-semibold tabular-nums ${compact ? "" : list.length > 1 ? "lg:text-muted" : "lg:hidden"}`} aria-hidden="true">
+        <span className={compact ? "hidden" : "max-lg:hidden"}>+{list.length - 1}</span>
+        <span className={compact ? "" : "lg:hidden"}>{list.length}</span>
+      </span>
+      <span className="sr-only">{list.length === 1 ? "has a hand raised" : "have hands raised"}. Show people</span>
+    </button>
+  );
+  if (compact) return button;
+  return (
+    <Tip label={list.length === 1 ? "1 raised hand" : `${list.length} raised hands`}>{button}</Tip>
   );
 }
 

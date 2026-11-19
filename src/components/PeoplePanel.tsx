@@ -158,7 +158,7 @@ const PersonRow = memo(function PersonRow({
   participant: Participant;
   hand: boolean;
 }) {
-  const { hostId } = useHost();
+  const { hostId, isHost } = useHost();
   const name = displayName(participant);
   const speaking = useIsSpeaking(participant);
   const { micOn, camOn } = useMediaState(participant);
@@ -174,7 +174,6 @@ const PersonRow = memo(function PersonRow({
         )}
       </span>
       <span className="flex shrink-0 items-center gap-1">
-        <HostMenu participant={participant} micOn={micOn} variant="row" />
         {hand && (
           <span className="grid size-8 place-items-center rounded-lg bg-accent text-accent-ink">
             <Hand className="size-4" aria-hidden="true" />
@@ -203,6 +202,9 @@ const PersonRow = memo(function PersonRow({
           )}
           <span className="sr-only">{micOn ? "Microphone on" : "Muted"}</span>
         </span>
+        {/* The host's menu trails the row; your own row keeps the column so the icons line up. */}
+        <HostMenu participant={participant} micOn={micOn} variant="row" />
+        {isHost && participant.isLocal && <span className="size-8 pointer-coarse:size-11" aria-hidden="true" />}
       </span>
     </div>
   );

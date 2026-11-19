@@ -254,6 +254,10 @@ body {
     transform-origin: var(--radix-dropdown-menu-content-transform-origin);
     animation: pop-in var(--dur-base) var(--ease-enter);
   }
+  /* Menus that hold a whole group of settings may use all the height there is. */
+  .menu-tall {
+    max-height: var(--radix-dropdown-menu-content-available-height, 28rem);
+  }
   .menu[data-state="closed"] {
     animation: pop-out var(--dur-fast) var(--ease-exit) forwards;
   }
@@ -461,13 +465,13 @@ body {
 @keyframes toast-in {
   from {
     opacity: 0;
-    transform: translateY(calc(var(--dist-sm) * -1)) scale(var(--scale-enter));
+    transform: translateY(calc(var(--dist-sm) * var(--toast-dir, -1))) scale(var(--scale-enter));
   }
 }
 @keyframes toast-out {
   to {
     opacity: 0;
-    transform: translateY(calc(var(--dist-xs) * -1)) scale(var(--scale-enter));
+    transform: translateY(calc(var(--dist-xs) * var(--toast-dir, -1))) scale(var(--scale-enter));
   }
 }
 @keyframes panel-in {
@@ -652,10 +656,34 @@ body {
   }
 }
 
-/* In a call on a phone, notifications sit below the top bar. */
+/*
+ * Notifications. Outside a call, and in a call on a phone, they drop in at the top centre (on a
+ * phone, below the top bar). In a call on a large screen that spot belongs to the status banners
+ * ("You're sharing your screen", "Reconnecting…"), so notifications rise from the bottom-right
+ * corner of the stage instead, next to the people and chat buttons they usually lead to.
+ * Conference.tsx keeps --toast-inset (an open side panel) and --toast-lift (something already in
+ * that corner) up to date.
+ */
+.toast-region {
+  inset-inline: 0;
+  top: var(--toast-top, 1rem);
+  align-items: center;
+}
 @media (width < 48rem) {
   :root:has([data-in-call]) {
     --toast-top: calc(max(0.5rem, env(safe-area-inset-top)) + 3.25rem);
+  }
+}
+@media (width >= 48rem) {
+  :root:has([data-in-call]) {
+    --toast-dir: 1;
+  }
+  :root:has([data-in-call]) .toast-region {
+    top: auto;
+    left: auto;
+    right: calc(0.75rem + var(--toast-inset, 0rem));
+    bottom: calc(5.75rem + var(--toast-lift, 0rem));
+    align-items: flex-end;
   }
 }
 

@@ -159,7 +159,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         onPointerLeave={resume}
         onFocus={pause}
         onBlur={resume}
-        className="pointer-events-none fixed inset-x-0 top-(--toast-top,1rem) z-60 flex flex-col items-center gap-2 px-3"
+        className="toast-region pointer-events-none fixed z-60 flex flex-col gap-2 px-3"
       >
         <div role="status" aria-live="polite" className="contents">
           {toasts.map((toast) => (
