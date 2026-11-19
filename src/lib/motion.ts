@@ -17,11 +17,6 @@ export function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
-/** Experiment switches for measuring the motion code; set on window before load. Empty in normal use. */
-export function motionFlags(): Record<string, boolean> {
-  return (typeof window !== "undefined" && (window as unknown as { __meetlyMotionFlags?: Record<string, boolean> }).__meetlyMotionFlags) || {};
-}
-
 export type Rect = { x: number; y: number; w: number; h: number };
 
 export function sameRect(a: Rect, b: Rect): boolean {
@@ -52,14 +47,14 @@ const STEPS = 10;
  * The tile's box is scaled exactly onto its old box, so the first frame matches what was on
  * screen. A box that changes shape would stretch what is inside it, so the picture layer is
  * counter-scaled to keep covering the box at its true proportions, and the name label
- * is counter-scaled to stay its natural size, as a real resize would look. (Rounded corners are
- * not corrected: animating a radius repaints every frame, and measured slower than it was worth.)
+ * is counter-scaled to stay its natural size, as a real resize would look. Rounded corners are
+ * not corrected (animating a radius repaints every frame), which is why the stage does not glide
+ * a tile that shrinks a great deal: see SHRINK_LIMIT in Stage.tsx.
  * Returns the tile's own animation; the inner ones follow it.
  */
 export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): Animation {
-  const flags = motionFlags();
-  const sx = flags.translateOnly ? 1 : from.w / to.w;
-  const sy = flags.translateOnly ? 1 : from.h / to.h;
+  const sx = from.w / to.w;
+  const sy = from.h / to.h;
   // A tile that keeps its size only slides. Leaving scale out matters: an animated scale, even
   // of 1, makes the browser re-rasterise the tile's layer before the first frame.
   const sameSize = Math.abs(sx - 1) < 0.005 && Math.abs(sy - 1) < 0.005;
@@ -69,7 +64,7 @@ export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): 
       : [{ transform: `${place(from)} scale(${sx}, ${sy})` }, { transform: `${place(to)} scale(1, 1)` }],
     { duration, easing: EASE.move },
   );
-  if (flags.noInner || (Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02)) return main;
+  if (Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02) return main;
 
   const media: Keyframe[] = [];
   const natural: Keyframe[] = [];
@@ -144,6 +139,7 @@ export function ghostOf(el: HTMLElement, rect: Rect): HTMLElement {
   for (const name of ["data-tile", "data-key", "role", "aria-label", "data-speaking", "id"]) ghost.removeAttribute(name);
   ghost.setAttribute("aria-hidden", "true");
   ghost.setAttribute("data-placed", "");
+  ghost.dataset.ghostOf = el.dataset.key ?? "";
   ghost.inert = true;
   ghost.classList.add("tile-ghost");
   ghost.style.cssText = `width:${rect.w}px;height:${rect.h}px;transform:${place(rect)};`;

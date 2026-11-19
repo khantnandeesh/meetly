@@ -12,7 +12,6 @@ import {
   arrive,
   ghostOf,
   glide,
-  motionFlags,
   prefersReducedMotion,
   sameRect,
   type Rect,
@@ -32,6 +31,8 @@ const PAGE_BAR = 44;
 const PAGE_BAR_GAP = 8;
 /** How long a hand-over waits for the incoming video's first frame before fading in regardless. */
 const READY_WAIT_MS = 400;
+/** A tile that would have to shrink by more than this factor cross-fades instead of gliding. */
+const SHRINK_LIMIT = 2.2;
 /** Phones, screen share on top: how many cells (people, plus "+N more") sit underneath it. */
 const STACK_LIMIT = 6;
 
@@ -50,9 +51,7 @@ export function useBox<T extends HTMLElement>() {
       const { width, height } = entry.contentRect;
       // Without flushSync React would commit the new layout a frame late, and that one frame
       // would show the old tile sizes inside the new box.
-      const apply = () => setBox((old) => (old.w === width && old.h === height ? old : { w: width, h: height }));
-      if (motionFlags().noFlushSync) apply();
-      else flushSync(apply);
+      flushSync(() => setBox((old) => (old.w === width && old.h === height ? old : { w: width, h: height })));
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -138,6 +137,8 @@ type Snapshot = {
   boxChangedAt: number;
   rects: Map<string, Rect>;
   elements: Map<string, HTMLElement>;
+  /** A speaker hand-over whose incoming picture is still awaited, and the still it shows meanwhile. */
+  pending?: { key: string; copy: HTMLElement };
 };
 
 /**
@@ -438,6 +439,17 @@ export function Stage({
   );
 }
 
+let lastWindowResize = -Infinity;
+let watchingWindow = false;
+/** When the browser window last changed size. */
+function windowResizedAt(): number {
+  if (!watchingWindow && typeof window !== "undefined") {
+    watchingWindow = true;
+    window.addEventListener("resize", () => (lastWindowResize = performance.now()), { passive: true });
+  }
+  return lastWindowResize;
+}
+
 /**
  * Writes each tile's place onto its element. Tiles are memoised and deliberately not re-rendered
  * when only their rect changes, so this is what moves them. React still writes the same values
@@ -520,7 +532,8 @@ function animateStage(
   const land = (el: HTMLElement) => flights.get(el)?.cancel();
 
   // A window being dragged fires a resize every frame: follow it directly, as native apps do.
-  if (boxChanged && now - prev.boxChangedAt < 150) {
+  // (Only the window: a panel opening and the page bar appearing a moment apart both glide.)
+  if (boxChanged && now - windowResizedAt() < 150 && now - prev.boxChangedAt < 150) {
     elements.forEach(land);
     return;
   }
@@ -570,14 +583,17 @@ function animateStage(
   }
 
   // 2. Write.
-  const ghost = (key: string): HTMLElement | undefined => {
+  const ghost = (key: string, maxMs = 1000): HTMLElement | undefined => {
     const el = prev.elements.get(key);
     const rect = prev.rects.get(key);
     if (!el || !rect) return undefined;
     const copy = ghostOf(el, rect);
     layer.prepend(copy);
     // Whatever happens to the animation that owns it, a ghost never outlives a second.
-    setTimeout(() => copy.remove(), 1000);
+    setTimeout(() => {
+      // A still handed on to a later hand-over is that one's to remove.
+      if (lastRef.current?.pending?.copy !== copy) copy.remove();
+    }, maxMs);
     return copy;
   };
   const fadeAway = (copy: HTMLElement | undefined) => {
@@ -594,21 +610,31 @@ function animateStage(
   if (handover && prev.mainKey) {
     // The outgoing speaker's last frame stays underneath until the incoming picture is ready,
     // then the new one fades in over it: one cross-fade, never a flash of avatar in between.
-    const copy = ghost(prev.mainKey);
+    // If the previous hand-over is still waiting (its speaker never became visible), the still
+    // already on screen stays for this one: two hand-overs in a row must not flash a third face.
+    const waiting = prev.pending && prev.pending.key === prev.mainKey && prev.pending.copy.isConnected;
+    const copy = waiting ? prev.pending!.copy : ghost(prev.mainKey, READY_WAIT_MS + fadeMs + 300);
+    if (copy) next.pending = { key: next.mainKey!, copy };
+    const mine = next.pending;
+    const drop = () => {
+      // Only the hand-over that still owns the still may take it away.
+      if (!copy || (lastRef.current?.pending && lastRef.current.pending !== mine && lastRef.current.pending.copy === copy)) return;
+      copy.remove();
+    };
     const incoming = elements.get(next.mainKey!);
     if (incoming) {
       land(incoming);
       const hold = incoming.animate([{ opacity: 0 }, { opacity: 0 }], { duration: READY_WAIT_MS + 100 });
       track(incoming, hold);
       whenPictureReady(incoming, READY_WAIT_MS, () => {
-        if (flights.get(incoming) !== hold) return copy?.remove();
+        if (flights.get(incoming) !== hold) return drop();
         hold.cancel();
         const fade = arrive(incoming, mainSlot!.rect, false, fadeMs);
         track(incoming, fade);
-        fade.finished.then(() => copy?.remove()).catch(() => copy?.remove());
+        fade.finished.then(drop).catch(drop);
       });
     } else {
-      copy?.remove();
+      drop();
     }
     const outgoing = elements.get(prev.mainKey);
     if (outgoing) {
@@ -618,8 +644,6 @@ function animateStage(
   }
 
   const glideMs = sameView ? DUR.move : DUR.slow;
-  const flags = motionFlags();
-  let order = 0;
   const gliding = reduced || moving.length > MAX_GLIDING ? [] : moving;
   for (const slot of moving) {
     const el = elements.get(slot.key);
@@ -629,26 +653,23 @@ function animateStage(
     if (!gliding.includes(slot)) continue;
     const from = starts.get(slot.key)!;
     if (from.w <= 0 || from.h <= 0 || slot.rect.w <= 0 || slot.rect.h <= 0) continue;
-    // Tiles that shrink travel above tiles that grow, so nothing is hidden on the way.
-    if (from.w * from.h > slot.rect.w * slot.rect.h) el.style.zIndex = "2";
-    if (flags.defer || flags.stagger) {
-      // Experiment: hold the old place for a frame (or a few), then start moving.
-      const hold = el.animate([{ transform: holdAt(from, slot.rect) }, { transform: holdAt(from, slot.rect) }], {
-        duration: 1000,
-      });
-      track(el, hold);
-      const frames = flags.stagger ? 1 + (order++ % 3) : 1;
-      afterFrames(frames, () => {
-        if (flights.get(el) !== hold) return;
-        hold.cancel();
-        track(el, glide(el, from, slot.rect, glideMs));
-      });
+    if (Math.max(from.w / slot.rect.w, from.h / slot.rect.h) > SHRINK_LIMIT) {
+      // A tile shrinking this much (the main tile going back to the filmstrip) would start out
+      // hugely scaled up, corners and all. It dissolves where it was and appears where it is going.
+      fadeAway(ghost(slot.key));
+      track(el, arrive(el, slot.rect, true, fadeMs));
       continue;
     }
+    // Tiles that shrink travel above tiles that grow, so nothing is hidden on the way.
+    if (from.w * from.h > slot.rect.w * slot.rect.h) el.style.zIndex = "2";
     track(el, glide(el, from, slot.rect, glideMs));
   }
 
   for (const slot of arriving) {
+    // Somebody who left and is already back must not be on screen twice.
+    layer.querySelectorAll<HTMLElement>(":scope > .tile-ghost").forEach((copy) => {
+      if (copy.dataset.ghostOf === slot.key) copy.remove();
+    });
     const el = elements.get(slot.key);
     if (!el || (handover && slot.key === next.mainKey)) continue;
     track(el, arrive(el, slot.rect, !reduced && arriving.length <= MAX_INDIVIDUAL, fadeMs));
@@ -656,13 +677,6 @@ function animateStage(
   if (sameView && leaving.length <= MAX_INDIVIDUAL) {
     for (const key of leaving) if (!(handover && key === prev.mainKey)) fadeAway(ghost(key));
   }
-}
-
-const holdAt = (from: Rect, to: Rect) =>
-  `translate(${from.x}px, ${from.y}px) scale(${from.w / to.w}, ${from.h / to.h})`;
-function afterFrames(count: number, run: () => void) {
-  if (count <= 0) run();
-  else requestAnimationFrame(() => afterFrames(count - 1, run));
 }
 
 /** Calls back once the tile's video has a frame (straight away if it shows an avatar), or after `maxMs`. */
