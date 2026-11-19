@@ -6,8 +6,6 @@ import { SOUND_DEFAULTS, sounds, type SoundSettings } from "./sounds";
 
 /** Past this many people, comings and goings are shown (toasts) but no longer heard. */
 export const PRESENCE_SOUND_LIMIT = 8;
-/** Arrivals and departures within this window make one sound, matching the coalesced toast. */
-const PRESENCE_WINDOW_MS = 350;
 /** Nothing about other people sounds until the room has settled after you join. */
 const SETTLE_MS = 2500;
 /** A microphone that goes off this long after your last own toggle was not switched off by you. */
@@ -41,23 +39,14 @@ export function createCallSounds(headcount: () => number) {
   const settled = () => performance.now() - startedAt > SETTLE_MS;
   let lost = false;
 
-  // One sound per burst of arrivals or departures, however many people it contains.
-  const burst = (name: "joined" | "left") => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    return {
-      add() {
-        if (!settled()) return sounds.skipped(name, "settling");
-        if (headcount() > PRESENCE_SOUND_LIMIT) return sounds.skipped(name, "large-call");
-        timer ??= setTimeout(() => {
-          timer = undefined;
-          sounds.play(name);
-        }, PRESENCE_WINDOW_MS);
-      },
-      cancel: () => clearTimeout(timer),
-    };
+  // Presence sounds accompany a tile arriving or leaving in front of you, so the stage reports
+  // them (see notePresence). The engine's own minimum gap makes a burst one sound, played at
+  // the start of the movement rather than after it.
+  const presence = (name: "joined" | "left") => {
+    if (!settled()) return sounds.skipped(name, "settling");
+    if (headcount() > PRESENCE_SOUND_LIMIT) return sounds.skipped(name, "large-call");
+    sounds.play(name);
   };
-  const arrivals = burst("joined");
-  const departures = burst("left");
   const whenSettled = (name: "hand" | "shareStart" | "shareStop") =>
     settled() ? sounds.play(name) : sounds.skipped(name, "settling");
 
@@ -75,8 +64,9 @@ export function createCallSounds(headcount: () => number) {
       if (lost) sounds.play("connected");
       lost = false;
     },
-    onParticipantJoined: arrivals.add,
-    onParticipantLeft: departures.add,
+    /** Somebody's tile appeared on, or left, the part of the stage you can see. */
+    onVisibleArrival: () => presence("joined"),
+    onVisibleDeparture: () => presence("left"),
     onHandRaised: () => whenSettled("hand"),
     onScreenShareStarted: () => whenSettled("shareStart"),
     onScreenShareStopped: () => whenSettled("shareStop"),
@@ -97,16 +87,30 @@ export function createCallSounds(headcount: () => number) {
       return false;
     },
     onOutputDevice: (deviceId: string) => sounds.setOutputDevice(deviceId),
-    dispose() {
-      arrivals.cancel();
-      departures.cancel();
-    },
+
   };
 }
 
-/** A chat message arrived while chat was closed. Call where the chat toast is raised. */
+let activeCall: ReturnType<typeof createCallSounds> | null = null;
+/** Report a join or leave whose tile is in view. Anything not in view gets a toast instead, never both. */
+export function notePresence(kind: "joined" | "left"): void {
+  if (kind === "joined") activeCall?.onVisibleArrival();
+  else activeCall?.onVisibleDeparture();
+}
+
+let lastMessageAt = -Infinity;
+/** How long chat must have been quiet for the next message to be heard. */
+const CHAT_QUIET_MS = 4000;
+/**
+ * A chat message arrived while chat was closed. Call where the chat toast is raised.
+ * Only the first message after a quiet spell sounds: a busy chat is not a row of chimes.
+ */
 export function playChatMessageSound(): void {
-  sounds.play("message");
+  const now = performance.now();
+  const quiet = now - lastMessageAt > CHAT_QUIET_MS;
+  lastMessageAt = now;
+  if (quiet) sounds.play("message");
+  else sounds.skipped("message", "busy-chat");
 }
 
 /** The call is over for you (you left, were removed, or it dropped for good). */
@@ -126,6 +130,7 @@ const HAND = "hand";
 export function useCallSounds(room: Room, { onHostMuted }: { onHostMuted?: () => void } = {}): void {
   useEffect(() => {
     const call = createCallSounds(() => room.remoteParticipants.size + 1);
+    activeCall = call;
 
     let wasConnected = room.state === ConnectionState.Connected;
     if (wasConnected) call.onConnected();
@@ -162,8 +167,6 @@ export function useCallSounds(room: Room, { onHostMuted }: { onHostMuted?: () =>
     const current = room.getActiveDevice("audiooutput");
     if (current) call.onOutputDevice(current);
 
-    room.on(RoomEvent.ParticipantConnected, call.onParticipantJoined);
-    room.on(RoomEvent.ParticipantDisconnected, call.onParticipantLeft);
     room.on(RoomEvent.ConnectionStateChanged, onConnection);
     room.on(RoomEvent.ParticipantAttributesChanged, onAttributes);
     room.on(RoomEvent.TrackPublished, shareStarted);
@@ -174,8 +177,6 @@ export function useCallSounds(room: Room, { onHostMuted }: { onHostMuted?: () =>
     room.on(RoomEvent.TrackUnmuted, onUnmuted);
     room.on(RoomEvent.ActiveDeviceChanged, onDevice);
     return () => {
-      room.off(RoomEvent.ParticipantConnected, call.onParticipantJoined);
-      room.off(RoomEvent.ParticipantDisconnected, call.onParticipantLeft);
       room.off(RoomEvent.ConnectionStateChanged, onConnection);
       room.off(RoomEvent.ParticipantAttributesChanged, onAttributes);
       room.off(RoomEvent.TrackPublished, shareStarted);
@@ -185,7 +186,7 @@ export function useCallSounds(room: Room, { onHostMuted }: { onHostMuted?: () =>
       room.off(RoomEvent.TrackMuted, onMuted);
       room.off(RoomEvent.TrackUnmuted, onUnmuted);
       room.off(RoomEvent.ActiveDeviceChanged, onDevice);
-      call.dispose();
+      if (activeCall === call) activeCall = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onHostMuted is read when it fires
   }, [room]);

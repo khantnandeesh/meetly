@@ -11,7 +11,6 @@ import {
   Hand,
   Keyboard,
   LayoutGrid,
-  Link2,
   LoaderCircle,
   MessageSquare,
   Mic,
@@ -25,6 +24,7 @@ import {
   Volume2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useCopied } from "@/lib/hooks";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
@@ -32,6 +32,7 @@ import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
 import { useUnread } from "./ChatStore";
 import { LayoutMenuItems } from "./LayoutMenu";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
+import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
 import { useToast } from "./ui/Toaster";
 
@@ -60,13 +61,14 @@ export function ControlBar({
   hands?: React.ReactNode;
   onToggleHand: () => void;
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
-  onCopyLink: () => void;
+  onCopyLink: () => Promise<boolean>;
   onShowShortcuts: () => void;
   settings: CallSettings;
   onSettings: (patch: Partial<CallSettings>) => void;
 }) {
   const room = useRoomContext();
   const toast = useToast();
+  const copyState = useCopied(onCopyLink);
 
   const deviceError = (what: string) => () =>
     toast.push({
@@ -143,9 +145,18 @@ export function ControlBar({
           collisionPadding={12}
           className={phone ? "menu menu-tall w-80" : "menu"}
         >
-          <Dropdown.Item className="menu-item" onSelect={onCopyLink}>
-            <Link2 className="size-4 text-muted" aria-hidden="true" />
-            Copy meeting link
+          <Dropdown.Item
+            className="menu-item"
+            onSelect={(event) => {
+              // Stay open for a moment so the confirmation is seen where the tap landed.
+              event.preventDefault();
+              copyState.copy();
+            }}
+          >
+            <span className="text-muted">
+              <CopyIcon copied={copyState.copied} />
+            </span>
+            <span role="status">{copyState.copied ? "Link copied" : "Copy meeting link"}</span>
           </Dropdown.Item>
           {phone ? (
             <>
@@ -188,12 +199,18 @@ export function ControlBar({
         <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" aria-hidden="true" />
         <Tip label="Copy meeting link">
           <button
-            onClick={onCopyLink}
+            onClick={copyState.copy}
             aria-label={`Copy meeting link, code ${code}`}
             className="-ml-2 inline-flex h-10 min-w-0 cursor-pointer items-center gap-2 rounded-xl px-2 font-mono text-[0.8125rem] transition-colors hover:bg-surface-2 hover:text-text"
           >
-            <span className="truncate">{code}</span>
-            <Link2 className="size-4 shrink-0" aria-hidden="true" />
+            {/* Both labels share one cell, so the confirmation does not change the button's width. */}
+            <span className="grid min-w-0">
+              <span className={`col-start-1 row-start-1 truncate ${copyState.copied ? "invisible" : ""}`}>{code}</span>
+              <span className={`col-start-1 row-start-1 text-text ${copyState.copied ? "" : "invisible"}`} role="status">
+                {copyState.copied ? "Copied" : ""}
+              </span>
+            </span>
+            <CopyIcon copied={copyState.copied} />
           </button>
         </Tip>
       </div>
@@ -277,8 +294,8 @@ function ChatButton({
       >
         <MessageSquare className="size-5" />
         {unread > 0 && (
+          // Pops in for the first unread message only; after that the number just changes.
           <span
-            key={unread}
             className="anim-pop absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
             aria-hidden="true"
           >

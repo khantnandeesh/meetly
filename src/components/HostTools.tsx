@@ -4,7 +4,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { useRoomInfo } from "@livekit/components-react";
 import type { Participant } from "livekit-client";
 import { CircleAlert, EllipsisVertical, MicOff, UserX } from "lucide-react";
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
 import { displayName } from "@/lib/participant";
 import { Dropdown } from "./ui/Menu";
 import { useToast } from "./ui/Toaster";
@@ -15,7 +15,8 @@ type HostState = {
   /** True when the local participant is that host. */
   isHost: boolean;
   mute: (participant: Participant) => void;
-  askRemove: (participant: Participant) => void;
+  /** `from` names the menu button it was asked from, so focus can return there. */
+  askRemove: (participant: Participant, from?: string) => void;
 };
 
 const HostContext = createContext<HostState>({ hostId: null, isHost: false, mute: () => {}, askRemove: () => {} });
@@ -37,6 +38,7 @@ export function HostProvider({
   const { metadata } = useRoomInfo();
   const toast = useToast();
   const [removing, setRemoving] = useState<Participant | null>(null);
+  const lastAsked = useRef<string | null>(null);
 
   const hostId = useMemo(() => {
     try {
@@ -78,7 +80,10 @@ export function HostProvider({
       hostId,
       isHost: hostId !== null && hostId === localIdentity,
       mute: (participant) => void act("mute", participant),
-      askRemove: setRemoving,
+      askRemove: (participant, from) => {
+        lastAsked.current = `${participant.identity}:${from ?? "row"}`;
+        setRemoving(participant);
+      },
     }),
     [hostId, localIdentity, act],
   );
@@ -89,7 +94,17 @@ export function HostProvider({
       <Dialog.Root open={removing !== null} onOpenChange={(open) => !open && setRemoving(null)}>
         <Dialog.Portal>
           <Dialog.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/70" />
-          <Dialog.Content className="dialog fixed top-1/2 left-1/2 z-50 flex w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-5 rounded-3xl bg-surface p-6 shadow-[inset_0_0_0_1px_var(--border-strong),0_30px_80px_-20px_rgb(0_0_0/0.8)]">
+          <Dialog.Content
+            onCloseAutoFocus={(event) => {
+              // The menu item that opened this is gone; go back to the button that opened the menu.
+              const id = lastAsked.current;
+              const button = id ? document.querySelector<HTMLElement>(`[data-host-menu="${CSS.escape(id)}"]`) : null;
+              if (button) {
+                event.preventDefault();
+                button.focus();
+              }
+            }}
+            className="dialog fixed top-1/2 left-1/2 z-50 flex w-[min(26rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col gap-5 rounded-3xl bg-surface p-6 shadow-[inset_0_0_0_1px_var(--border-strong),0_30px_80px_-20px_rgb(0_0_0/0.8)]">
             <div className="flex flex-col gap-2">
               <Dialog.Title className="font-display text-xl font-semibold">
                 Remove {removing ? displayName(removing) : ""}?
@@ -126,6 +141,7 @@ export function HostMenu({ participant, micOn, variant }: { participant: Partici
     <Dropdown.Root>
       <Dropdown.Trigger
         aria-label={`Host controls for ${name}`}
+        data-host-menu={`${participant.identity}:${variant}`}
         className={
           variant === "tile"
             ? "grid size-10 cursor-pointer place-items-center rounded-xl bg-[rgb(11_11_15/0.72)] text-text backdrop-blur-md hover:bg-[rgb(40_40_52/0.9)] pointer-coarse:size-11"
@@ -142,7 +158,7 @@ export function HostMenu({ participant, micOn, variant }: { participant: Partici
             {micOn ? "Mute microphone" : "Already muted"}
           </Dropdown.Item>
           <div className="menu-sep" />
-          <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant)}>
+          <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant, variant)}>
             <UserX className="size-4" aria-hidden="true" />
             Remove from call
           </Dropdown.Item>

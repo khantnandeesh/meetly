@@ -121,6 +121,12 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
           </span>
         </div>
       )}
+      {isScreen && (
+        <p className="share-wait absolute inset-0 flex flex-col items-center justify-center gap-3 px-6 text-center text-muted">
+          <MonitorUp className="size-8 text-accent" aria-hidden="true" />
+          <span>{isLocal ? "Starting your screen share…" : `${name} is starting to share…`}</span>
+        </p>
+      )}
       {isTrackReference(trackRef) && showVideo && <FadeInVideo trackRef={trackRef} />}
       </div>
 

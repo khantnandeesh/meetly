@@ -13,11 +13,9 @@ import {
 } from "@livekit/components-react";
 import { ConnectionState, RoomEvent, Track, type Participant } from "livekit-client";
 import {
-  Check,
   CircleAlert,
   EyeOff,
   Hand,
-  Link2,
   MicOff,
   LoaderCircle,
   UserMinus,
@@ -28,11 +26,11 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { copyText, useIsPhone, usePresence } from "@/lib/hooks";
+import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import { HAND, displayName } from "@/lib/participant";
 import { useCallSettings } from "@/lib/useCallSettings";
-import { noteOwnMicToggle, useCallSounds } from "@/lib/useSounds";
+import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useOffscreenVideoPause } from "@/lib/videoDemand";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
 import { ChatPanel } from "./ChatPanel";
@@ -42,6 +40,7 @@ import { ControlBar, type Panel } from "./ControlBar";
 import { PeoplePanel } from "./PeoplePanel";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { Tile } from "./Tile";
+import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
 import { Stage, refKey } from "./Stage";
 import { LogoMark } from "./ui/Logo";
@@ -49,6 +48,8 @@ import { useToast } from "./ui/Toaster";
 
 /** Auto switches from the grid to the speaker-led view above this many people. */
 const AUTO_GRID_LIMIT = 12;
+/** Above this many people, joins and leaves are not announced at all: the people count is enough. */
+const ROSTER_TOAST_LIMIT = 24;
 const PHONE_PAGE_SIZE = 6;
 // Speaking and mute changes are handled by the tiles and rows themselves, so the whole call
 // does not re-render every time somebody talks.
@@ -202,8 +203,12 @@ function Call({ code, token }: { code: string; token: string }) {
 
   /* ------------------------------------------------------------ room events */
   useEffect(() => {
-    // People often arrive (and leave) in bursts. Names collected within a short window share one
-    // toast, and a later burst updates that toast in place instead of stacking another.
+    // One signal per arrival or departure. If their tile is in front of you, the tile (and in a
+    // small call its sound) is the signal. If it is not (another gallery page, the "+N more"
+    // cell, Spotlight), a toast is, and bursts share one toast that updates in place. In a very
+    // large call the people count is enough and nothing else is shown.
+    const onStage = (p: Participant) =>
+      document.querySelector(`[data-tile][data-key="${CSS.escape(`${p.identity}:${Track.Source.Camera}`)}"]`) !== null;
     const roster = (verb: "joined" | "left", icon: React.ReactNode) => {
       let names: string[] = [];
       let lastAt = 0;
@@ -219,7 +224,8 @@ function Call({ code, token }: { code: string; token: string }) {
         toast.push({ tag: verb, icon, title: `${who} ${verb}` });
       };
       return {
-        add(p: Participant) {
+        announce(p: Participant) {
+          if (room.remoteParticipants.size + 1 > ROSTER_TOAST_LIMIT) return;
           // A lull starts a new list; until then the visible toast keeps counting.
           if (Date.now() - lastAt > 5000) names = [];
           lastAt = Date.now();
@@ -231,22 +237,31 @@ function Call({ code, token }: { code: string; token: string }) {
     };
     const arrivals = roster("joined", <UserPlus className="size-5" />);
     const departures = roster("left", <UserMinus className="size-5 text-muted" />);
-    const joined = arrivals.add;
-    const left = departures.add;
-    const attributes = (changed: Record<string, string>, p: Participant) => {
-      if (changed[HAND] === "1" && !p.isLocal) {
-        toast.push({ icon: <Hand className="size-5" />, title: `${displayName(p)} raised a hand` });
-      }
+    const pendingArrivals = new Set<ReturnType<typeof setTimeout>>();
+    const joined = (p: Participant) => {
+      // Whether the newcomer got a tile is only known once the stage has drawn them.
+      const timer = setTimeout(() => {
+        pendingArrivals.delete(timer);
+        if (onStage(p)) notePresence("joined");
+        else arrivals.announce(p);
+      }, 60);
+      pendingArrivals.add(timer);
     };
+    const left = (p: Participant) => {
+      // Their tile, if they had one, is still on the stage at this moment.
+      if (onStage(p)) notePresence("left");
+      else departures.announce(p);
+    };
+    // A raised hand is signalled by the hands button beside People, the badge on the tile and
+    // one sound. No toast: that would be a fourth signal for one event.
     room.on(RoomEvent.ParticipantConnected, joined);
     room.on(RoomEvent.ParticipantDisconnected, left);
-    room.on(RoomEvent.ParticipantAttributesChanged, attributes);
     return () => {
       room.off(RoomEvent.ParticipantConnected, joined);
       room.off(RoomEvent.ParticipantDisconnected, left);
-      room.off(RoomEvent.ParticipantAttributesChanged, attributes);
       arrivals.cancel();
       departures.cancel();
+      pendingArrivals.forEach(clearTimeout);
     };
   }, [room, toast]);
 
@@ -261,14 +276,13 @@ function Call({ code, token }: { code: string; token: string }) {
     });
   }, [toast, updateSettings]);
 
+  // Copying confirms on the button that was pressed (see useCopied); only a failure needs a toast.
   const copyLink = useCallback(async () => {
     const ok = await copyText(`${window.location.origin}/${code}`);
-    toast.push(
-      ok
-        ? { icon: <Check className="size-5" />, title: "Meeting link copied", duration: 2500 }
-        : { icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link" },
-    );
+    if (!ok) toast.push({ icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link" });
+    return ok;
   }, [code, toast]);
+  const headerCopy = useCopied(copyLink);
 
   /* ---------------------------------------------------------- notifications */
   // On large screens notifications rise from the stage's bottom-right corner (see globals.css).
@@ -372,13 +386,16 @@ function Call({ code, token }: { code: string; token: string }) {
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
           <button
-            onClick={copyLink}
+            onClick={headerCopy.copy}
             aria-label={`Copy meeting link, code ${code}`}
             className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
           >
             <LogoMark className="size-7 shrink-0" />
-            <span className="truncate">{code}</span>
-            <Link2 className="size-4 shrink-0" aria-hidden="true" />
+            <span className="truncate">{headerCopy.copied ? "Copied" : code}</span>
+            <CopyIcon copied={headerCopy.copied} />
+            <span className="sr-only" role="status">
+              {headerCopy.copied ? "Meeting link copied" : ""}
+            </span>
           </button>
           <div className="flex shrink-0 items-center gap-2">
             <RaisedHands hands={raisedHands} onShow={showPeople} compact />
@@ -426,7 +443,7 @@ function Call({ code, token }: { code: string; token: string }) {
             onHide={hideSelf}
           />
 
-          {alone && <InviteCard code={code} onCopy={copyLink} />}
+          <InviteCard show={alone} code={code} onCopy={copyLink} />
 
           <Connecting show={connecting} />
 
@@ -588,7 +605,7 @@ function FloatingSelf({
   if (!presence.mounted || !shown) return null;
   return (
     <div
-      className="absolute right-3 bottom-3 z-30 w-44 transition-[translate] duration-(--dur-move) ease-(--ease-move) max-md:w-24"
+      className="self-float absolute right-3 bottom-3 z-30 w-44 transition-[translate] duration-(--dur-move) ease-(--ease-move) max-md:w-24"
       style={{ translate: `${offset.x}rem ${offset.y}rem` }}
     >
       <div
@@ -623,6 +640,13 @@ function RaisedHands({ hands, onShow, compact = false }: { hands: Participant[];
   const [kept, setKept] = useState(hands);
   if (hands.length > 0 && hands !== kept) setKept(hands);
   const list = hands.length > 0 ? hands : kept;
+  // The button pops in for the first hand; each later hand gives the count one short pulse.
+  const [pulse, setPulse] = useState(0);
+  const [seen, setSeen] = useState(hands.length);
+  if (hands.length !== seen) {
+    setSeen(hands.length);
+    if (hands.length > seen && seen > 0) setPulse((n) => n + 1);
+  }
   if (!presence.mounted) return null;
   // Room for one name beside the controls; the rest are a count, and the list has them all.
   const namesClass = compact ? "sr-only" : "flex min-w-0 gap-1 max-lg:sr-only";
@@ -633,7 +657,10 @@ function RaisedHands({ hands, onShow, compact = false }: { hands: Participant[];
       onAnimationEnd={presence.onAnimationEnd}
       className={`anim-pop inline-flex min-w-0 shrink cursor-pointer items-center gap-2 rounded-xl bg-[color-mix(in_srgb,var(--accent)_16%,var(--surface-2))] pr-3 pl-1.5 text-sm font-medium text-text transition-colors hover:bg-[color-mix(in_srgb,var(--accent)_26%,var(--surface-2))] ${compact ? "h-11" : "h-12 rounded-2xl pl-2"}`}
     >
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-ink">
+      <span
+        key={pulse}
+        className={`grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-accent-ink ${pulse > 0 ? "anim-nudge" : ""}`}
+      >
         <Hand className="size-[1.125rem]" aria-hidden="true" />
       </span>
       <ul className={namesClass} aria-label="Raised hands">
@@ -696,11 +723,18 @@ function Reconnecting({ show }: { show: boolean }) {
   );
 }
 
-function InviteCard({ code, onCopy }: { code: string; onCopy: () => void }) {
+function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCopy: () => Promise<boolean> }) {
   const [dismissed, setDismissed] = useState(false);
-  if (dismissed) return null;
+  // It leaves, quickly, the moment somebody else arrives: it goes first, then the tiles move.
+  const presence = usePresence(show && !dismissed);
+  const { copied, copy } = useCopied(onCopy);
+  if (!presence.mounted) return null;
   return (
-    <div className="anim-rise absolute z-30 w-80 max-w-[calc(100%-1.5rem)] rounded-2xl bg-[rgb(20_20_26/0.92)] p-4 shadow-[inset_0_0_0_1px_var(--border-strong),0_20px_50px_-15px_rgb(0_0_0/0.8)] backdrop-blur-md [animation-delay:400ms] max-md:top-3 max-md:left-1/2 max-md:-translate-x-1/2 md:right-4 md:bottom-4">
+    <div
+      data-leaving={presence.leaving}
+      onAnimationEnd={presence.onAnimationEnd}
+      className={`anim-rise absolute z-30 w-80 max-w-[calc(100%-1.5rem)] rounded-2xl bg-[rgb(20_20_26/0.92)] p-4 shadow-[inset_0_0_0_1px_var(--border-strong),0_20px_50px_-15px_rgb(0_0_0/0.8)] backdrop-blur-md max-md:top-3 max-md:left-1/2 max-md:-translate-x-1/2 md:right-4 md:bottom-4 ${presence.leaving ? "" : "[animation-delay:400ms]"}`}
+    >
       <div className="flex items-start justify-between gap-2">
         <div>
           <p className="font-semibold">You&apos;re the only one here</p>
@@ -710,11 +744,11 @@ function InviteCard({ code, onCopy }: { code: string; onCopy: () => void }) {
           <X className="size-4" aria-hidden="true" />
         </button>
       </div>
-      <button className="btn btn-secondary mt-3 h-11 w-full justify-between rounded-xl bg-surface-3 px-3.5 text-sm" onClick={onCopy}>
+      <button className="btn btn-secondary mt-3 h-11 w-full justify-between rounded-xl bg-surface-3 px-3.5 text-sm" onClick={copy}>
         <span className="truncate font-mono font-medium">{code}</span>
-        <span className="inline-flex items-center gap-1.5 text-accent">
-          <Link2 className="size-4" aria-hidden="true" />
-          Copy link
+        <span className="inline-flex items-center gap-1.5 text-accent" role="status">
+          <CopyIcon copied={copied} />
+          {copied ? "Copied" : "Copy link"}
         </span>
       </button>
     </div>

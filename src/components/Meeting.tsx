@@ -23,6 +23,10 @@ export function Meeting({ code }: { code: string }) {
   const [stage, setStage] = useState<Stage>("prejoin");
   const [session, setSession] = useState<Session | null>(null);
   const [joining, setJoining] = useState(false);
+  /** The room is connected and drawn. */
+  const [ready, setReady] = useState(false);
+  /** The pre-join screen is still on top (it leaves once `ready`). */
+  const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [departure, setDeparture] = useState<Departure>({ minutes: 0, dropped: false, removed: false });
 
@@ -49,6 +53,8 @@ export function Meeting({ code }: { code: string }) {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error ?? "Could not join the meeting.");
       setSession({ token: data.token, serverUrl: data.serverUrl, choices, joinedAt: Date.now() });
+      setReady(false);
+      setCovered(true);
       setStage("joined");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Could not join the meeting.");
@@ -58,53 +64,73 @@ export function Meeting({ code }: { code: string }) {
   }
 
   if (stage === "left") {
-    return <LeftScreen code={code} departure={departure} onRejoin={() => setStage("prejoin")} />;
+    return <LeftScreen code={code} departure={departure} onRejoin={() => {
+          setReady(false);
+          setCovered(true);
+          setStage("prejoin");
+        }} />;
   }
 
-  if (stage === "joined" && session) {
-    const { choices } = session;
-    return (
-      <LiveKitRoom
-        token={session.token}
-        serverUrl={session.serverUrl}
-        connect
-        options={roomOptions}
-        audio={choices.audioEnabled ? { deviceId: choices.audioDeviceId || undefined } : false}
-        video={choices.videoEnabled ? { deviceId: choices.videoDeviceId || undefined } : false}
-        onDisconnected={(reason) => {
-          toast.clear();
-          playCallEndedSound();
-          setDeparture({
-            minutes: Math.round((Date.now() - session.joinedAt) / 60_000),
-            removed: reason === DisconnectReason.PARTICIPANT_REMOVED,
-            dropped:
-              reason !== undefined &&
-              reason !== DisconnectReason.CLIENT_INITIATED &&
-              reason !== DisconnectReason.PARTICIPANT_REMOVED,
-          });
-          setStage("left");
-        }}
-        onError={(e) =>
-          toast.push({
-            title: "Something went wrong",
-            body: e.message,
-            tone: "danger",
-            icon: <CircleAlert className="size-5" />,
-            duration: 8000,
-          })
-        }
-      >
-        {/* Own wrapper for sizing: LiveKitRoom's element doesn't take part in layout. */}
-        <div className="screen-in flex h-dvh flex-col" data-in-call>
-          <Conference code={code} token={session.token} />
-        </div>
-      </LiveKitRoom>
-    );
-  }
-
-  // Saved name and device choices live in localStorage, so the form renders on the client only.
-  if (!mounted) return <PreJoinSkeleton />;
-  return <PreJoin code={code} joining={joining} error={error} onJoin={join} />;
+  // The pre-join screen stays up, with its live preview, until the room is connected and the
+  // stage is drawn underneath; then it fades away to reveal it. One hand-over, not three screens.
+  const inCall = stage === "joined" && session !== null;
+  return (
+    <>
+      {inCall && (
+        <LiveKitRoom
+          token={session.token}
+          serverUrl={session.serverUrl}
+          connect
+          options={roomOptions}
+          audio={session.choices.audioEnabled ? { deviceId: session.choices.audioDeviceId || undefined } : false}
+          video={session.choices.videoEnabled ? { deviceId: session.choices.videoDeviceId || undefined } : false}
+          onConnected={() => setReady(true)}
+          onDisconnected={(reason) => {
+            toast.clear();
+            playCallEndedSound();
+            setDeparture({
+              minutes: Math.round((Date.now() - session.joinedAt) / 60_000),
+              removed: reason === DisconnectReason.PARTICIPANT_REMOVED,
+              dropped:
+                reason !== undefined &&
+                reason !== DisconnectReason.CLIENT_INITIATED &&
+                reason !== DisconnectReason.PARTICIPANT_REMOVED,
+            });
+            setStage("left");
+          }}
+          onError={(e) =>
+            toast.push({
+              title: "Something went wrong",
+              body: e.message,
+              tone: "danger",
+              icon: <CircleAlert className="size-5" />,
+              duration: 8000,
+            })
+          }
+        >
+          {/* Own wrapper for sizing: LiveKitRoom's element doesn't take part in layout. */}
+          <div className="flex h-dvh flex-col" data-in-call inert={covered}>
+            <Conference code={code} token={session.token} />
+          </div>
+        </LiveKitRoom>
+      )}
+      {covered &&
+        // Saved name and device choices live in localStorage, so the form renders on the client only.
+        (mounted ? (
+          <div
+            className={inCall ? `fixed inset-0 z-70 flex flex-col overflow-y-auto bg-bg ${ready ? "screen-out" : ""}` : "contents"}
+            inert={inCall}
+            onAnimationEnd={(event) => {
+              if (ready && event.target === event.currentTarget) setCovered(false);
+            }}
+          >
+            <PreJoin code={code} joining={joining || inCall} error={error} onJoin={join} />
+          </div>
+        ) : (
+          <PreJoinSkeleton />
+        ))}
+    </>
+  );
 }
 
 function LeftScreen({

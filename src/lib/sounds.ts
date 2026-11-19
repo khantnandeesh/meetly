@@ -131,8 +131,8 @@ export const SOUNDS: Record<SoundName, SoundSpec> = {
     notes: [note(FS5, 0, 0.3, 0.035)],
     length: 0.14,
     important: false,
-    minGapMs: 4000,
-    meaning: "A chat message arrived while chat is closed",
+    minGapMs: 1000,
+    meaning: "A chat message arrived while chat is closed (first after a quiet spell)",
   },
 
   // Your own microphone: the smallest sounds in the set, one grace note and one note.

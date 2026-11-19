@@ -2,11 +2,13 @@
 
 import { useIsSpeaking } from "@livekit/components-react";
 import type { Participant } from "livekit-client";
-import { Hand, Link2, Mic, MicOff, Search, VideoOff, X } from "lucide-react";
+import { Hand, Mic, MicOff, Search, VideoOff, X } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { HAND, displayName, useMediaState } from "@/lib/participant";
 import { HostMenu, useHost } from "./HostTools";
+import { useCopied } from "@/lib/hooks";
 import { useBox } from "./Stage";
+import { CopyIcon } from "./ui/CopyIcon";
 import { Avatar } from "./ui/Avatar";
 
 const ROW = 56;
@@ -24,9 +26,10 @@ export function PeoplePanel({
 }: {
   participants: Participant[];
   code: string;
-  onCopyLink: () => void;
+  onCopyLink: () => Promise<boolean>;
 }) {
   const [query, setQuery] = useState("");
+  const copyState = useCopied(onCopyLink);
   const [scrollTop, setScrollTop] = useState(0);
   const [boxRef, box] = useBox<HTMLDivElement>();
 
@@ -68,14 +71,16 @@ export function PeoplePanel({
       <div className="flex flex-col gap-2 p-3 pb-2">
         <button
           data-autofocus
-          onClick={onCopyLink}
+          onClick={copyState.copy}
           className="group flex w-full cursor-pointer items-center gap-3 rounded-2xl bg-surface-2 p-3 text-left transition-colors hover:bg-surface-3"
         >
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-accent text-accent-ink">
-            <Link2 className="size-5" aria-hidden="true" />
+            <CopyIcon copied={copyState.copied} className="size-5 !text-accent-ink" />
           </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-semibold">Copy invite link</span>
+            <span className="block text-sm font-semibold" role="status">
+              {copyState.copied ? "Link copied" : "Copy invite link"}
+            </span>
             <span className="block truncate font-mono text-xs text-muted">{code}</span>
           </span>
         </button>

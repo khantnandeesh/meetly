@@ -22,10 +22,10 @@ import { Tip } from "./ui/Tip";
 
 const MAX_RATIO = 16 / 9;
 const STRIP_GAP = 12;
-/** Past this many tiles moving at once, gliding them is noise (and work): they snap instead. */
+/** With more tiles than this on screen, gliding them is noise (and work): they snap instead. */
 const MAX_GLIDING = 24;
-/** New or leaving tiles get their own entrance/exit only in ones and twos; a crowd just fades. */
-const MAX_INDIVIDUAL = 4;
+/** Up to this many tiles on screen, arrivals grow in and departures fade out one by one; above it, arrivals just fade. */
+const MAX_INDIVIDUAL = 8;
 /** Height of the gallery page bar (h-11) and the gap above it (gap-2), in px. */
 const PAGE_BAR = 44;
 const PAGE_BAR_GAP = 8;
@@ -135,6 +135,8 @@ type Snapshot = {
   pinned: boolean;
   box: { w: number; h: number };
   boxChangedAt: number;
+  /** Which whole-stage arrangement this was ("share" on a phone with a screen share, else "people"). */
+  swap: string;
   rects: Map<string, Rect>;
   elements: Map<string, HTMLElement>;
   /** A speaker hand-over whose incoming picture is still awaited, and the still it shows meanwhile. */
@@ -273,6 +275,9 @@ export function Stage({
         page,
         pinned,
         box,
+        // On a phone a screen share rearranges everything at once; that swap is a cross-fade.
+        swap: phone && !!mainSlot && mainSlot.ref.source === Track.Source.ScreenShare ? "share" : "people",
+        phone,
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `signature` stands for the slots
   }, [signature, layout, page, pinned, box]);
@@ -403,7 +408,7 @@ export function Stage({
       </div>
 
       {paged && (
-        <nav className="flex h-11 shrink-0 items-center justify-center gap-1 text-sm text-muted" aria-label="Gallery pages">
+        <nav className="anim-fade flex h-11 shrink-0 items-center justify-center gap-1 text-sm text-muted" aria-label="Gallery pages">
           <Tip label="Previous page" shortcut="←">
             <button
               className="icon-btn disabled:pointer-events-none disabled:opacity-35 pointer-coarse:size-11"
@@ -481,12 +486,16 @@ function animateStage(
     page,
     pinned,
     box,
+    swap,
+    phone,
   }: {
     slots: Slot[];
     layout: string;
     page: number;
     pinned: boolean;
     box: { w: number; h: number };
+    swap: string;
+    phone: boolean;
   },
 ) {
   const mainSlot = slots[0]?.role === "main" ? slots[0] : null;
@@ -504,6 +513,7 @@ function animateStage(
     pinned,
     box,
     boxChangedAt: boxChanged ? now : (prev?.boxChangedAt ?? 0),
+    swap,
     rects,
     elements,
   };
@@ -549,6 +559,27 @@ function animateStage(
       ],
       { duration: reduced ? 120 : DUR.move, easing: EASE.enter },
     );
+    return;
+  }
+
+  // A phone going into or out of the screen-share arrangement: nearly every tile would have to
+  // cross the others to get to its new place. The two arrangements cross-fade instead.
+  if (phone && prev.swap !== swap) {
+    elements.forEach(land);
+    const ms = reduced ? 120 : DUR.base;
+    for (const [key, el] of prev.elements) {
+      const rect = prev.rects.get(key);
+      if (!rect) continue;
+      const copy = ghostOf(el, rect);
+      layer.prepend(copy);
+      const out = copy.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: "ease-in", fill: "forwards" });
+      out.onfinish = out.oncancel = () => copy.remove();
+      setTimeout(() => copy.remove(), 1000);
+    }
+    for (const slot of slots) {
+      const el = elements.get(slot.key);
+      if (el) track(el, arrive(el, slot.rect, false, ms));
+    }
     return;
   }
 
@@ -644,7 +675,7 @@ function animateStage(
   }
 
   const glideMs = sameView ? DUR.move : DUR.slow;
-  const gliding = reduced || moving.length > MAX_GLIDING ? [] : moving;
+  const gliding = reduced || slots.length > MAX_GLIDING ? [] : moving;
   for (const slot of moving) {
     const el = elements.get(slot.key);
     if (!el) continue;
@@ -672,9 +703,13 @@ function animateStage(
     });
     const el = elements.get(slot.key);
     if (!el || (handover && slot.key === next.mainKey)) continue;
-    track(el, arrive(el, slot.rect, !reduced && arriving.length <= MAX_INDIVIDUAL, fadeMs));
+    // In a small call a newcomer grows in, and waits for the neighbours to make room first:
+    // they glide, and it appears over the last third of their move instead of on top of them.
+    const individual = !reduced && slots.length <= MAX_INDIVIDUAL && arriving.length <= 2;
+    const wait = individual && sameView && gliding.length > 0 ? Math.round((glideMs * 2) / 3) : 0;
+    track(el, arrive(el, slot.rect, individual, fadeMs, wait));
   }
-  if (sameView && leaving.length <= MAX_INDIVIDUAL) {
+  if (sameView && leaving.length <= 4) {
     for (const key of leaving) if (!(handover && key === prev.mainKey)) fadeAway(ghost(key));
   }
 }

@@ -47,9 +47,23 @@ export function useSpeakers(room: Room, participantCount: number, visible: Visib
     const isRemote = (p: Participant) => !p.isLocal;
 
     function switchStage(id: string) {
+      const previous = stageId;
       stageId = id;
       lastSwitch = Date.now();
       setStage(id);
+      // The outgoing speaker takes the incoming one's place in the order. In the speaker view
+      // that means the hand-over changes the main tile and one filmstrip slot, and nothing else
+      // shuffles along.
+      if (previous && previous !== id) {
+        setOrder((list) => {
+          const order = reconcile(list, room.localParticipant.identity, remoteIds());
+          const a = order.indexOf(previous);
+          const b = order.indexOf(id);
+          if (a < 0 || b < 0) return order;
+          [order[a], order[b]] = [order[b], order[a]];
+          return order;
+        });
+      }
     }
 
     /** Loudest confirmed remote speaker right now, if any. */

@@ -347,6 +347,14 @@ body {
   .tile[data-mirror="true"] canvas {
     transform: scaleX(-1);
   }
+  /* What a screen share shows until its first frame arrives; the picture then fades in over it. */
+  .share-wait {
+    transition: opacity var(--dur-base) ease-out;
+  }
+  .tile-media:has(video[data-ready="true"]) .share-wait,
+  .tile-ghost .share-wait {
+    opacity: 0;
+  }
   /* A still copy of a tile, left behind for the length of a cross-fade. */
   .tile-ghost {
     pointer-events: none;
@@ -605,9 +613,18 @@ body {
   animation: dialog-out var(--dur-fast) var(--ease-exit) forwards;
 }
 
-/* The call fades in over the pre-join screen's background rather than cutting to it. */
-.screen-in {
-  animation: fade-in var(--dur-move) ease-out backwards;
+/* The pre-join screen fades away over the call that is already drawn beneath it. */
+.screen-out {
+  animation: fade-out var(--dur-move) ease-in forwards;
+}
+/* One short pulse, for a count that grew (another hand went up). */
+@keyframes nudge {
+  40% {
+    transform: scale(1.08);
+  }
+}
+.anim-nudge {
+  animation: nudge var(--dur-move) var(--ease-move);
 }
 
 /*
@@ -646,6 +663,11 @@ body {
   .anim-spin {
     animation-duration: 1.4s;
   }
+  /* Things that follow a layout change by sliding simply take their new place. */
+  .toast-region,
+  .self-float {
+    transition: none !important;
+  }
   @media (width < 48rem) {
     .panel {
       animation-name: fade-in;
@@ -681,9 +703,12 @@ body {
   :root:has([data-in-call]) .toast-region {
     top: auto;
     left: auto;
-    right: calc(0.75rem + var(--toast-inset, 0rem));
-    bottom: calc(5.75rem + var(--toast-lift, 0rem));
+    right: 0.75rem;
+    bottom: 5.75rem;
     align-items: flex-end;
+    /* Moved by transform, so toasts on screen ride along with an opening panel instead of jumping. */
+    translate: calc(var(--toast-inset, 0rem) * -1) calc(var(--toast-lift, 0rem) * -1);
+    transition: translate var(--dur-move) var(--ease-enter);
   }
 }
 

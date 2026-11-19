@@ -94,8 +94,16 @@ export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): 
 }
 
 /** Fades an element in at `rect`, optionally growing slightly from its centre. */
-export function arrive(el: HTMLElement, rect: Rect, grow: boolean, duration: number = DUR.base): Animation {
-  if (!grow) return el.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: "ease-out" });
+export function arrive(
+  el: HTMLElement,
+  rect: Rect,
+  grow: boolean,
+  duration: number = DUR.base,
+  delay = 0,
+): Animation {
+  // `backwards` keeps it hidden while it waits for its neighbours to make room.
+  const timing = { duration, delay, fill: "backwards" as const };
+  if (!grow) return el.animate([{ opacity: 0 }, { opacity: 1 }], { ...timing, easing: "ease-out" });
   const inset = (1 - SCALE_ENTER) / 2;
   return el.animate(
     [
@@ -105,7 +113,7 @@ export function arrive(el: HTMLElement, rect: Rect, grow: boolean, duration: num
       },
       { opacity: 1, transform: `${place(rect)} scale(1)` },
     ],
-    { duration, easing: EASE.enter },
+    { ...timing, easing: EASE.enter },
   );
 }
 
