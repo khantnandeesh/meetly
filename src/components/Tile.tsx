@@ -39,10 +39,10 @@ export const Tile = memo(TileView, (a, b) =>
   a.className === b.className &&
   a.children === b.children &&
   a.slot === b.slot &&
-  a.rect?.x === b.rect?.x &&
-  a.rect?.y === b.rect?.y &&
-  a.rect?.w === b.rect?.w &&
-  a.rect?.h === b.rect?.h,
+  // A tile that only moved or changed size is not re-rendered: the stage writes its new place
+  // straight onto the element (see placeTiles in Stage.tsx). Re-rendering every tile on every
+  // reflow was the largest single cost of answering a click. Only "placed or not" matters here.
+  !a.rect === !b.rect,
 );
 
 function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect, slot, children }: TileProps) {

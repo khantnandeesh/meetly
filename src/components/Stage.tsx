@@ -264,6 +264,7 @@ export function Stage({
   const signature = slots.map((s) => `${s.key}@${s.rect.x},${s.rect.y},${s.rect.w},${s.rect.h}`).join("|");
 
   useLayoutEffect(() => {
+    if (layerRef.current) placeTiles(layerRef.current, slots);
     if (layerRef.current)
       animateStage(layerRef.current, last, flights, {
         slots,
@@ -435,6 +436,23 @@ export function Stage({
       )}
     </div>
   );
+}
+
+/**
+ * Writes each tile's place onto its element. Tiles are memoised and deliberately not re-rendered
+ * when only their rect changes, so this is what moves them. React still writes the same values
+ * whenever a tile does render, so the two never disagree.
+ */
+function placeTiles(layer: HTMLElement, slots: Slot[]) {
+  const rects = new Map(slots.map((slot) => [slot.key, slot.rect]));
+  layer.querySelectorAll<HTMLElement>(":scope > [data-key]").forEach((el) => {
+    const rect = rects.get(el.dataset.key!);
+    if (!rect) return;
+    const transform = `translate(${rect.x}px, ${rect.y}px)`;
+    if (el.style.transform !== transform) el.style.transform = transform;
+    if (el.style.width !== `${rect.w}px`) el.style.width = `${rect.w}px`;
+    if (el.style.height !== `${rect.h}px`) el.style.height = `${rect.h}px`;
+  });
 }
 
 /**

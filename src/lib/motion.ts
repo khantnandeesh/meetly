@@ -60,8 +60,13 @@ export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): 
   const flags = motionFlags();
   const sx = flags.translateOnly ? 1 : from.w / to.w;
   const sy = flags.translateOnly ? 1 : from.h / to.h;
+  // A tile that keeps its size only slides. Leaving scale out matters: an animated scale, even
+  // of 1, makes the browser re-rasterise the tile's layer before the first frame.
+  const sameSize = Math.abs(sx - 1) < 0.005 && Math.abs(sy - 1) < 0.005;
   const main = el.animate(
-    [{ transform: `${place(from)} scale(${sx}, ${sy})` }, { transform: `${place(to)} scale(1, 1)` }],
+    sameSize
+      ? [{ transform: place(from) }, { transform: place(to) }]
+      : [{ transform: `${place(from)} scale(${sx}, ${sy})` }, { transform: `${place(to)} scale(1, 1)` }],
     { duration, easing: EASE.move },
   );
   if (flags.noInner || (Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02)) return main;
