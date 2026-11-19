@@ -18,6 +18,7 @@ import {
   EyeOff,
   Hand,
   Link2,
+  MicOff,
   LoaderCircle,
   UserMinus,
   UserPlus,
@@ -31,6 +32,7 @@ import { copyText, useIsPhone, usePresence } from "@/lib/hooks";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import { HAND, displayName } from "@/lib/participant";
 import { useCallSettings } from "@/lib/useCallSettings";
+import { noteOwnMicToggle, useCallSounds } from "@/lib/useSounds";
 import { useOffscreenVideoPause } from "@/lib/videoDemand";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
 import { ChatPanel } from "./ChatPanel";
@@ -74,6 +76,9 @@ function Call({ code, token }: { code: string; token: string }) {
   const connection = useConnectionState();
   const [settings, updateSettings] = useCallSettings();
   useOffscreenVideoPause(room);
+  useCallSounds(room, {
+    onHostMuted: () => toast.push({ icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
+  });
 
   // Opt-in handle for load tests and debugging: set localStorage["meetly:debug"] = "1".
   useEffect(() => {
@@ -331,6 +336,7 @@ function Call({ code, token }: { code: string; token: string }) {
       const local = room.localParticipant;
       switch (event.key.toLowerCase()) {
         case "m":
+          noteOwnMicToggle();
           local.setMicrophoneEnabled(!local.isMicrophoneEnabled).catch(() => {});
           break;
         case "v":

@@ -3,6 +3,8 @@
 import { useMediaDeviceSelect, useRoomContext, useTrackToggle } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import {
+  Bell,
+  Check,
   ChevronUp,
   CircleAlert,
   Ellipsis,
@@ -24,7 +26,9 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useDeviceList } from "@/lib/usePreviewMedia";
+import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
+import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
 import { useUnread } from "./ChatStore";
 import { LayoutMenuItems } from "./LayoutMenu";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
@@ -85,7 +89,12 @@ export function ControlBar({
 
   const micButton = (
     <Tip label={micLabel} shortcut={phone ? undefined : "M"}>
-      <button className="ctrl" data-ctl={mic.enabled ? "on" : "off"} aria-label={micLabel} onClick={() => mic.toggle()}>
+      <button className="ctrl" data-ctl={mic.enabled ? "on" : "off"} aria-label={micLabel}
+        onClick={() => {
+          noteOwnMicToggle();
+          mic.toggle();
+        }}
+      >
         {mic.enabled ? <Mic className="size-5" /> : <MicOff className="size-5" />}
       </button>
     </Tip>
@@ -308,7 +317,62 @@ function DeviceMenu({ label, kinds, off }: { label: string; kinds: MediaDeviceKi
 
 /** Mounted only while a menu is open, so device lists are always fresh. */
 function DeviceGroups({ kinds }: { kinds: MediaDeviceKind[] }) {
-  return kinds.map((kind, index) => <DeviceGroup key={kind} kind={kind} separated={index > 0} />);
+  return (
+    <>
+      {kinds.map((kind, index) => (
+        <DeviceGroup key={kind} kind={kind} separated={index > 0} />
+      ))}
+      {kinds.includes("audiooutput") && <SoundGroup />}
+    </>
+  );
+}
+
+const SOUND_LEVELS: { value: SoundLevel; label: string; hint: string; preview: SoundName }[] = [
+  { value: "all", label: "All sounds", hint: "People joining, hands, chat, your mic", preview: "joined" },
+  { value: "important", label: "Important only", hint: "Connection, call ended, muted by host", preview: "connected" },
+  { value: "off", label: "Off", hint: "No interface sounds", preview: "micOff" },
+];
+
+/** How much the interface itself is heard. Choosing a level plays an example of it. */
+function SoundGroup() {
+  const [settings, update] = useSoundSettings();
+  return (
+    <>
+      <div className="menu-sep" />
+      <Dropdown.Label className="menu-label">
+        <Bell className="size-3.5" aria-hidden="true" />
+        Sounds
+      </Dropdown.Label>
+      <Dropdown.RadioGroup
+        value={settings.level}
+        onValueChange={(value) => {
+          const level = SOUND_LEVELS.find((entry) => entry.value === value);
+          if (!level) return;
+          update({ level: level.value });
+          // An example of what this level lets through; "Off" answers with silence.
+          if (level.value !== "off") sounds.play(level.preview, { preview: true });
+        }}
+      >
+        {SOUND_LEVELS.map((level) => (
+          <Dropdown.RadioItem
+            key={level.value}
+            value={level.value}
+            // Stay open: the choice is heard, and can be changed again straight away.
+            onSelect={(event) => event.preventDefault()}
+            className="menu-item pr-10"
+          >
+            <span className="min-w-0">
+              <span className="block font-medium">{level.label}</span>
+              <span className="block text-xs text-muted">{level.hint}</span>
+            </span>
+            <Dropdown.ItemIndicator className="absolute right-3 text-accent">
+              <Check className="size-4" aria-hidden="true" />
+            </Dropdown.ItemIndicator>
+          </Dropdown.RadioItem>
+        ))}
+      </Dropdown.RadioGroup>
+    </>
+  );
 }
 
 function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: boolean }) {

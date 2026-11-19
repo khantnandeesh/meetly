@@ -10,7 +10,8 @@ export const PRESENCE_SOUND_LIMIT = 8;
 const PRESENCE_WINDOW_MS = 350;
 /** Nothing about other people sounds until the room has settled after you join. */
 const SETTLE_MS = 2500;
-const HAND = "hand";
+/** A microphone that goes off this long after your last own toggle was not switched off by you. */
+const OWN_TOGGLE_MS = 1500;
 
 /** The user's sound level and volume, shared with the engine and remembered in this browser. */
 export function useSoundSettings(): [SoundSettings, (patch: Partial<SoundSettings>) => void] {
@@ -22,84 +23,147 @@ export function useSoundSettings(): [SoundSettings, (patch: Partial<SoundSetting
   return [settings, sounds.setSettings];
 }
 
-/**
- * Plays the call's sounds from room events. Mount once inside the call.
- *
- * What is deliberately not here: chat messages (played where the chat toast is raised, so sound
- * and toast can never disagree), "the host muted you" (played where that is detected) and
- * `sounds.unlock()` (must run inside the click that joins the call).
- */
-export function useCallSounds(room: Room): void {
-  useEffect(() => {
-    const startedAt = performance.now();
-    const settled = () => performance.now() - startedAt > SETTLE_MS;
-    const smallCall = () => room.remoteParticipants.size + 1 <= PRESENCE_SOUND_LIMIT;
+/* ------------------------------------------------- provider-neutral policy */
 
-    // One sound per burst of arrivals or departures, however many people it contains.
-    const burst = (name: "joined" | "left") => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      return {
-        add() {
-          if (!settled() || !smallCall()) return;
-          timer ??= setTimeout(() => {
-            timer = undefined;
-            sounds.play(name);
-          }, PRESENCE_WINDOW_MS);
-        },
-        cancel: () => clearTimeout(timer),
-      };
+let ownMicToggleAt = -Infinity;
+/** Call from every control that toggles your own microphone, so a host mute can be told apart. */
+export function noteOwnMicToggle(): void {
+  ownMicToggleAt = performance.now();
+}
+
+/**
+ * What the call sounds like, in terms of things that happen in a call rather than any media
+ * provider's events. Whatever connects to the call (LiveKit today) reports to these; they hold
+ * the rules: who hears what, the settle time after joining, bursts, and the large-call limit.
+ */
+export function createCallSounds(headcount: () => number) {
+  const startedAt = performance.now();
+  const settled = () => performance.now() - startedAt > SETTLE_MS;
+  let lost = false;
+
+  // One sound per burst of arrivals or departures, however many people it contains.
+  const burst = (name: "joined" | "left") => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return {
+      add() {
+        if (!settled()) return sounds.skipped(name, "settling");
+        if (headcount() > PRESENCE_SOUND_LIMIT) return sounds.skipped(name, "large-call");
+        timer ??= setTimeout(() => {
+          timer = undefined;
+          sounds.play(name);
+        }, PRESENCE_WINDOW_MS);
+      },
+      cancel: () => clearTimeout(timer),
     };
-    const arrivals = burst("joined");
-    const departures = burst("left");
+  };
+  const arrivals = burst("joined");
+  const departures = burst("left");
+  const whenSettled = (name: "hand" | "shareStart" | "shareStop") =>
+    settled() ? sounds.play(name) : sounds.skipped(name, "settling");
+
+  return {
+    /** You are in the call. Also right after a dropped connection comes back. */
+    onConnected() {
+      lost = false;
+      sounds.play("connected");
+    },
+    onConnectionLost() {
+      if (!lost) sounds.play("connectionLost");
+      lost = true;
+    },
+    onConnectionRestored() {
+      if (lost) sounds.play("connected");
+      lost = false;
+    },
+    onParticipantJoined: arrivals.add,
+    onParticipantLeft: departures.add,
+    onHandRaised: () => whenSettled("hand"),
+    onScreenShareStarted: () => whenSettled("shareStart"),
+    onScreenShareStopped: () => whenSettled("shareStop"),
+    /**
+     * Your microphone changed. Off without a recent toggle of your own means the host did it:
+     * that gets its own sound instead of the usual tick, never both. Returns true in that case.
+     */
+    onOwnMicChanged(on: boolean): boolean {
+      if (on) {
+        sounds.play("micOn");
+        return false;
+      }
+      if (performance.now() - ownMicToggleAt > OWN_TOGGLE_MS && settled()) {
+        sounds.play("mutedByHost");
+        return true;
+      }
+      sounds.play("micOff");
+      return false;
+    },
+    onOutputDevice: (deviceId: string) => sounds.setOutputDevice(deviceId),
+    dispose() {
+      arrivals.cancel();
+      departures.cancel();
+    },
+  };
+}
+
+/** A chat message arrived while chat was closed. Call where the chat toast is raised. */
+export function playChatMessageSound(): void {
+  sounds.play("message");
+}
+
+/** The call is over for you (you left, were removed, or it dropped for good). */
+export function playCallEndedSound(): void {
+  sounds.play("ended");
+  sounds.suspend();
+}
+
+/* ---------------------------------------------------------- LiveKit adapter */
+
+const HAND = "hand";
+
+/**
+ * Feeds the call sounds from a LiveKit room. Mount once inside the call. This is the only part
+ * that knows LiveKit: it translates room events into the neutral calls above and nothing else.
+ */
+export function useCallSounds(room: Room, { onHostMuted }: { onHostMuted?: () => void } = {}): void {
+  useEffect(() => {
+    const call = createCallSounds(() => room.remoteParticipants.size + 1);
 
     let wasConnected = room.state === ConnectionState.Connected;
-    let lost = false;
+    if (wasConnected) call.onConnected();
     const onConnection = (state: ConnectionState) => {
       if (state === ConnectionState.Connected) {
-        // First connection and a recovered one sound the same: "you are in".
-        if (!wasConnected || lost) sounds.play("connected");
+        if (wasConnected) call.onConnectionRestored();
+        else call.onConnected();
         wasConnected = true;
-        lost = false;
       } else if (state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting) {
-        if (!lost) sounds.play("connectionLost");
-        lost = true;
-      } else if (state === ConnectionState.Disconnected && wasConnected) {
-        sounds.play("ended");
-        sounds.suspend();
+        call.onConnectionLost();
       }
     };
-
     const onAttributes = (changed: Record<string, string>, participant: Participant) => {
-      if (changed[HAND] === "1" && !participant.isLocal && settled()) sounds.play("hand");
+      if (changed[HAND] === "1" && !participant.isLocal) call.onHandRaised();
     };
-
     const isScreen = (publication: TrackPublication) => publication.source === Track.Source.ScreenShare;
     const shareStarted = (publication: TrackPublication) => {
-      if (isScreen(publication) && settled()) sounds.play("shareStart");
+      if (isScreen(publication)) call.onScreenShareStarted();
     };
     const shareStopped = (publication: TrackPublication) => {
-      if (isScreen(publication) && settled()) sounds.play("shareStop");
+      if (isScreen(publication)) call.onScreenShareStopped();
     };
-
-    // Your own microphone, however it was toggled (button, shortcut or the host).
     const isOwnMic = (publication: TrackPublication, participant: Participant) =>
       participant.isLocal && publication.source === Track.Source.Microphone;
     const onMuted = (publication: TrackPublication, participant: Participant) => {
-      if (isOwnMic(publication, participant)) sounds.play("micOff");
+      if (isOwnMic(publication, participant) && call.onOwnMicChanged(false)) onHostMuted?.();
     };
     const onUnmuted = (publication: TrackPublication, participant: Participant) => {
-      if (isOwnMic(publication, participant)) sounds.play("micOn");
+      if (isOwnMic(publication, participant)) call.onOwnMicChanged(true);
     };
-
     const onDevice = (kind: MediaDeviceKind, deviceId: string) => {
-      if (kind === "audiooutput") sounds.setOutputDevice(deviceId);
+      if (kind === "audiooutput") call.onOutputDevice(deviceId);
     };
     const current = room.getActiveDevice("audiooutput");
-    if (current) sounds.setOutputDevice(current);
-    if (wasConnected) sounds.play("connected");
+    if (current) call.onOutputDevice(current);
 
-    room.on(RoomEvent.ParticipantConnected, arrivals.add);
-    room.on(RoomEvent.ParticipantDisconnected, departures.add);
+    room.on(RoomEvent.ParticipantConnected, call.onParticipantJoined);
+    room.on(RoomEvent.ParticipantDisconnected, call.onParticipantLeft);
     room.on(RoomEvent.ConnectionStateChanged, onConnection);
     room.on(RoomEvent.ParticipantAttributesChanged, onAttributes);
     room.on(RoomEvent.TrackPublished, shareStarted);
@@ -110,8 +174,8 @@ export function useCallSounds(room: Room): void {
     room.on(RoomEvent.TrackUnmuted, onUnmuted);
     room.on(RoomEvent.ActiveDeviceChanged, onDevice);
     return () => {
-      room.off(RoomEvent.ParticipantConnected, arrivals.add);
-      room.off(RoomEvent.ParticipantDisconnected, departures.add);
+      room.off(RoomEvent.ParticipantConnected, call.onParticipantJoined);
+      room.off(RoomEvent.ParticipantDisconnected, call.onParticipantLeft);
       room.off(RoomEvent.ConnectionStateChanged, onConnection);
       room.off(RoomEvent.ParticipantAttributesChanged, onAttributes);
       room.off(RoomEvent.TrackPublished, shareStarted);
@@ -121,8 +185,8 @@ export function useCallSounds(room: Room): void {
       room.off(RoomEvent.TrackMuted, onMuted);
       room.off(RoomEvent.TrackUnmuted, onUnmuted);
       room.off(RoomEvent.ActiveDeviceChanged, onDevice);
-      arrivals.cancel();
-      departures.cancel();
+      call.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- onHostMuted is read when it fires
   }, [room]);
 }

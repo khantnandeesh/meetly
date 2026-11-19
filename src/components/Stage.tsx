@@ -5,7 +5,18 @@ import { Track } from "livekit-client";
 import { ChevronLeft, ChevronRight, MonitorUp } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { DIST, DUR, EASE, arrive, ghostOf, glide, prefersReducedMotion, sameRect, type Rect } from "@/lib/motion";
+import {
+  DIST,
+  DUR,
+  EASE,
+  arrive,
+  ghostOf,
+  glide,
+  motionFlags,
+  prefersReducedMotion,
+  sameRect,
+  type Rect,
+} from "@/lib/motion";
 import { Tile } from "./Tile";
 import { avatarColor, initials } from "./ui/Avatar";
 import { Tip } from "./ui/Tip";
@@ -39,7 +50,9 @@ export function useBox<T extends HTMLElement>() {
       const { width, height } = entry.contentRect;
       // Without flushSync React would commit the new layout a frame late, and that one frame
       // would show the old tile sizes inside the new box.
-      flushSync(() => setBox((old) => (old.w === width && old.h === height ? old : { w: width, h: height })));
+      const apply = () => setBox((old) => (old.w === width && old.h === height ? old : { w: width, h: height }));
+      if (motionFlags().noFlushSync) apply();
+      else flushSync(apply);
     });
     observer.observe(element);
     return () => observer.disconnect();
@@ -478,8 +491,11 @@ function animateStage(
   const reduced = prefersReducedMotion();
   const track = (el: HTMLElement, animation: Animation) => {
     flights.set(el, animation);
+    // A cancel event arrives late, after the next glide may have taken over this tile: only the
+    // tile's current animation may clear its state.
     animation.onfinish = animation.oncancel = () => {
-      if (flights.get(el) === animation) flights.delete(el);
+      if (flights.get(el) !== animation) return;
+      flights.delete(el);
       el.style.zIndex = "";
     };
   };
@@ -584,6 +600,8 @@ function animateStage(
   }
 
   const glideMs = sameView ? DUR.move : DUR.slow;
+  const flags = motionFlags();
+  let order = 0;
   const gliding = reduced || moving.length > MAX_GLIDING ? [] : moving;
   for (const slot of moving) {
     const el = elements.get(slot.key);
@@ -595,6 +613,20 @@ function animateStage(
     if (from.w <= 0 || from.h <= 0 || slot.rect.w <= 0 || slot.rect.h <= 0) continue;
     // Tiles that shrink travel above tiles that grow, so nothing is hidden on the way.
     if (from.w * from.h > slot.rect.w * slot.rect.h) el.style.zIndex = "2";
+    if (flags.defer || flags.stagger) {
+      // Experiment: hold the old place for a frame (or a few), then start moving.
+      const hold = el.animate([{ transform: holdAt(from, slot.rect) }, { transform: holdAt(from, slot.rect) }], {
+        duration: 1000,
+      });
+      track(el, hold);
+      const frames = flags.stagger ? 1 + (order++ % 3) : 1;
+      afterFrames(frames, () => {
+        if (flights.get(el) !== hold) return;
+        hold.cancel();
+        track(el, glide(el, from, slot.rect, glideMs));
+      });
+      continue;
+    }
     track(el, glide(el, from, slot.rect, glideMs));
   }
 
@@ -606,6 +638,13 @@ function animateStage(
   if (sameView && leaving.length <= MAX_INDIVIDUAL) {
     for (const key of leaving) if (!(handover && key === prev.mainKey)) fadeAway(ghost(key));
   }
+}
+
+const holdAt = (from: Rect, to: Rect) =>
+  `translate(${from.x}px, ${from.y}px) scale(${from.w / to.w}, ${from.h / to.h})`;
+function afterFrames(count: number, run: () => void) {
+  if (count <= 0) run();
+  else requestAnimationFrame(() => afterFrames(count - 1, run));
 }
 
 /** Calls back once the tile's video has a frame (straight away if it shows an avatar), or after `maxMs`. */

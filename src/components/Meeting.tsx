@@ -6,6 +6,8 @@ import { CircleAlert, Home, LogOut, RotateCcw, Unplug, UserX } from "lucide-reac
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useMounted } from "@/lib/hooks";
+import { sounds } from "@/lib/sounds";
+import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
 import { PreJoin, PreJoinSkeleton } from "./PreJoin";
 import { Logo } from "./ui/Logo";
@@ -34,6 +36,8 @@ export function Meeting({ code }: { code: string }) {
   );
 
   async function join(choices: LocalUserChoices) {
+    // Still inside the click that joins: the only moment a browser lets audio be switched on.
+    sounds.unlock();
     setError(null);
     setJoining(true);
     try {
@@ -69,6 +73,7 @@ export function Meeting({ code }: { code: string }) {
         video={choices.videoEnabled ? { deviceId: choices.videoDeviceId || undefined } : false}
         onDisconnected={(reason) => {
           toast.clear();
+          playCallEndedSound();
           setDeparture({
             minutes: Math.round((Date.now() - session.joinedAt) / 60_000),
             removed: reason === DisconnectReason.PARTICIPANT_REMOVED,

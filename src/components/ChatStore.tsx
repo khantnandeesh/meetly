@@ -3,6 +3,7 @@
 import { useChat } from "@livekit/components-react";
 import { MessageSquare } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { playChatMessageSound } from "@/lib/useSounds";
 import { useToast } from "./ui/Toaster";
 
 type ChatState = ReturnType<typeof useChat> & { seen: number; markSeen: (count: number) => void };
@@ -52,6 +53,7 @@ export function ChatToasts({ open, onReply }: { open: boolean; onReply: () => vo
     if (openNow.current) return;
     const last = fresh.findLast((message) => message.from && !message.from.isLocal);
     if (!last) return;
+    playChatMessageSound();
     // One chat toast at a time (same tag updates it in place); the badge carries the count.
     toast.push({
       tag: "chat",

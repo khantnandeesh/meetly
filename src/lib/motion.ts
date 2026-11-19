@@ -17,6 +17,11 @@ export function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+/** Experiment switches for measuring the motion code; set on window before load. Empty in normal use. */
+export function motionFlags(): Record<string, boolean> {
+  return (typeof window !== "undefined" && (window as unknown as { __meetlyMotionFlags?: Record<string, boolean> }).__meetlyMotionFlags) || {};
+}
+
 export type Rect = { x: number; y: number; w: number; h: number };
 
 export function sameRect(a: Rect, b: Rect): boolean {
@@ -52,13 +57,14 @@ const STEPS = 10;
  * Returns the tile's own animation; the inner ones follow it.
  */
 export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): Animation {
-  const sx = from.w / to.w;
-  const sy = from.h / to.h;
+  const flags = motionFlags();
+  const sx = flags.translateOnly ? 1 : from.w / to.w;
+  const sy = flags.translateOnly ? 1 : from.h / to.h;
   const main = el.animate(
     [{ transform: `${place(from)} scale(${sx}, ${sy})` }, { transform: `${place(to)} scale(1, 1)` }],
     { duration, easing: EASE.move },
   );
-  if (Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02) return main;
+  if (flags.noInner || (Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02)) return main;
 
   const media: Keyframe[] = [];
   const natural: Keyframe[] = [];
