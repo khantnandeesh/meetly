@@ -263,6 +263,8 @@ function Call({ code, token }: { code: string; token: string }) {
   /* ---------------------------------------------------------- notifications */
   // On large screens notifications rise from the stage's bottom-right corner (see globals.css).
   // They stay clear of an open side panel and of whatever already sits in that corner.
+  // In the sidebar view that corner is the main tile's, left of the filmstrip.
+  const beside = view === "sidebar" && others.length > 0;
   const cornerLift =
     participants.length === 1
       ? 9.25 // the invite card
@@ -270,10 +272,10 @@ function Call({ code, token }: { code: string; token: string }) {
         ? floatSelf
           ? 10
           : 3.25 // the page bar, and the self view above it
-        : floatSelf && view !== "sidebar"
+        : floatSelf
           ? 7.25
           : 0;
-  const panelInset = shown ? 23.25 : 0;
+  const panelInset = (shown ? 23.25 : 0) + (beside ? 14.75 : 0);
   useEffect(() => {
     const root = document.documentElement;
     root.style.setProperty("--toast-inset", `${panelInset}rem`);
