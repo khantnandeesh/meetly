@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Other agents' checkouts (each with its own build output) are not this project's source.
+    ".claude/**",
   ]),
 ]);
 
