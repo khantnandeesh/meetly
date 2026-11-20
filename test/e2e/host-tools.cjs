@@ -5,7 +5,7 @@ const micOff = (person) => person.page.getByRole("button", { name: "Unmute micro
 const camOff = (person) => person.page.getByRole("button", { name: "Turn on camera" });
 const menuFor = async (person, name) => {
   await H.openPeople(person);
-  await person.page.getByRole("list", { name: "People in the meeting" }).getByRole("button", { name: `Host controls for ${name}` }).click();
+  await person.page.getByRole("list", { name: "Participants" }).getByRole("button", { name: `Host controls for ${name}` }).click();
 };
 
 module.exports = async function hostTools(browser) {
@@ -147,7 +147,7 @@ module.exports = async function hostTools(browser) {
   await H.openPeople(mo);
   await H.shot(mo, "host-people-panel-phone");
   H.ok("phone: the people sheet holds the host's tools without overflowing", (await mo.page.getByRole("button", { name: "Mute everyone" }).count()) === 1 && (await H.noOverflow(mo)));
-  await mo.page.getByRole("list", { name: "People in the meeting" }).getByRole("button", { name: "Host controls for Pat Guest" }).click();
+  await mo.page.getByRole("list", { name: "Participants" }).getByRole("button", { name: "Host controls for Pat Guest" }).click();
   await H.shot(mo, "host-menu-phone");
   await mo.page.getByRole("menuitem", { name: "Mute microphone" }).click();
   H.ok("phone: muting from the sheet's menu works", await H.until(async () => (await micOff(pat).count()) === 1, 6000));

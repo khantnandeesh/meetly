@@ -277,6 +277,13 @@ module.exports = async function schedule(browser) {
       (await dialog(ada).locator("[data-meeting-link]").getAttribute("data-meeting-link")) === url &&
       (await dialog(ada).getByLabel("Date").count()) === 1,
   );
+  const weekOn = await ada.page.evaluate(() => {
+    const d = new Date(Date.now() + 5 * 60_000);
+    d.setMinutes(Math.ceil(d.getMinutes() / 30) * 30, 0, 0);
+    d.setDate(d.getDate() + 7);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  H.ok("a follow-up starts a week on", (await dialog(ada).getByLabel("Date").inputValue()) === weekOn, `${await dialog(ada).getByLabel("Date").inputValue()} vs ${weekOn}`);
   await H.shot(ada, "schedule-follow-up-desktop");
   await ada.page.keyboard.press("Escape");
   await ada.ctx.close();

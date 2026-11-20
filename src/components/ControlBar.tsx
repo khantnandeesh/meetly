@@ -364,9 +364,12 @@ function PhoneMoreItems({
 }) {
   const [view, setView] = useState<"main" | "layout" | "devices">("main");
   const first = useRef<HTMLDivElement>(null);
-  // Changing level keeps the menu open and puts focus at the top of the new level.
+  const moved = useRef(false);
+  // Changing level keeps the menu open and puts focus at the top of the new level (not when the
+  // menu first opens, where the menu itself takes focus as any other does).
   useEffect(() => {
-    first.current?.focus();
+    if (moved.current) first.current?.focus();
+    moved.current = true;
   }, [view]);
   const open = (next: typeof view) => (event: Event) => {
     event.preventDefault();

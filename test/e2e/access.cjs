@@ -149,7 +149,7 @@ module.exports = async function access(browser) {
 
   /* removing someone, and making people ask from then on */
   await H.openPeople(ada);
-  await ada.page.getByRole("list", { name: "People in the meeting" }).getByRole("button", { name: "Host controls for Ben Okri" }).click();
+  await ada.page.getByRole("list", { name: "Participants" }).getByRole("button", { name: "Host controls for Ben Okri" }).click();
   await ada.page.getByRole("menuitem", { name: "Remove from meeting" }).click();
   await ada.page.getByText("Make new people ask to join").click();
   await H.shot(ada, "remove-dialog-ask-desktop");

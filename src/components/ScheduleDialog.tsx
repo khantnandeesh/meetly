@@ -73,7 +73,12 @@ type Mode = "link" | "schedule" | "follow-up";
 
 function ScheduleForm({ code, mode }: { code: string; mode: Mode }) {
   const link = `${window.location.origin}/${code}`;
-  const [initial] = useState(() => toFieldValues(nextHalfHour()));
+  // A follow-up is most often the same meeting a week on, so that is where it starts.
+  const [initial] = useState(() => {
+    const start = nextHalfHour();
+    if (mode === "follow-up") start.setDate(start.getDate() + 7);
+    return toFieldValues(start);
+  });
   const [opened] = useState(() => Date.now());
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(initial.date);

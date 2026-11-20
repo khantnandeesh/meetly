@@ -125,7 +125,7 @@ export function PeoplePanel({
         className="scroll-quiet relative min-h-0 flex-1 overflow-y-auto"
         tabIndex={0}
         role="list"
-        aria-label="People in the meeting"
+        aria-label="Participants"
       >
         {matches === 0 ? (
           <p className="px-6 pt-10 text-center text-sm leading-relaxed text-muted">
