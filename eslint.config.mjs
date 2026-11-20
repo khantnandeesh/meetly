@@ -20,7 +20,8 @@ const eslintConfig = defineConfig([
   {
     // The browser tests are plain CommonJS scripts, so Playwright can come from wherever Node
     // finds it (a global install via NODE_PATH works) without being a dependency of the app.
-    files: ["test/e2e/**/*.cjs"],
+    // scripts/join-bots.cjs is the same kind of script.
+    files: ["test/e2e/**/*.cjs", "scripts/join-bots.cjs"],
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
 ]);
