@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ArrowUp,
   Check,
   ChevronDown,
   ChevronLeft,
@@ -20,6 +21,7 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { handQueue } from "@/lib/handQueue";
+import { holdList, useListHold } from "@/lib/listHold";
 import { BULK_CONFIRM, FIRST_ROWS, matchesName, oldestFirst, ordinal, people, waitingFor, type Departure } from "@/lib/hostLists";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
@@ -101,21 +103,41 @@ function MainView({
   const [aboveRef, above] = useBox<HTMLDivElement>();
   const [leftOpen, setLeftOpen] = useState(false);
 
+  // A list being read holds still (src/lib/listHold.ts): while it is scrolled or touched, nobody
+  // is added to it or moved in it, so a flood of hands or arrivals never shifts the row under
+  // your finger. What arrived meanwhile waits behind the "N new" pill.
+  const hold = useListHold(boxRef);
+  const [snapshot, setSnapshot] = useState<{ hands: RtcParticipant[]; participants: RtcParticipant[] } | null>(null);
+  if (hold.held && !snapshot) setSnapshot({ hands, participants });
+  if (!hold.held && snapshot) setSnapshot(null);
+  const heldHands = useMemo(() => (snapshot ? holdList(snapshot.hands, hands, identityOf) : { shown: hands, added: 0 }), [snapshot, hands]);
+  const heldPeople = useMemo(
+    () => (snapshot ? holdList(snapshot.participants, participants, identityOf) : { shown: participants, added: 0 }),
+    [snapshot, participants],
+  );
+  const showNew = () => {
+    boxRef.current?.scrollTo({ top: 0 });
+    hold.release();
+  };
+
   useEffect(() => {
     if (cameFrom) document.querySelector<HTMLElement>(`[data-see-all="${cameFrom}"]`)?.focus();
   }, [cameFrom]);
 
   // You, then everyone else A–Z. Speaking never reorders the list, and neither do hands: they
   // have their own section above.
+  const shownPeople = heldPeople.shown;
   const { items, matches } = useMemo(() => {
-    const found = participants
+    const found = shownPeople
       .filter((p) => matchesName(displayName(p), query))
       .sort((a, b) => (a.isLocal !== b.isLocal ? (a.isLocal ? -1 : 1) : displayName(a).localeCompare(displayName(b))));
     const list: Item[] = [];
-    if (found.length > 0) list.push({ kind: "header", key: "h:everyone", label: query.trim() ? "Matches" : "In this meeting", count: found.length });
+    // The count is everyone here now, even while the rows hold still.
+    const searching = query.trim() !== "";
+    if (found.length > 0) list.push({ kind: "header", key: "h:everyone", label: searching ? "Matches" : "In this meeting", count: searching ? found.length : participants.length });
     for (const participant of found) list.push({ kind: "row", key: participant.identity, participant });
     return { items: list, matches: found.length };
-  }, [participants, query]);
+  }, [shownPeople, participants, query]);
 
   const searching = query.trim() !== "";
   const showLeft = isHost && !searching && departures.length > 0;
@@ -168,9 +190,10 @@ function MainView({
       </div>
 
       <div ref={boxRef} onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)} className="scroll-quiet relative min-h-0 flex-1 overflow-y-auto">
+        <NewPill hands={heldHands.added} people={heldPeople.added} onShow={showNew} />
         <div ref={aboveRef}>
           {!searching && <WaitingSection />}
-          {!searching && <HandsSection hands={hands} />}
+          {!searching && <HandsSection hands={hands} shown={heldHands.shown} />}
         </div>
         {matches === 0 ? (
           <p className="px-6 pt-10 text-center text-sm leading-relaxed text-muted">Nobody here is called “{query.trim()}”.</p>
@@ -200,6 +223,32 @@ function MainView({
           />
         )}
       </div>
+    </div>
+  );
+}
+
+const identityOf = (participant: RtcParticipant) => participant.identity;
+
+/**
+ * Over a held list, at its top: how much arrived while it held still. One tap shows it: the hold
+ * ends and the list goes back to the top, where new hands are. It floats in a sticky strip of no
+ * height, so its coming and going never moves a row.
+ */
+function NewPill({ hands, people, onShow }: { hands: number; people: number; onShow: () => void }) {
+  const count = hands + people;
+  if (count === 0) return null;
+  const parts = [hands > 0 && `${hands.toLocaleString("en-US")} raised ${hands === 1 ? "hand" : "hands"}`, people > 0 && `${people.toLocaleString("en-US")} ${people === 1 ? "person" : "people"}`].filter(Boolean);
+  return (
+    <div className="pointer-events-none sticky top-2 z-10 flex h-0 justify-center">
+      <button
+        data-new-pill
+        onClick={onShow}
+        aria-label={`Show what's new: ${parts.join(" and ")}`}
+        className="anim-pop pointer-events-auto inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-accent pr-3.5 pl-3 text-sm font-semibold text-accent-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/0.7)] pointer-coarse:h-11"
+      >
+        <ArrowUp className="size-4" aria-hidden="true" />
+        {count.toLocaleString("en-US")} new
+      </button>
     </div>
   );
 }
@@ -575,9 +624,11 @@ function WaitingView({ onBack }: { onBack: () => void }) {
 /* ----------------------------------------------------------------- hands */
 
 /** Raised hands, in the order they went up. Lower all is one tap for the host and co-hosts. */
-function HandsSection({ hands }: { hands: RtcParticipant[] }) {
+function HandsSection({ hands, shown = hands }: { hands: RtcParticipant[]; /** The rows, which hold still while the list is read. */ shown?: RtcParticipant[] }) {
   const { canModerate, lowerAllHands, setPeopleView } = useHost();
-  if (hands.length === 0) return null;
+  // Rows and the "See all" button follow what is shown, so a held list keeps its height; the
+  // counts are always the current ones.
+  if (shown.length === 0) return null;
   return (
     <section aria-label="Raised hands" className="mb-1">
       <div className="flex h-10 items-end justify-between gap-2 pr-3 pb-0.5 pl-5">
@@ -592,13 +643,13 @@ function HandsSection({ hands }: { hands: RtcParticipant[] }) {
         )}
       </div>
       <ul className="px-2">
-        {hands.slice(0, FIRST_ROWS).map((participant, index) => (
+        {shown.slice(0, FIRST_ROWS).map((participant, index) => (
           <li key={participant.identity} style={{ height: ROW }}>
             <PersonRow participant={participant} hand note={ordinal(index + 1)} />
           </li>
         ))}
       </ul>
-      {hands.length > FIRST_ROWS && (
+      {shown.length > FIRST_ROWS && (
         <button
           data-see-all="hands"
           onClick={() => setPeopleView("hands")}

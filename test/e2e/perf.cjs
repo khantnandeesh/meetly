@@ -134,22 +134,60 @@ module.exports = async function perf(browser) {
     shot: "perf-reactions-200",
   });
 
-  // On a phone, with the People sheet open, 200 hands go up in 10 s in a 231-person meeting.
-  // Measured and printed; the 0.05 budget for it comes with the frozen list (see the report).
-  {
-    const seen = await measure(browser, {
-      viewport: H.PHONE,
-      setup: async (page) => {
-        await page.evaluate(() => window.__sim.join(230));
-        await H.sleep(1500);
-        await page.locator("#toggle-people").click();
-        await page.locator('aside[aria-label="People"]').waitFor();
-        await H.sleep(800);
-      },
-      flood: (page) => rate(page, "hands", 200, 10),
-      shot: "perf-hands-people-sheet-phone",
-    });
-    console.log(`      200 hands, People sheet open, phone: ${summary(seen)}`);
-    H.ok("200 hands with the People sheet open on a phone: no main-thread task over 250 ms", seen.longest <= BUDGET.longestTask, `longest ${seen.longest} ms`);
-  }
+  // On a phone, with the People sheet open, 200 hands go up in a 231-person meeting.
+  // A list being read holds still (src/lib/listHold.ts): scrolled or touched, nobody is added or
+  // moved, and an "N new" pill counts what arrived. Left alone at the top it is live, so the
+  // first hands push it down; that case is measured and printed, not budgeted.
+  await peopleSheet(browser, "at the top, untouched");
+  await peopleSheet(browser, "scrolled");
+  await peopleSheet(browser, "touched");
 };
+
+/** The People sheet on a phone through a flood of hands, read in one of three ways. */
+async function peopleSheet(browser, how) {
+  const a = await host(browser, H.PHONE);
+  try {
+    const { page } = a;
+    await page.evaluate(() => window.__sim.join(230));
+    await H.sleep(1500);
+    await page.locator("#toggle-people").click();
+    // The people list's own scroller: the parent of the list of everyone.
+    const list = page.locator('aside[aria-label="People"] [role="list"][aria-label="Participants"]').locator("..");
+    await list.waitFor();
+    await H.sleep(800);
+    if (how === "scrolled") await list.evaluate((el) => el.scrollBy({ top: 120 }));
+    if (how === "touched") await list.dispatchEvent("pointerdown", { pointerType: "touch", isPrimary: true, bubbles: true });
+    await H.sleep(300);
+    await page.evaluate(() => window.__watch.reset());
+    // A finger rests on the list for 4 s, not 10.
+    await rate(page, "hands", 200, how === "touched" ? 4 : 10);
+    await H.sleep(1000);
+    const seen = await page.evaluate(() => window.__watch.read());
+    const name = `200 hands, People sheet open on a phone, ${how}`;
+    console.log(`      ${name}: ${summary(seen)}`);
+    H.ok(`${name}: no main-thread task over ${BUDGET.longestTask} ms`, seen.longest <= BUDGET.longestTask, `longest ${seen.longest} ms`);
+    const pill = page.locator("[data-new-pill]");
+    const raised = page.locator('aside[aria-label="People"] section[aria-label="Raised hands"] li');
+    await H.shot(a, `perf-hands-people-sheet-phone-${how.replace(/\W+/g, "-")}`);
+    if (how === "at the top, untouched") {
+      H.ok(`${name}: live, so no pill, and the first five hands are listed`, (await pill.count()) === 0 && (await raised.count()) === 5);
+      return;
+    }
+    H.ok(`${name}: layout shift under ${BUDGET.cls}`, seen.cls < BUDGET.cls, `CLS ${seen.cls} ${JSON.stringify(seen.shifts.slice(0, 2))}`);
+    const said = ((await pill.textContent().catch(() => "")) || "").trim();
+    const hands = await page.evaluate(() => window.__meetly.call.participants().filter((p) => p.handRaised).length);
+    H.ok(`${name}: the pill counts the hands that went up meanwhile, and none moved in`, said === `${hands} new` && (await raised.count()) === 0, `"${said}" with ${hands} hands up`);
+    if (how === "scrolled") {
+      await pill.tap();
+      const shown = await H.until(async () => (await pill.count()) === 0 && (await raised.count()) === 5 && (await list.evaluate((el) => el.scrollTop)) === 0, 3000);
+      H.ok(`${name}: one tap on the pill goes to the top and shows them`, shown);
+      await H.shot(a, "perf-hands-people-sheet-phone-after-pill");
+    } else {
+      await page.evaluate(() => window.dispatchEvent(new PointerEvent("pointerup", { pointerType: "touch", isPrimary: true })));
+      const caught = await H.until(async () => (await pill.count()) === 0 && (await raised.count()) === 5, 4000);
+      H.ok(`${name}: lifting the finger lets the list catch up`, caught);
+    }
+  } finally {
+    await a.ctx.close();
+  }
+}
