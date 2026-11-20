@@ -222,7 +222,7 @@ export function ControlBar({
   if (phone) {
     return (
       <footer className="px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Meeting controls">
+        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label={noun === "webinar" ? "Webinar controls" : "Meeting controls"}>
           {micButton}
           {camButton}
           {reactButton}
@@ -261,7 +261,7 @@ export function ControlBar({
         <DataSaverBadge onOpen={onShowQuality} />
       </div>
 
-      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Meeting controls">
+      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label={noun === "webinar" ? "Webinar controls" : "Meeting controls"}>
         <div className="ctrl-split">
           {micButton}
           <DeviceMenu label="Audio settings" kinds={["audioinput", "audiooutput"]} off={!mic.enabled} />

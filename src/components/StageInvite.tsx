@@ -29,6 +29,8 @@ export function StageInvite() {
   const answering = useRef(false);
   const wasInvited = useRef(invited);
   useEffect(() => {
+    // A new invitation starts unanswered, however soon after the last one it comes.
+    if (invited && !wasInvited.current) answering.current = false;
     if (wasInvited.current && !invited && !answering.current) {
       toast.push({ tag: "stage-invite", priority: "you", icon: <UserX className="size-5" />, title: "The host withdrew the invitation" });
     }
@@ -57,11 +59,12 @@ export function StageInvite() {
       if (media.microphone) await call.setEnabled("microphone", true).catch(() => fail("Couldn't start your microphone"));
       if (media.camera) await call.setEnabled("camera", true).catch(() => fail("Couldn't start your camera"));
     } catch (error) {
+      // Not answered after all: it can be tried again, and the host may still withdraw it.
+      answering.current = false;
       fail(yes ? "Couldn't join the stage" : "Couldn't answer the invitation", error);
     } finally {
+      // `answering` stays set: the invitation going away now is your answer, not the host's.
       setBusy(false);
-      // The status change that follows an answer arrives just after it.
-      setTimeout(() => (answering.current = false), 1500);
     }
   };
 

@@ -159,6 +159,18 @@ test("livekit: inviting someone on stage gives them the right to publish and mar
   assert.equal(person.attributes[STAGE_ATTRIBUTE], undefined);
 });
 
+test("livekit: nobody is ever seen with the right to publish and no invitation mark, on the way in or out", async () => {
+  const { host, viewer } = await webinarWithViewer();
+  const updates = () =>
+    lk.calls
+      .filter((call) => call.method === "UpdateParticipant")
+      .map((call) => (call.body.permission ? `publish:${!!(call.body.permission as { canPublish?: boolean }).canPublish}` : `mark:${(call.body.attributes as Record<string, string>)[STAGE_ATTRIBUTE]}`));
+  await stage(host.token, viewer.id, true);
+  assert.deepEqual(updates(), [`mark:${STAGE_INVITED}`, "publish:true"]);
+  await stage(host.token, viewer.id, false);
+  assert.deepEqual(updates().slice(2), ["publish:false", "mark:"]);
+});
+
 test("livekit: a viewer can step down by themselves but cannot invite anyone, themselves included, or move the host", async () => {
   const { host, viewer, person } = await webinarWithViewer();
   assert.equal((await stage(viewer.token, viewer.id, true)).status, 400, "nobody puts themselves on stage");

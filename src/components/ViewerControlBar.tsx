@@ -70,7 +70,7 @@ export function ViewerControlBar({
 
   if (phone) {
     return (
-      <footer className="px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      <footer data-viewer-bar className="px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         <div className="mx-auto flex max-w-xs items-center justify-between" role="toolbar" aria-label="Webinar controls">
           {hand}
           {react}
@@ -81,7 +81,7 @@ export function ViewerControlBar({
     );
   }
   return (
-    <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-4 px-4 pt-1 pb-4">
+    <footer data-viewer-bar className="grid grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-4 px-4 pt-1 pb-4">
       <div className="flex min-w-0 items-center gap-1 text-sm text-muted">
         <LiveCount watching={watching} />
         <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" aria-hidden="true" />

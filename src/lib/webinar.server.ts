@@ -106,9 +106,20 @@ export async function liveKitStage(caller: Caller, request: Extract<HostAction, 
     if (request.on) {
       // Already able to speak (on stage, or invited and not answered yet): nothing to change.
       if (person.permission?.canPublish) return { status: 200 };
-      await service.updateParticipant(room, request.identity, { permission: SPEAKER, attributes: { [STAGE_ATTRIBUTE]: STAGE_INVITED } });
+      // Two steps, in this order, so that no client ever sees the right to publish without the
+      // "invited" mark (which would read as on stage): the mark first, then the right. If the
+      // right cannot be given, the mark goes again; a mark alone means nothing.
+      await service.updateParticipant(room, request.identity, { attributes: { [STAGE_ATTRIBUTE]: STAGE_INVITED } });
+      try {
+        await service.updateParticipant(room, request.identity, { permission: SPEAKER });
+      } catch (error) {
+        await service.updateParticipant(room, request.identity, { attributes: { [STAGE_ATTRIBUTE]: "" } }).catch(() => {});
+        throw error;
+      }
     } else {
-      await service.updateParticipant(room, request.identity, { permission: VIEWER, attributes: { [STAGE_ATTRIBUTE]: "" } });
+      // The reverse: the right goes first, so nobody is ever seen on stage on the way out.
+      await service.updateParticipant(room, request.identity, { permission: VIEWER });
+      await service.updateParticipant(room, request.identity, { attributes: { [STAGE_ATTRIBUTE]: "" } }).catch(() => {});
     }
     return { status: 200 };
   } catch {
