@@ -25,6 +25,7 @@ const WEBINAR_PRESETS = {
 
 const { POST: meetingRoute } = await import("../src/app/api/meeting/route");
 const { POST: tokenRoute } = await import("../src/app/api/token/route");
+const { POST: hostRoute } = await import("../src/app/api/host/route");
 const { readRecord, realtimeKitHostAction } = await import("../src/lib/rtc/server/realtimekit");
 
 type Participant = { id: string; custom_participant_id: string; preset_name: string; name: string; created_at: string };
@@ -78,6 +79,17 @@ class FakeCloudflare {
       meeting.participants.push(person);
       return ok({ ...person, token: `token-${person.id}` });
     }
+    const person = meeting.participants.find((p) => p.id === parts[3]);
+    if (parts[2] === "participants" && person && method === "PATCH" && parts.length === 4) {
+      if (typeof body.preset_name === "string") person.preset_name = body.preset_name;
+      if (typeof body.name === "string") person.name = body.name;
+      return ok(person);
+    }
+    if (parts[2] === "participants" && person && method === "DELETE" && parts.length === 4) {
+      meeting.participants = meeting.participants.filter((p) => p !== person);
+      return ok({});
+    }
+    if (parts[2] === "participants" && person && method === "POST" && parts[4] === "token") return ok({ token: `fresh-${person.id}-${++this.count}` });
     return ok({});
   }
 }
@@ -192,4 +204,34 @@ test("rtk: only the host or a co-host may change someone's place on stage, and o
   const guestId = cf.meetings[1].participants.find((p) => p.name === "Gus")!.custom_participant_id;
   const refused = await realtimeKitHostAction(meetingHost.body.session, { action: "stage", identity: guestId, on: true });
   assert.deepEqual(refused, { status: 400, error: "Only a webinar has a stage." });
+});
+
+test("rtk: a co-host rejoins with a fresh token for the same record, switched to the co-host preset, and back again", async () => {
+  const { body, cookie } = await newWebinar();
+  const code = String(body.code);
+  const host = await join(code, "Hana", cookie);
+  const ben = await join(code, "Ben");
+  assert.deepEqual(ben.body.webinarPresets, { viewer: "meetly-webinar-viewer", cohost: "meetly-webinar-cohost" });
+  const record = () => cf.meetings[0].participants.find((p) => p.name === "Ben")!;
+  const rejoin = async () => {
+    const response = await hostRoute(post({ session: ben.body.session, action: "rejoin" }));
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  assert.equal((await rejoin()).body.authToken !== undefined, true, "the audience may ask; nothing changes for them");
+  assert.equal(record().preset_name, "meetly-webinar-viewer");
+  const made = await realtimeKitHostAction(host.body.session, { action: "coHost", identity: record().custom_participant_id, on: true });
+  assert.equal(made.status, 200);
+  const switched = await rejoin();
+  assert.equal(switched.status, 200);
+  assert.match(String(switched.body.authToken), /^fresh-/);
+  assert.equal(record().preset_name, "meetly-webinar-cohost");
+  assert.ok(cf.calls.some((call) => call.startsWith("PATCH") && call.endsWith(record().id)));
+  // Still the same person: the same record and identity.
+  assert.equal(record().id, ben.body.participantId);
+  await realtimeKitHostAction(host.body.session, { action: "coHost", identity: record().custom_participant_id, on: false });
+  assert.equal((await rejoin()).status, 200);
+  assert.equal(record().preset_name, "meetly-webinar-viewer");
+  // The host is not switched anywhere.
+  const hostRejoin = await hostRoute(post({ session: host.body.session, action: "rejoin" }));
+  assert.equal(hostRejoin.status, 400);
 });

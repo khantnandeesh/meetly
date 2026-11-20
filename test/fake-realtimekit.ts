@@ -297,18 +297,28 @@ export class FakeStage extends EventEmitter {
   joinCalls = 0;
   leaveCalls = 0;
   requests: { displayName: string; userId: string; peerId: string }[] = [];
+  /** Set to make the next grantAccess or kick fail, as a refused socket request would. */
+  failNext: "grant" | "kick" | null = null;
   private set(status: FakeStageStatus) {
     if (status === this.status) return;
     this.status = status;
     this.emit("stageStatusUpdate", status);
   }
   async grantAccess(userIds: string[]) {
+    if (this.failNext === "grant") {
+      this.failNext = null;
+      throw new Error("grant refused");
+    }
     this.granted.push(userIds);
   }
   async denyAccess(userIds: string[]) {
     this.denied.push(userIds);
   }
   async kick(userIds: string[]) {
+    if (this.failNext === "kick") {
+      this.failNext = null;
+      throw new Error("kick refused");
+    }
     this.kicked.push(userIds);
     return { id: "kick", payload: new Uint8Array() };
   }
