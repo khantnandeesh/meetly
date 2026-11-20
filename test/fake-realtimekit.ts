@@ -198,7 +198,18 @@ export class FakeParticipants extends EventEmitter {
     this.accepted.push(id);
     this.waitlisted.remove(id);
   }
+  /** Calls to acceptAllWaitingRoomRequest, each with the ids it was given. `failAccept` makes the next one reject. */
+  acceptAllCalls: string[][] = [];
+  failAccept = false;
+  async acceptAllWaitingRoomRequest(ids: string[]) {
+    this.acceptAllCalls.push(ids);
+    if (this.failAccept) throw new Error("socket closed");
+    for (const id of ids) this.acceptWaitingRoomRequest(id);
+  }
+  /** Ids for which rejectWaitingRoomRequest rejects. */
+  failReject = new Set<string>();
   async rejectWaitingRoomRequest(id: string) {
+    if (this.failReject.has(id)) throw new Error("socket closed");
     this.rejected.push(id);
     this.waitlisted.remove(id);
   }

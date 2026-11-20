@@ -9,7 +9,7 @@ import {
   SAVER_FPS,
   SAVER_HEIGHT,
   SAVER_WIDTH,
-  answerEach,
+  bulkError,
   checkNewPoll,
   createReactionLimits,
   isReaction,
@@ -290,6 +290,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private readonly removed = new Map<string, RtcChatMessage>();
   private cohosts: string[];
   private gate: JoinAccess;
+  /** Reactions allowed, as our server recorded it: at the moment of joining, and again whenever a client says it changed. */
+  private reactionsOn: boolean;
   /** You asked to join and are in RealtimeKit's waiting room. */
   private waitlisted = false;
   private waiters: RtcWaiter[] = [];
@@ -373,6 +375,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.gate = grant.access ?? "open";
     this.pinId = grant.pin ?? null;
     this.closedPolls = new Set(grant.closedPolls ?? []);
+    this.reactionsOn = grant.reactions !== false;
     const unavailable = effects.blurUnavailable();
     this.fx = {
       noiseSuppression: choices.noiseSuppression !== false,
@@ -692,9 +695,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
-  /** Always true for now: there is no switch to turn reactions off yet. */
   get reactionsAllowed(): boolean {
-    return true;
+    return this.reactionsOn;
+  }
+
+  /** While reactions are off, the host and co-hosts can still send them. */
+  private maySendReactions(identity: string): boolean {
+    return this.reactionsOn || (!!identity && (identity === this.hostIdentity || this.cohosts.includes(identity)));
   }
 
   /** RealtimeKit's waiting room, as far as your preset lets you answer it. */
@@ -714,6 +721,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const access: JoinAccess = data.access === "ask" || data.access === "locked" ? data.access : "open";
     const pin = typeof data.pin === "string" ? data.pin : null;
     const closed = Array.isArray(data.closedPolls) ? data.closedPolls.filter((id): id is string => typeof id === "string") : [];
+    const reactions = data.reactions !== false;
+    if (reactions !== this.reactionsOn) {
+      this.reactionsOn = reactions;
+      this.emit("reactionsAllowed");
+    }
     if (closed.slice().sort().join() !== Array.from(this.closedPolls).sort().join()) {
       this.closedPolls = new Set(closed);
       this.readPolls();
@@ -752,12 +764,30 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * camera; lowering hands is a message between clients, as raising one is.
    */
   async moderate(action: HostAction): Promise<void> {
-    if (action.action === "reactions" || action.action === "stage") throw notAvailableYet(action.action);
+    if (action.action === "stage") throw notAvailableYet(action.action);
     const meeting = this.meeting;
     if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     if (action.action === "admitAll" || action.action === "denyAll") {
-      const verb = action.action === "admitAll" ? "admit" : "deny";
-      return answerEach(action.identities, verb, (identity) => this.moderate({ action: verb, identity }));
+      // One request to our server however many are waiting; then the waiting room is answered
+      // from here. Anyone who stopped asking in the meantime is left out: that is not a failure.
+      await this.api({ session: this.grant.session, ...action });
+      const present = new Set(meeting.participants.waitlisted.toArray().map((p) => p.id));
+      const asking = action.identities.filter((id) => present.has(id));
+      if (asking.length === 0) return;
+      if (action.action === "admitAll") {
+        // RealtimeKit lets everyone in with one message; it does not say who, if anyone, it missed.
+        // Some builds of the SDK return nothing here rather than a promise; `await` takes either.
+        try {
+          await meeting.participants.acceptAllWaitingRoomRequest(asking);
+        } catch {
+          throw bulkError("admit", asking);
+        }
+        return;
+      }
+      const failed: string[] = [];
+      for (const id of asking) await meeting.participants.rejectWaitingRoomRequest(id).catch(() => failed.push(id));
+      if (failed.length > 0) throw bulkError("deny", failed);
+      return;
     }
     // Sent first: afterwards there is nobody left to tell.
     if (action.action === "end") await this.tell(ENDING_MESSAGE);
@@ -768,6 +798,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       case "remove":
       case "pin":
       case "closePoll":
+      case "reactions":
         await this.refreshRoles().catch(() => {});
         await this.tell(ROLES_MESSAGE);
         break;
@@ -1322,7 +1353,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   async sendReaction(emoji: string): Promise<void> {
     const meeting = this.meeting;
-    if (!isReaction(emoji) || !meeting || !this.joined || !this.limits.maySend()) return;
+    if (!isReaction(emoji) || !meeting || !this.joined) return;
+    if (!this.maySendReactions(this.self.identity) || !this.limits.maySend()) return;
     this.emit("reaction", this.self, emoji);
     await meeting.participants.broadcastMessage(REACTION_MESSAGE, { peerId: meeting.self.id, emoji });
   }
@@ -1662,7 +1694,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       const own = payload.peerId === self.id;
       if (type === REACTION_MESSAGE) {
         const sender = typeof payload.peerId === "string" ? this.peers.get(payload.peerId) : undefined;
-        if (sender && isReaction(payload.emoji) && this.limits.mayReceive(payload.peerId as string)) {
+        // Off means off: a reaction from somebody who may not send one is dropped, whatever sent it.
+        // RealtimeKit does not say who sent a broadcast, so this trusts the `peerId` it names.
+        if (!sender || !isReaction(payload.emoji) || !this.maySendReactions(sender.person.identity)) return;
+        if (this.limits.mayReceive(payload.peerId as string)) {
           this.emit("reaction", sender.person, payload.emoji);
         }
         return;

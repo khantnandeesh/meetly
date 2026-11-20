@@ -285,6 +285,18 @@ Every host action is a request to `/api/host`, which works out from the caller's
 and the meeting's record what they may do. Co-hosts can do everything except end the call and
 choose co-hosts, and cannot act on the host.
 
+Admit all and Deny all are one request however many people are waiting. If some of them could
+not be answered, the host gets one notification with how many, and "Try again" answers just
+those. On RealtimeKit our server only says yes, and the host's own browser then answers the
+waiting room through the SDK (one message for Admit all, one per person for Deny all).
+
+**Allow reactions** (People › ⋯, host and co-hosts) is kept in the meeting's record and is
+enforced client-side only. Each browser disables its own react button and drops reactions that
+arrive from anyone but the host and co-hosts while it is off, but reactions travel between
+browsers without passing our server, so a modified client can still send one to anyone whose
+browser does not drop it. On RealtimeKit a reaction names its sender itself, so one that claims
+to come from the host is believed.
+
 On LiveKit the record is the room's metadata, kept for a day after the last person leaves; after
 that the code is new again. People who have to ask wait in a second room (`<code>.lobby`) with a
 token that can do nothing, so nothing of the meeting reaches them; being let in sends them a

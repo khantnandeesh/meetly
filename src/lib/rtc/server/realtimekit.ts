@@ -51,6 +51,8 @@ const PIN = "meetly-pin:";
 const POLL_CLOSED = "meetly-poll-closed:";
 /** Polls are ended a handful at a time; past this, something other than a person is asking. */
 const MAX_CLOSED_POLLS = 40;
+/** "meetly-reactions:off": the host or a co-host turned reactions off. No statement means they are allowed. */
+const REACTIONS_OFF = "meetly-reactions:off";
 const isMarker = (p: Participant) => p.custom_participant_id.startsWith("meetly-");
 
 type Config = {
@@ -184,6 +186,8 @@ type MeetingRecord = {
   pin: string | null;
   /** Ids of RealtimeKit polls that were ended. */
   closedPolls: string[];
+  /** People may send reactions. */
+  reactions: boolean;
   markers: Participant[];
 };
 
@@ -206,6 +210,7 @@ export function readRecord(participants: Participant[], hostPreset: string, canA
     access,
     pin: pins.length > 0 ? pins[pins.length - 1].custom_participant_id.slice(PIN.length) : null,
     closedPolls: Array.from(new Set(tagged(POLL_CLOSED))),
+    reactions: !markers.some((m) => m.custom_participant_id === REACTIONS_OFF),
     markers,
   };
 }
@@ -268,6 +273,8 @@ export type RealtimeKitJoin = {
   canAsk: boolean;
   pin: string | null;
   closedPolls: string[];
+  /** Reactions allowed at the moment of joining. */
+  reactions: boolean;
 };
 
 export type RealtimeKitJoinOutcome =
@@ -308,6 +315,7 @@ function grant(
     canAsk: c.knockPreset !== null,
     pin: record?.pin ?? null,
     closedPolls: record?.closedPolls ?? [],
+    reactions: record?.reactions ?? true,
   };
 }
 
@@ -382,17 +390,37 @@ export async function createRealtimeKitMeeting(code: string): Promise<{ key: str
 }
 
 /**
- * What the pre-join screen may know before asking to join. How many people are in the meeting
- * is not known: the participant records say who may join, not who is there, and asking
- * RealtimeKit who is there is rate-limited.
+ * How many people are connected to the meeting right now, from the active session's own count,
+ * or null if Cloudflare would not say. No session answers 404, which means nobody is there.
+ *
+ * This is one REST call, made once per pre-join screen, never repeated while it is open. It is
+ * not the SDK's `getAllJoinedPeers()`, which is limited to 10 calls a minute per participant.
+ */
+async function liveCount(c: Config, meetingId: string): Promise<number | null> {
+  const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
+  if (!result.ok) return result.status === 404 ? 0 : null;
+  if (result.data.status === "ENDED") return 0;
+  const count = result.data.live_participants;
+  return typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+}
+
+/**
+ * What the pre-join screen may know before asking to join. The participant records say who may
+ * join, not who is there, so how many are there comes from the active session (see `liveCount`).
  */
 export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<MeetingPeek> {
   const c = config();
   try {
     const meeting = c ? await findMeeting(c, code) : null;
-    if (!c || !meeting) return { access: "open", host: false, count: null };
-    const record = readRecord(await listParticipants(c, meeting.id), c.hostPreset, c.knockPreset !== null);
-    return { access: record.access, host: !!pass.key && record.hosts.some((p) => p.id === pass.key), count: null };
+    if (!c) return { access: "open", host: false, count: null };
+    // A code nobody has used yet is an empty meeting.
+    if (!meeting) return { access: "open", host: false, count: 0 };
+    const [participants, count] = await Promise.all([
+      listParticipants(c, meeting.id),
+      liveCount(c, meeting.id).catch(() => null),
+    ]);
+    const record = readRecord(participants, c.hostPreset, c.knockPreset !== null);
+    return { access: record.access, host: !!pass.key && record.hosts.some((p) => p.id === pass.key), count };
   } catch {
     return { access: "open", host: false, count: null };
   }
@@ -400,7 +428,13 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
 
 /* --------------------------------------------------------------- moderation */
 
-export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess; pin: string | null; closedPolls: string[] };
+export type RealtimeKitRoles = {
+  coHosts: string[];
+  access: JoinAccess;
+  pin: string | null;
+  closedPolls: string[];
+  reactions: boolean;
+};
 
 /**
  * Moderation, and `roles`: the one thing here any participant may ask, since RealtimeKit has no
@@ -426,7 +460,16 @@ export async function realtimeKitHostAction(
     const me = record.people.find((p) => p.id === session.participantId);
     if (!me) return DENIED;
     if (request.action === "roles") {
-      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access, pin: record.pin, closedPolls: record.closedPolls } };
+      return {
+        status: 200,
+        data: {
+          coHosts: coHostIdentities(record),
+          access: record.access,
+          pin: record.pin,
+          closedPolls: record.closedPolls,
+          reactions: record.reactions,
+        },
+      };
     }
     const role = me.preset_name === c.hostPreset ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
     if (role === "guest") return DENIED;
@@ -477,6 +520,20 @@ export async function realtimeKitHostAction(
     switch (request.action) {
       case "lowerAllHands":
         return { status: 200 };
+      // One request however many are waiting. As with one person, the caller's own client then
+      // answers the waiting room, and RealtimeKit checks the caller's preset for it.
+      case "admitAll":
+      case "denyAll":
+        return { status: 200 };
+      case "reactions": {
+        if (request.allowed === record.reactions) return { status: 200 };
+        if (!request.allowed) {
+          const added = await addMarker(c, session.meetingId, REACTIONS_OFF);
+          return added.ok ? { status: 200 } : UNREACHABLE;
+        }
+        const cleared = await removeMarkers(c, session.meetingId, record, (fact) => fact === REACTIONS_OFF);
+        return cleared ? { status: 200 } : UNREACHABLE;
+      }
       case "muteAll": {
         const done = await api(c, "POST", `${session_}/mute-all`, { allow_unmute: true });
         return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the meeting." };
