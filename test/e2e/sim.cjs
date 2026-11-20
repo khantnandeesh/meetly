@@ -118,10 +118,10 @@ const install = () => {
       waiters = [];
       call.emit("waiting");
     },
-    chat(n) {
+    chat(n, text) {
       for (let i = 0; i < n; i++) {
         chatCache = null;
-        chat = [...chat, { id: `sim-chat-${seq++}`, timestamp: Date.now(), message: `Message ${seq}`, from: { identity: "sim-x", name: "Sam Sender", isLocal: false } }];
+        chat = [...chat, { id: `sim-chat-${seq++}`, timestamp: Date.now(), message: text || `Message ${seq}`, from: { identity: "sim-x", name: "Sam Sender", isLocal: false } }];
         call.emit("chat");
       }
     },
@@ -135,6 +135,12 @@ const install = () => {
     },
     mutedByHost() {
       call.emit("localMic", false);
+    },
+    /** Your connection reads as poor from now on (the weak-connection banner follows after its hold). */
+    poorConnection() {
+      const quality = { ...call.quality(), connection: "poor" };
+      call.quality = () => quality;
+      call.emit("quality");
     },
   };
 };
