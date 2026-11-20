@@ -155,11 +155,11 @@ test("rtk: Admit all lets in everyone it can, and says how many it could not", a
   assert.deepEqual(meeting.participants.accepted, ["w1", "w3"]);
 });
 
-test("rtk: the reactions switch and the stage are refused as not available yet, without asking anyone", async () => {
+test("rtk: the reactions switch is refused as not available yet, and a meeting has no stage, without asking anyone", async () => {
   const { call, meeting, requests, stageEvents } = await rtk({ host: true });
   meeting.arrive(new FakeParticipant("p1", "Grace"));
   await assert.rejects(call.moderate({ action: "reactions", allowed: false }), /isn't available yet/);
-  await assert.rejects(call.moderate({ action: "stage", identity: "m-p1", on: true }), /isn't available yet/);
+  await assert.rejects(call.moderate({ action: "stage", identity: "m-p1", on: true }), { message: "Only a webinar has a stage." });
   assert.equal(requests.length, 0);
   assert.deepEqual([meeting.stage.granted, meeting.stage.denied], [[], []]);
   assert.equal(call.reactionsAllowed, true);

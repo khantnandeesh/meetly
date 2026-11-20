@@ -59,7 +59,7 @@ and rebuild. Only the chosen provider's SDK is downloaded, and only once Join is
 | Provider | Variables |
 | --- | --- |
 | `livekit` | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` |
-| `realtimekit` | `CLOUDFLARE_ACCOUNT_ID`, `REALTIMEKIT_APP_ID`, `REALTIMEKIT_HOST_PRESET`, `REALTIMEKIT_GUEST_PRESET`, `CLOUDFLARE_API_TOKEN`, `MEETLY_SESSION_SECRET`, and optionally `REALTIMEKIT_KNOCK_PRESET` |
+| `realtimekit` | `CLOUDFLARE_ACCOUNT_ID`, `REALTIMEKIT_APP_ID`, `REALTIMEKIT_HOST_PRESET`, `REALTIMEKIT_GUEST_PRESET`, `CLOUDFLARE_API_TOKEN`, `MEETLY_SESSION_SECRET`, and optionally `REALTIMEKIT_KNOCK_PRESET`, `REALTIMEKIT_WEBINAR_HOST_PRESET` and `REALTIMEKIT_WEBINAR_VIEWER_PRESET` (see [Webinars](#webinars)) |
 
 For RealtimeKit, create an app and two presets in it: a host preset that may mute and remove
 participants, and a guest preset that may not. Both need to publish audio, video and screen
@@ -290,6 +290,46 @@ that the code is new again. People who have to ask wait in a second room (`<code
 token that can do nothing, so nothing of the meeting reaches them; being let in sends them a
 token for the meeting itself. On RealtimeKit the host's record lapses once the meeting is empty
 and the host has not joined for thirty days.
+
+## Webinars
+
+"New webinar" (under the arrow next to New meeting on the home page) makes a link whose record
+says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
+and a meeting's link cannot become a webinar. The browser that made it is the host. Everyone else
+joins the audience: they watch and listen, raise a hand, react and vote in polls, and have no
+microphone, camera, screen share or tile. Chat is read-only for them.
+
+The host (or a co-host, on LiveKit) brings someone on stage by inviting them. The invitation asks
+them first: nothing of theirs is sent until they say yes, and they or the host can send them back
+to the audience at any time, which stops whatever they were sending.
+
+How many may watch at once is `MEETLY_WEBINAR_VIEWER_CAP` (250 unless set). Past it, people are
+told "This webinar is full" and can try again; the host always gets in. Every check made before
+someone joins a webinar is in `src/lib/webinarGate.server.ts`.
+
+The record is marked like this, for anything on the server that needs to know:
+
+- **LiveKit:** `mode: "webinar"` in the room's metadata (`parseRoomMeta(...).mode` in
+  `src/lib/host.server.ts`). The audience's tokens cannot publish, so LiveKit itself refuses
+  their media. Inviting someone is `RoomService.updateParticipant`: our server gives them the
+  right to publish together with a `stage: "invited"` attribute, and they count as audience until
+  their own client clears it by saying yes. Sending them back takes the right away again.
+  `src/lib/webinar.server.ts` holds those rules; anyone may send themselves back.
+- **RealtimeKit:** one more `meetly-…` record, `meetly-mode:webinar` (`readRecord(...).mode` in
+  `src/lib/rtc/server/realtimekit.ts`). The host joins with `REALTIMEKIT_WEBINAR_HOST_PRESET`
+  (`meetly-webinar-host` in production) and goes straight on stage; the audience with
+  `REALTIMEKIT_WEBINAR_VIEWER_PRESET` (`meetly-webinar-viewer`), whose media is "can request".
+  The stage is RealtimeKit's own (`meeting.stage`): inviting is `grantAccess`, which puts them in
+  `ACCEPTED_TO_JOIN_STAGE`; saying yes is their `stage.join()`; sending back is `kick` (on stage)
+  or `denyAccess` (invited, not answered). Our server checks the caller is the host or a co-host
+  first. Co-hosts join with the audience's preset, which cannot change the stage, so on
+  RealtimeKit only the host can invite. Who is on stage is read from the participants the SDK
+  already announced and their `stageStatusUpdate` events; `getAllJoinedPeers()` (10 calls a
+  minute) is never called. The audience limit is counted from the active session's
+  `live_participants`, which includes the people on stage.
+
+Viewer names are shown to the host and co-hosts only, by the interface. On both providers the
+audience is in the same room as everyone else, so a modified client could still read them.
 
 ## How it fits together
 

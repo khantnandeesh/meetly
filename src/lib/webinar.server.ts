@@ -1,7 +1,7 @@
 import { GONE, NOT_THE_HOST, OWN_CONTROLS, DENIED, type HostActionResult } from "./rtc/hostAction";
 import { STAGE_ATTRIBUTE, STAGE_INVITED } from "./rtc/stage";
 import type { HostAction } from "./rtc/types";
-import { roomService, type Caller } from "./host.server";
+import { parseRoomMeta, roomService, type Caller } from "./host.server";
 
 /**
  * Webinars on LiveKit, on the server: who may publish, and how many may watch.
@@ -22,6 +22,18 @@ const SPEAKER = { ...VIEWER, canPublish: true };
 
 const NOT_A_WEBINAR = { status: 400, error: "Only a webinar has a stage." } as const satisfies HostActionResult;
 const HOST_STAYS = { status: 400, error: "The host stays on stage." } as const satisfies HostActionResult;
+
+/** Whether the room's record says it is a webinar. False if LiveKit could not be asked. */
+export async function liveKitIsWebinar(room: string): Promise<boolean> {
+  const service = roomService();
+  if (!service) return false;
+  try {
+    const [existing] = await service.listRooms([room]);
+    return !!existing && parseRoomMeta(existing.metadata).mode === "webinar";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * How many people are watching (in the room, unable to publish) right now. One call that lists

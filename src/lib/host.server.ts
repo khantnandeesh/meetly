@@ -300,7 +300,7 @@ export function readCallerToken(
  * Who is calling, for something any participant may do (chat): the token says who they are, and
  * the room confirms they are in it right now, under which name. Null otherwise.
  */
-export async function liveKitCaller(token: string): Promise<{ room: string; identity: string; name: string } | null> {
+export async function liveKitCaller(token: string): Promise<{ room: string; identity: string; name: string; canPublish: boolean } | null> {
   const c = config();
   const service = roomService();
   if (!c || !service) return null;
@@ -308,7 +308,7 @@ export async function liveKitCaller(token: string): Promise<{ room: string; iden
   if (!who) return null;
   try {
     const person = await service.getParticipant(who.room, who.identity);
-    return { ...who, name: person.name };
+    return { ...who, name: person.name, canPublish: !!person.permission?.canPublish };
   } catch {
     return null;
   }
