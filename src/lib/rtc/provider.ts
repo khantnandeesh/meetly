@@ -1,5 +1,5 @@
 import { RTC_PROVIDER } from "./config";
-import type { JoinAccess, JoinGrant, RtcProviderModule } from "./types";
+import type { JoinGrant, MeetingPeek, RtcProviderModule } from "./types";
 
 export { RTC_PROVIDER };
 
@@ -48,7 +48,7 @@ export async function createMeeting(): Promise<string | null> {
   return (await meeting<{ code: string }>({ action: "create" }))?.code ?? null;
 }
 
-/** What can be known about a meeting before joining it: who may join, and whether this browser is its host. */
-export async function peekMeeting(code: string): Promise<{ access: JoinAccess; host: boolean } | null> {
+/** What can be known about a meeting before joining it (see `MeetingPeek`). Null if the server could not be asked. */
+export async function peekMeeting(code: string): Promise<MeetingPeek | null> {
   return meeting({ action: "peek", code });
 }

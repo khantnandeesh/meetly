@@ -601,7 +601,11 @@ test("a host whose preset may answer the waiting room sees who is waiting; nobod
       meeting.participants.waitlisted.set("w0", new FakeParticipant("w0", "Early"));
     },
   });
-  assert.deepEqual(host.call.waiting(), [{ id: "w0", name: "Early" }], "people already waiting when the host joined");
+  assert.deepEqual(
+    host.call.waiting().map(({ id, name }) => ({ id, name })),
+    [{ id: "w0", name: "Early" }],
+    "people already waiting when the host joined",
+  );
   host.meeting.participants.waitlisted.add(new FakeParticipant("w1", "Walt"));
   assert.deepEqual(host.call.waiting().map((person) => person.name), ["Early", "Walt"]);
   assert.equal(host.count("participantJoined"), 0, "someone waiting has not joined");

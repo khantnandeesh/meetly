@@ -9,8 +9,9 @@ const passSecret = () => (RTC_PROVIDER === "realtimekit" ? realtimeKitPassSecret
 /**
  * The meeting itself, before anyone is in it.
  *
- * { action: "create" }       → { code }            a new meeting; this browser is its host
- * { action: "peek", code }   → { access, host }    what the pre-join screen may know
+ * { action: "create" }       → { code }                  a new meeting; this browser is its host
+ * { action: "peek", code }   → { access, host, count }   what the pre-join screen may know
+ *                                                        (`MeetingPeek` in src/lib/rtc/types.ts)
  *
  * Creating never fails outright: if the provider cannot be reached the code is still returned,
  * and the first person into it becomes host instead.

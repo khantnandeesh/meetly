@@ -1,4 +1,4 @@
-import { POLL_LIMITS, REACTIONS, type NewPoll } from "./types";
+import { POLL_LIMITS, REACTIONS, type NewPoll, type RtcWaiter } from "./types";
 
 /**
  * The few things both adapters do the same way: talking to our own /api/host, and the rules for
@@ -23,6 +23,47 @@ export const postHost: HostApi = async (body) => {
   if (!response.ok) throw new Error(typeof data?.error === "string" ? data.error : "That didn't work. Try again.");
   return data ?? {};
 };
+
+/**
+ * The people asking to join, each with when they started waiting. `firstSeen` is the adapter's
+ * memory of when this browser first saw each of them. It stands in where the provider gives no
+ * time, and caps one that is later (a clock ahead of ours). Anyone no longer asking is forgotten.
+ */
+export function withSince(
+  asking: { id: string; name: string; since?: number }[],
+  firstSeen: Map<string, number>,
+  now: number = Date.now(),
+): RtcWaiter[] {
+  const waiters = asking.map(({ id, name, since }) => {
+    const seen = firstSeen.get(id) ?? now;
+    firstSeen.set(id, seen);
+    return { id, name, since: since === undefined ? seen : Math.min(since, seen) };
+  });
+  const present = new Set(asking.map((person) => person.id));
+  for (const id of Array.from(firstSeen.keys())) if (!present.has(id)) firstSeen.delete(id);
+  return waiters;
+}
+
+/**
+ * Admit all and Deny all, for now one person at a time through the single-person request.
+ * It carries on past a failure, then rejects once with how many people could not be answered.
+ */
+export async function answerEach(
+  identities: string[],
+  verb: "admit" | "deny",
+  one: (identity: string) => Promise<void>,
+): Promise<void> {
+  let failed = 0;
+  for (const identity of identities) await one(identity).catch(() => failed++);
+  if (failed > 0) throw new Error(`Couldn't ${verb} ${failed === 1 ? "1 person" : `${failed} people`}. Try again.`);
+}
+
+/** A host action that neither adapter carries out yet. The message is fit to show. */
+export function notAvailableYet(action: "reactions" | "stage"): Error {
+  return new Error(
+    action === "reactions" ? "Turning reactions off isn't available yet." : "Inviting people on stage isn't available yet.",
+  );
+}
 
 /** LiveKit: topic of our server's message to someone in the lobby that carries their way in. */
 export const ADMIT_TOPIC = "meetly-admit";
