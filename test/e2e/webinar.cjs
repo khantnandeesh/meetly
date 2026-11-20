@@ -276,9 +276,21 @@ module.exports = async function webinar(browser) {
   H.ok("…and removes their right to publish", await H.until(async () => (await canPublish(wes)) === false, 6000));
 
   /* a co-host moderates from the audience */
+  // The switch can be over within one look on a fast machine, so the page notes what it showed.
+  await call(wes, () => {
+    window.__switchShown = [];
+    new MutationObserver(() => {
+      const shown = document.querySelector("[data-switching]");
+      if (shown) window.__switchShown.push(shown.textContent.trim());
+    }).observe(document.body, { childList: true, subtree: true });
+  });
   await audience.getByRole("button", { name: "Host controls for Wes Watcher" }).click();
   await host.page.getByRole("menuitem", { name: "Make co-host" }).click();
-  H.ok("made co-host, the client says Switching to co-host…", await H.until(async () => (await wes.page.locator("[data-switching='cohost']").count()) === 1, 6000));
+  H.ok(
+    "made co-host, the client says Switching to co-host…",
+    await H.until(() => call(wes, () => window.__switchShown.includes("Switching to co-host…")), 8000),
+    await call(wes, () => window.__switchShown.join()),
+  );
   H.ok("…and is back a moment later, still off stage", await H.until(async () => (await wes.page.locator("[data-switching]").count()) === 0 && (await watchingScreen(wes).count()) === 1, 15000));
   H.ok("…as the same person", (await H.identity(wes)) === wesId);
   const peopleButton = wes.page.locator("header").getByRole("button", { name: "People" });
