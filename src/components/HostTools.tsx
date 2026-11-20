@@ -108,10 +108,12 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
     async (action: HostAction, done: { icon: React.ReactNode; title: string } | null, failed: string) => {
       try {
         await call.moderate(action);
-        if (done) toast.push(done);
+        if (done) toast.push({ ...done, priority: "you" });
         return true;
       } catch (error) {
         toast.push({
+          // One at a time: "Admit all" that fails for fifty people is one notification, not fifty.
+          tag: "host-error",
           tone: "danger",
           icon: <CircleAlert className="size-5" />,
           title: failed,
@@ -137,13 +139,14 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       mute: (p) =>
         void run(
           { action: "mute", identity: p.identity },
-          { icon: <MicOff className="size-5" />, title: `You muted ${named(p)}` },
+          // Their microphone icon changing, on the row you pressed, is the confirmation.
+          null,
           `Couldn't mute ${named(p)}`,
         ),
       stopCamera: (p) =>
         void run(
           { action: "stopCamera", identity: p.identity },
-          { icon: <VideoOff className="size-5" />, title: `You turned off ${named(p)}'s camera` },
+          null,
           `Couldn't turn off ${named(p)}'s camera`,
         ),
       // The hand going down in front of you is the confirmation.

@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, DoorOpen, Ellipsis, Hand, Link2, Lock, Mic, MicOff, PhoneOff, Search, VideoOff, X } from "lucide-react";
 import { memo, useMemo, useState } from "react";
+import { handQueue } from "@/lib/handQueue";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant } from "@/lib/rtc/types";
 import { ACCESS_LABELS, HostMenu, useHost } from "./HostTools";
@@ -34,7 +35,8 @@ export function PeoplePanel({
   const [scrollTop, setScrollTop] = useState(0);
   const [boxRef, box] = useBox<HTMLDivElement>();
 
-  // Raised hands first, then you, then everyone else A–Z. Speaking never reorders the list.
+  // Raised hands first, in the order they went up, then you, then everyone else A–Z. Speaking
+  // never reorders the list.
   const { items, height, matches } = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const byName = (a: RtcParticipant, b: RtcParticipant) => {
@@ -44,7 +46,8 @@ export function PeoplePanel({
     const found = needle
       ? participants.filter((p) => displayName(p).toLowerCase().includes(needle))
       : participants;
-    const hands = found.filter((p) => p.handRaised).sort(byName);
+    const shown = new Set(found);
+    const hands = handQueue(participants).filter((p) => shown.has(p));
     const rest = found.filter((p) => !p.handRaised).sort(byName);
     const list: Item[] = [];
     let top = 0;
@@ -122,7 +125,7 @@ export function PeoplePanel({
         className="scroll-quiet relative min-h-0 flex-1 overflow-y-auto"
         tabIndex={0}
         role="list"
-        aria-label="Participants"
+        aria-label="People in the meeting"
       >
         {matches === 0 ? (
           <p className="px-6 pt-10 text-center text-sm leading-relaxed text-muted">

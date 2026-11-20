@@ -3,8 +3,9 @@
 import {
   AudioLines,
   Bell,
-  CalendarPlus,
   Check,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   CircleAlert,
   Ellipsis,
@@ -22,13 +23,14 @@ import {
   MonitorX,
   PhoneOff,
   PictureInPicture2,
+  Settings2,
   Sparkles,
   Users,
   Video,
   VideoOff,
   Volume2,
 } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
 import { useCopied } from "@/lib/hooks";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
@@ -64,7 +66,6 @@ export function ControlBar({
   onTogglePanel,
   onCopyLink,
   onShowShortcuts,
-  onShowSchedule,
   onShowQuality,
   settings,
   onSettings,
@@ -83,8 +84,6 @@ export function ControlBar({
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
   onCopyLink: () => Promise<boolean>;
   onShowShortcuts: () => void;
-  /** Opens "add this meeting to a calendar". */
-  onShowSchedule: () => void;
   /** Opens "call quality". */
   onShowQuality: () => void;
   settings: CallSettings;
@@ -180,58 +179,33 @@ export function ControlBar({
           collisionPadding={12}
           className={phone ? "menu menu-tall w-80" : "menu"}
         >
-          <Dropdown.Item
-            className="menu-item"
-            onSelect={(event) => {
-              // Stay open for a moment so the confirmation is seen where the tap landed.
-              event.preventDefault();
-              copyState.copy();
-            }}
-          >
-            <span className="text-muted">
-              <CopyIcon copied={copyState.copied} />
-            </span>
-            <span role="status">{copyState.copied ? "Link copied" : "Copy meeting link"}</span>
-          </Dropdown.Item>
-          <Dropdown.Item className="menu-item" onSelect={onShowSchedule}>
-            <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
-            Add to calendar…
-          </Dropdown.Item>
+          {/* The link is one tap away already: beside the clock (the top bar on a phone) and at the top
+              of People. Planning the next meeting belongs to the screen after this one. */}
           {mini.supported && !phone && (
-            <Dropdown.Item className="menu-item" onSelect={mini.toggle}>
-              <PictureInPicture2 className="size-4 text-muted" aria-hidden="true" />
-              {mini.open ? "Close mini window" : "Open mini window"}
-              <kbd className="kbd ml-auto">⇧P</kbd>
-            </Dropdown.Item>
-          )}
-          <div className="menu-sep" />
-          <DataSaverSwitch />
-          <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
-            <Gauge className="size-4 text-muted" aria-hidden="true" />
-            Connection quality…
-          </Dropdown.Item>
-          {phone ? (
             <>
+              <Dropdown.Item className="menu-item" onSelect={mini.toggle}>
+                <PictureInPicture2 className="size-4 text-muted" aria-hidden="true" />
+                {mini.open ? "Close mini window" : "Open mini window"}
+                <kbd className="kbd ml-auto">⇧P</kbd>
+              </Dropdown.Item>
               <div className="menu-sep" />
-              <LayoutMenuItems settings={settings} onChange={onSettings} showTileLimit={false} />
-              <div className="menu-sep" />
-              <DeviceGroups kinds={["audioinput", "videoinput", "audiooutput"]} />
-              {isHost && (
-                <>
-                  <div className="menu-sep" />
-                  <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
-                    <PhoneOff className="size-4" aria-hidden="true" />
-                    End meeting for everyone
-                  </Dropdown.Item>
-                </>
-              )}
             </>
+          )}
+          {phone ? (
+            <PhoneMoreItems settings={settings} onSettings={onSettings} onShowQuality={onShowQuality} onEnd={isHost ? askEnd : undefined} />
           ) : (
-            <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
-              <Keyboard className="size-4 text-muted" aria-hidden="true" />
-              Keyboard shortcuts
-              <kbd className="kbd ml-auto">?</kbd>
-            </Dropdown.Item>
+            <>
+              <DataSaverSwitch />
+              <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
+                <Gauge className="size-4 text-muted" aria-hidden="true" />
+                Connection quality…
+              </Dropdown.Item>
+              <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
+                <Keyboard className="size-4 text-muted" aria-hidden="true" />
+                Keyboard shortcuts
+                <kbd className="kbd ml-auto">?</kbd>
+              </Dropdown.Item>
+            </>
           )}
         </Dropdown.Content>
       </Dropdown.Portal>
@@ -353,14 +327,13 @@ export function ControlBar({
             <Users className="size-5" aria-hidden="true" />
             <span className="sr-only">People, </span>
             <span className="text-sm font-semibold tabular-nums">{headcount}</span>
-            <span className="sr-only"> in the meeting</span>
+            <span className="sr-only">{waiting.length > 0 ? " in the meeting, " : " in the meeting"}</span>
             {waiting.length > 0 && (
               // Stays for as long as somebody is waiting; the notification is what announces them.
               <span
                 className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
                 data-waiting-count
               >
-                <span className="sr-only">, </span>
                 {waiting.length > 9 ? "9+" : waiting.length}
                 <span className="sr-only"> waiting to join</span>
               </span>
@@ -370,6 +343,83 @@ export function ControlBar({
         {chatButton}
       </div>
     </footer>
+  );
+}
+
+/**
+ * More, on a phone. The first level is short; layout and devices are a level down, each with a
+ * way back, instead of thirty rows to scroll past on the way to "End meeting for everyone".
+ */
+function PhoneMoreItems({
+  settings,
+  onSettings,
+  onShowQuality,
+  onEnd,
+}: {
+  settings: CallSettings;
+  onSettings: (patch: Partial<CallSettings>) => void;
+  onShowQuality: () => void;
+  /** Present for the host only. */
+  onEnd?: () => void;
+}) {
+  const [view, setView] = useState<"main" | "layout" | "devices">("main");
+  const first = useRef<HTMLDivElement>(null);
+  // Changing level keeps the menu open and puts focus at the top of the new level.
+  useEffect(() => {
+    first.current?.focus();
+  }, [view]);
+  const open = (next: typeof view) => (event: Event) => {
+    event.preventDefault();
+    setView(next);
+  };
+  if (view !== "main") {
+    return (
+      <>
+        <Dropdown.Item ref={first} className="menu-item font-medium" onSelect={open("main")}>
+          <ChevronLeft className="size-4 text-muted" aria-hidden="true" />
+          Back
+        </Dropdown.Item>
+        <div className="menu-sep" />
+        {view === "layout" ? (
+          <LayoutMenuItems settings={settings} onChange={onSettings} showTileLimit={false} />
+        ) : (
+          <DeviceGroups kinds={["audioinput", "videoinput", "audiooutput"]} />
+        )}
+      </>
+    );
+  }
+  const layoutName = { auto: "Auto", tiled: "Tiled", spotlight: "Spotlight", sidebar: "Sidebar" }[settings.layout];
+  return (
+    <>
+      <DataSaverSwitch />
+      <Dropdown.Item ref={first} className="menu-item" onSelect={onShowQuality}>
+        <Gauge className="size-4 text-muted" aria-hidden="true" />
+        Connection quality…
+      </Dropdown.Item>
+      <div className="menu-sep" />
+      <Dropdown.Item className="menu-item" onSelect={open("layout")}>
+        <LayoutGrid className="size-4 text-muted" aria-hidden="true" />
+        Layout
+        <span className="ml-auto flex items-center gap-1 text-sm text-muted">
+          {layoutName}
+          <ChevronRight className="size-4" aria-hidden="true" />
+        </span>
+      </Dropdown.Item>
+      <Dropdown.Item className="menu-item" onSelect={open("devices")}>
+        <Settings2 className="size-4 text-muted" aria-hidden="true" />
+        Audio and video
+        <ChevronRight className="ml-auto size-4 text-muted" aria-hidden="true" />
+      </Dropdown.Item>
+      {onEnd && (
+        <>
+          <div className="menu-sep" />
+          <Dropdown.Item className="menu-item text-danger-text" onSelect={onEnd}>
+            <PhoneOff className="size-4" aria-hidden="true" />
+            End meeting for everyone
+          </Dropdown.Item>
+        </>
+      )}
+    </>
   );
 }
 

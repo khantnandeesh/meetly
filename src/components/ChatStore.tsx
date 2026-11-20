@@ -90,8 +90,9 @@ export function ChatToasts({ open, onReply }: { open: boolean; onReply: () => vo
     if (openNow.current) return;
     const last = fresh.findLast((message) => message.from && !message.from.isLocal && !message.earlier && !message.deleted);
     if (!last) return;
-    playChatMessageSound();
-    // One chat toast at a time (same tag updates it in place); the badge carries the count.
+    // The first message after a quiet spell is shown and heard. In a busy chat the rest are
+    // counted on the chat button instead: a preview that kept changing could not be read.
+    if (!playChatMessageSound()) return;
     toast.push({
       tag: "chat",
       icon: <MessageSquare className="size-5" />,

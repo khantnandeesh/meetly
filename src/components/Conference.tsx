@@ -18,8 +18,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { miniTile } from "@/lib/miniTile";
+import { handQueue } from "@/lib/handQueue";
+import { crowdSentence } from "@/lib/notices";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
+import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
@@ -37,7 +39,6 @@ import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
-import { ScheduleDialog } from "./ScheduleDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -68,7 +69,7 @@ function Call({ code }: { code: string }) {
   const connection = useConnectionStatus();
   const [settings, updateSettings] = useCallSettings();
   useCallSounds(call, {
-    onHostMuted: () => toast.push({ icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
+    onHostMuted: () => toast.push({ priority: "you", icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
   });
 
   // Opt-in handle for load tests and debugging: set localStorage["meetly:debug"] = "1".
@@ -123,7 +124,8 @@ function Call({ code }: { code: string }) {
   const localParticipant = call.local;
   // A hand going up or down is a roster change, so this is current on every render.
   const handRaised = localParticipant.handRaised;
-  const raisedHands = participants.filter((p) => p.handRaised);
+  // In the order they went up: the hands button names whoever asked first.
+  const raisedHands = handQueue(participants);
 
   /* ------------------------------------------------------------------ layout */
   const tracks = useTiles();
@@ -265,11 +267,22 @@ function Call({ code }: { code: string }) {
   }, [call, miniSupported, miniOnShare, openMini]);
 
   /* ------------------------------------------------------------ room events */
+  // Read inside event handlers, so a panel opening does not resubscribe to the call.
+  const peopleOpen = useRef(false);
+  useEffect(() => {
+    peopleOpen.current = panel === "people";
+    // The list in front of you is the news; a notification about it would only repeat it.
+    if (panel === "people") {
+      toast.dismissTag("joined");
+      toast.dismissTag("left");
+    }
+  }, [panel, toast]);
   useEffect(() => {
     // One signal per arrival or departure. If their tile is in front of you, the tile (and in a
     // small call its sound) is the signal. If it is not (another gallery page, the "+N more"
-    // cell, Spotlight), a toast is, and bursts share one toast that updates in place. In a very
-    // large call the people count is enough and nothing else is shown.
+    // cell, Spotlight), a notification is, and a burst is one notification that keeps count. In
+    // a large call, or with the people list open, the people count is enough and nothing else
+    // is shown. See src/lib/notices.ts for how these give way to anything that matters more.
     const onStage = (p: RtcParticipant) =>
       document.querySelector(`[data-tile][data-key="${CSS.escape(`${p.identity}:camera`)}"]`) !== null;
     const roster = (verb: "joined" | "left", icon: React.ReactNode) => {
@@ -278,18 +291,13 @@ function Call({ code }: { code: string }) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       const flush = () => {
         timer = undefined;
-        const [first, second, ...rest] = names;
-        const who = !second
-          ? first
-          : rest.length === 0
-            ? `${first} and ${second}`
-            : `${first}, ${second} and ${rest.length} ${rest.length === 1 ? "other" : "others"}`;
-        toast.push({ tag: verb, icon, title: `${who} ${verb}` });
+        if (names.length === 0) return;
+        toast.push({ tag: verb, priority: "presence", icon, title: crowdSentence(names, verb) });
       };
       return {
         announce(p: RtcParticipant) {
-          if (call.remoteIds().length + 1 > ROSTER_TOAST_LIMIT) return;
-          // A lull starts a new list; until then the visible toast keeps counting.
+          if (call.remoteIds().length + 1 > ROSTER_TOAST_LIMIT || peopleOpen.current) return;
+          // A lull starts a new count; until then the notification on screen keeps counting.
           if (Date.now() - lastAt > 5000) names = [];
           lastAt = Date.now();
           names.push(displayName(p));
@@ -316,7 +324,7 @@ function Call({ code }: { code: string }) {
       else departures.announce(p);
     };
     // A raised hand is signalled by the hands button beside People, the badge on the tile and
-    // one sound. No toast: that would be a fourth signal for one event.
+    // one sound. No notification: that would be a fourth signal for one event.
     const stopJoined = call.on("participantJoined", joined);
     const stopLeft = call.on("participantLeft", left);
     return () => {
@@ -336,6 +344,7 @@ function Call({ code }: { code: string }) {
         saveEffectSettings({ background: "none" });
         toast.push({
           tag: "blur-slow",
+          priority: "you",
           icon: <CircleGauge className="size-5" />,
           title: "Background blur was turned off",
           body: "It was slowing down your camera.",
@@ -358,6 +367,7 @@ function Call({ code }: { code: string }) {
   const hideSelf = useCallback(() => {
     updateSettings({ selfView: "hidden" });
     toast.push({
+      priority: "you",
       icon: <EyeOff className="size-5" />,
       title: "Your own video is hidden",
       body: "Others can still see you.",
@@ -378,8 +388,10 @@ function Call({ code }: { code: string }) {
   // They stay clear of an open side panel and of whatever already sits in that corner.
   // In the sidebar view that corner is the main tile's, left of the filmstrip.
   const beside = view === "sidebar" && others.length > 0;
+  // The invite card steps aside while somebody is asking to join (only hosts are told of them).
+  const knocking = useWaiting().length;
   const cornerLift =
-    participants.length === 1
+    participants.length === 1 && knocking === 0
       ? 9.25 // the invite card
       : view === "tiled" && pageCount > 1
         ? floatSelf
@@ -389,6 +401,13 @@ function Call({ code }: { code: string }) {
           ? 7.25
           : 0;
   const panelInset = (shown ? 23.25 : 0) + (beside ? 14.75 : 0);
+  // How many notifications the screen can take (src/lib/notices.ts): two, or on a phone with a
+  // sheet open one line over the top bar, and then only what concerns you.
+  const sheetOpen = phone && panel !== null;
+  useEffect(() => {
+    toast.setSurface(sheetOpen ? { max: 1, info: false, compact: true } : { max: 2, info: true });
+  }, [sheetOpen, toast]);
+  useEffect(() => () => toast.setSurface({ max: 2, info: true }), [toast]);
   useEffect(() => {
     // Set on the notification region itself, not on the page root: a custom property changed on
     // the root makes the browser re-resolve the style of every element in the document, and
@@ -405,7 +424,6 @@ function Call({ code }: { code: string }) {
 
   /* -------------------------------------------------------------- shortcuts */
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [scheduleOpen, setScheduleOpen] = useState(false);
   const shortcutsOn = settings.shortcuts;
   const paged = view === "tiled" && pageCount > 1;
 
@@ -490,7 +508,7 @@ function Call({ code }: { code: string }) {
   return (
     <HostProvider localIdentity={localParticipant.identity}>
       <MiniProvider value={mini}>
-      <ModerationNotices localIdentity={localParticipant.identity} onShowPeople={showPeople} />
+      <ModerationNotices localIdentity={localParticipant.identity} peopleOpen={panel === "people"} onShowPeople={showPeople} />
       <ReactionFeed />
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
@@ -646,7 +664,6 @@ function Call({ code }: { code: string }) {
         onTogglePanel={togglePanel}
         onCopyLink={copyLink}
         onShowShortcuts={() => setShortcutsOpen(true)}
-        onShowSchedule={() => setScheduleOpen(true)}
         onShowQuality={showQuality}
         settings={settings}
         onSettings={updateSettings}
@@ -659,7 +676,6 @@ function Call({ code }: { code: string }) {
         onEnabledChange={(shortcuts) => updateSettings({ shortcuts })}
         miniWindow={miniSupported}
       />
-      <ScheduleDialog code={code} open={scheduleOpen} onOpenChange={setScheduleOpen} />
       <CallQualityDialog open={qualityOpen} onOpenChange={setQualityOpen} />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
       <PollToasts open={panel === "chat"} onShow={openChat} />
@@ -879,8 +895,13 @@ function Reconnecting({ show }: { show: boolean }) {
 
 function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCopy: () => Promise<boolean> }) {
   const [dismissed, setDismissed] = useState(false);
+  // Somebody asking to join is the answer to this card: it steps aside for their notification
+  // instead of stacking with it (on a phone the two would cover half the screen).
+  const { waiting, canModerate } = useHost();
+  const knocking = canModerate && waiting.length > 0;
+  // (Conference keeps notifications above this card only while it is up; see `knocking` there.)
   // It leaves, quickly, the moment somebody else arrives: it goes first, then the tiles move.
-  const presence = usePresence(show && !dismissed);
+  const presence = usePresence(show && !dismissed && !knocking);
   const { copied, copy } = useCopied(onCopy);
   if (!presence.mounted) return null;
   return (

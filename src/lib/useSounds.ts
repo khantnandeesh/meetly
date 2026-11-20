@@ -6,6 +6,8 @@ import { SOUND_DEFAULTS, sounds, type SoundSettings } from "./sounds";
 
 /** Past this many people, comings and goings are shown (toasts) but no longer heard. */
 export const PRESENCE_SOUND_LIMIT = 8;
+/** Past this many people, only the host and co-hosts, who are the ones to answer, hear a hand go up. */
+export const HAND_SOUND_LIMIT = 24;
 /** Nothing about other people sounds until the room has settled after you join. */
 const SETTLE_MS = 2500;
 /** A microphone that goes off this long after your last own toggle was not switched off by you. */
@@ -67,7 +69,8 @@ export function createCallSounds(headcount: () => number) {
     /** Somebody's tile appeared on, or left, the part of the stage you can see. */
     onVisibleArrival: () => presence("joined"),
     onVisibleDeparture: () => presence("left"),
-    onHandRaised: () => whenSettled("hand"),
+    onHandRaised: (moderator: boolean) =>
+      headcount() > HAND_SOUND_LIMIT && !moderator ? sounds.skipped("hand", "large-call") : whenSettled("hand"),
     onScreenShareStarted: () => whenSettled("shareStart"),
     onScreenShareStopped: () => whenSettled("shareStop"),
     /**
@@ -104,13 +107,15 @@ const CHAT_QUIET_MS = 4000;
 /**
  * A chat message arrived while chat was closed. Call where the chat toast is raised.
  * Only the first message after a quiet spell sounds: a busy chat is not a row of chimes.
+ * Returns whether this message broke a quiet spell, which is also when it is worth showing.
  */
-export function playChatMessageSound(): void {
+export function playChatMessageSound(): boolean {
   const now = performance.now();
   const quiet = now - lastMessageAt > CHAT_QUIET_MS;
   lastMessageAt = now;
   if (quiet) sounds.play("message");
   else sounds.skipped("message", "busy-chat");
+  return quiet;
 }
 
 /** Somebody new is asking to join. Call where the host's notification is raised. */
@@ -151,7 +156,8 @@ export function useCallSounds(call: RtcCall, { onHostMuted }: { onHostMuted?: ()
         }
       }),
       call.on("handRaised", (participant) => {
-        if (!participant.isLocal) sound.onHandRaised();
+        const me = call.local.identity;
+        if (!participant.isLocal) sound.onHandRaised(call.hostIdentity === me || call.coHosts().includes(me));
       }),
       call.on("screenShare", (started) => {
         if (started) sound.onScreenShareStarted();

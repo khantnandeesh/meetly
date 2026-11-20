@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus, Video } from "lucide-react";
+import { CalendarPlus, ChevronDown, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
@@ -64,7 +64,7 @@ export default function Home() {
           <section className="anim-rise flex flex-col gap-8">
             <div className="flex flex-col gap-5">
               <h1 className="font-display text-[clamp(2.5rem,6vw,4.25rem)] leading-[1.02] font-semibold tracking-[-0.03em] text-balance">
-                Video meetings with <span className="text-accent">no sign-up</span>
+                Video meetings, <span className="text-accent">one link</span> away
               </h1>
               <p className="max-w-[34rem] text-lg leading-relaxed text-pretty text-muted">
                 Start a meeting and send the link. People join from their browser, with no account and no app.
@@ -72,7 +72,7 @@ export default function Home() {
             </div>
 
             <div className="flex max-w-[34rem] flex-col gap-3 sm:flex-row sm:items-start">
-              {/* One tap still starts a meeting now; the arrow holds the ways to have one later. */}
+              {/* One tap starts a meeting now; the arrow holds only the ways to have one later. */}
               <div className="flex shrink-0 gap-px">
                 <button className="btn btn-primary flex-1 rounded-r-md" onClick={start} disabled={starting || preparing}>
                   {starting ? (
@@ -96,10 +96,6 @@ export default function Home() {
                   </Dropdown.Trigger>
                   <Dropdown.Portal>
                     <Dropdown.Content align="start" sideOffset={8} collisionPadding={12} className="menu min-w-60">
-                      <Dropdown.Item className="menu-item" onSelect={start}>
-                        <Video className="size-4 text-muted" aria-hidden="true" />
-                        Start now
-                      </Dropdown.Item>
                       <Dropdown.Item className="menu-item" onSelect={() => void plan("link")}>
                         <Link2 className="size-4 text-muted" aria-hidden="true" />
                         Get a link for later

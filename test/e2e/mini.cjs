@@ -125,7 +125,7 @@ module.exports = async function miniSuite(browser) {
   H.ok("a shared screen takes it over", await H.until(async () => (await showing(mini)) === `${benId}:screen_share`, 10000), await showing(mini));
   H.ok("the shared screen is playing, whole (not cropped)", (await H.until(async () => (await playing(mini, "video")) === 1, 8000)) && (await mini.evaluate(() => getComputedStyle(document.querySelector("video")).objectFit)) === "contain");
   await mini.screenshot({ path: process.env.MEETLY_SHOTS ? `${process.env.MEETLY_SHOTS}/mini-window-share.png` : undefined }).catch(() => {});
-  await ben.page.getByRole("button", { name: "Stop sharing" }).click();
+  await ben.page.getByRole("toolbar", { name: "Meeting controls" }).getByRole("button", { name: "Stop sharing" }).click();
   await H.until(async () => (await showing(mini)) !== `${benId}:screen_share`, 8000);
 
   /* ------------------------------------------------- the call goes on throughout */
@@ -160,7 +160,7 @@ module.exports = async function miniSuite(browser) {
   await H.shot(ada, "mini-tile-action-desktop");
   mini = await opening(ada, () => mainTile.getByRole("button", { name: "Open mini window" }).click());
   H.ok("and opens it, on the shared screen", (await showing(mini)) === `${benId}:screen_share`);
-  await ben.page.getByRole("button", { name: "Stop sharing" }).click();
+  await ben.page.getByRole("toolbar", { name: "Meeting controls" }).getByRole("button", { name: "Stop sharing" }).click();
 
   /* ------------------------------------------------------- presenting yourself */
   await fakeScreen(ada);
@@ -174,7 +174,7 @@ module.exports = async function miniSuite(browser) {
   H.ok("your own shared screen is never what it shows you", !!own && own !== `${adaId}:screen_share` && !own.startsWith(adaId), own);
   await mini.getByRole("button", { name: "Close mini window" }).click();
   await closed(mini);
-  await ada.page.getByRole("button", { name: "Stop sharing" }).click();
+  await ada.page.getByRole("toolbar", { name: "Meeting controls" }).getByRole("button", { name: "Stop sharing" }).click();
 
   /* -------------------------------------------------------------------- leaving */
   mini = await openFromMore(ada);

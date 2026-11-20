@@ -723,6 +723,20 @@ body {
   :root:has([data-in-call] [data-invite-card]:not([data-leaving="true"])) {
     --toast-top: calc(max(0.5rem, env(safe-area-inset-top)) + 13rem);
   }
+  /* A sheet is open: the one notification allowed sits over the top bar, above the sheet, so it
+     never covers the sheet's own header or its close button. One line, no body. */
+  .toast-region[data-compact] {
+    top: max(0.25rem, env(safe-area-inset-top));
+  }
+  .toast-region[data-compact] .toast {
+    padding-block: 0.25rem;
+  }
+  .toast-region[data-compact] .toast-body {
+    display: none;
+  }
+  .toast-region[data-compact] .toast-title {
+    -webkit-line-clamp: 1;
+  }
 }
 @media (width >= 48rem) {
   :root:has([data-in-call]) {
@@ -734,6 +748,9 @@ body {
     right: 0.75rem;
     bottom: 5.75rem;
     align-items: flex-end;
+    /* The most important notification sits nearest the controls and stays put; anything newer
+       or less important appears above it (see src/lib/notices.ts). */
+    flex-direction: column-reverse;
     /* Moved by transform, so toasts on screen ride along with an opening panel instead of jumping. */
     translate: calc(var(--toast-inset, 0rem) * -1) calc(var(--toast-lift, 0rem) * -1);
     transition: translate var(--dur-move) var(--ease-enter);

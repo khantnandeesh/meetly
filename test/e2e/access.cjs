@@ -33,6 +33,8 @@ module.exports = async function access(browser) {
 
   /* ask to join */
   await setAccess(ada, "People ask to join");
+  // With the people list open the list itself is the notice (see ModerationNotices); closed, a notification is.
+  await H.closePeople(ada);
   // Chat that someone outside must never see.
   await ben.page.getByRole("button", { name: /^Chat/ }).click();
   await ben.page.getByLabel("Message").fill("private to the people inside");
@@ -53,7 +55,11 @@ module.exports = async function access(browser) {
   H.ok("the host is asked, with the answer on the notification", (await ada.page.locator("[data-toast]").filter({ hasText: "Dee Knocker wants to join" }).getByRole("button", { name: "Admit" }).count()) === 1);
   H.ok("one knock sounds for the host", await H.until(async () => (await knocks(ada)) === knocksBefore + 1, 3000));
   H.ok("the people button counts who is waiting", (await ada.page.locator("[data-waiting-count]").first().innerText()).startsWith("1"));
+  await H.openPeople(ada);
   H.ok("the waiting list is at the top of the people panel", (await H.people(ada).getByRole("region", { name: "Waiting to join" }).getByText("Dee Knocker").count()) === 1);
+  H.ok("while the list is open, the notification steps aside for it", await H.until(async () => (await ada.page.locator("[data-toast]").filter({ hasText: "wants to join" }).count()) === 0, 3000));
+  await H.closePeople(ada);
+  H.ok("closing the list brings the notification back", await H.until(async () => (await ada.page.locator("[data-toast]").filter({ hasText: "Dee Knocker wants to join" }).count()) === 1, 3000));
   await H.shot(ada, "knock-desktop");
   H.ok("the person waiting is not in the call", (await headcount(ada)) === 2 && (await headcount(ben)) === 2);
   const outside = await dee.page.evaluate(() => ({
@@ -94,6 +100,7 @@ module.exports = async function access(browser) {
   await H.shot(ada, "knock-two-desktop");
   // Nothing of the conversation reaches someone who is only asking.
   const whileWaiting = await dee.page.evaluate(() => window.__meetly.call.chatMessages().length);
+  await H.openPeople(ada);
   await H.people(ada).getByRole("button", { name: "Admit Dee Knocker" }).click();
   await H.inCall(dee).catch(() => {});
   H.ok("admit: the person is in the call", (await H.isInCall(dee)) && (await H.until(async () => (await headcount(ada)) === 3, 8000)));
@@ -105,6 +112,7 @@ module.exports = async function access(browser) {
     whileWaiting === 0 && (await dee.page.evaluate(() => window.__meetly.call.chatMessages().every((message) => message.earlier === true))),
     JSON.stringify(await dee.page.evaluate(() => window.__meetly.call.chatMessages().map((message) => [message.message, !!message.earlier]))),
   );
+  await H.closePeople(ada);
   H.ok("the other person is still waiting", await H.until(async () => (await eli.page.getByText("Asking to join…").count()) === 1 && (await ada.page.getByText("Eli Second wants to join").count()) === 1, 6000));
   // Cancelling takes them off the host's list.
   await eli.page.getByRole("button", { name: "Cancel" }).click();
@@ -141,7 +149,7 @@ module.exports = async function access(browser) {
 
   /* removing someone, and making people ask from then on */
   await H.openPeople(ada);
-  await ada.page.getByRole("list", { name: "Participants" }).getByRole("button", { name: "Host controls for Ben Okri" }).click();
+  await ada.page.getByRole("list", { name: "People in the meeting" }).getByRole("button", { name: "Host controls for Ben Okri" }).click();
   await ada.page.getByRole("menuitem", { name: "Remove from meeting" }).click();
   await ada.page.getByText("Make new people ask to join").click();
   await H.shot(ada, "remove-dialog-ask-desktop");
@@ -157,7 +165,8 @@ module.exports = async function access(browser) {
   await ben2.page.getByText("Asking to join…").waitFor({ timeout: 10000 }).catch(() => {});
   const asking = { waiting: await ben2.page.getByText("Asking to join…").count(), inCall: await H.isInCall(ben2), status: ben2.tokenStatus, lobby: !!(ben2.tokenBody && ben2.tokenBody.lobby) };
   H.ok("…and from a fresh browser they can only ask, which the host can deny", asking.waiting === 1 && !asking.inCall && asking.lobby, JSON.stringify(asking));
-  await ada.page.getByText("Ben Again wants to join").waitFor({ timeout: 8000 });
+  // The people list is open here, so the waiting list, not a notification, shows them.
+  await H.people(ada).getByRole("button", { name: "Deny Ben Again" }).waitFor({ timeout: 8000 });
   await H.people(ada).getByRole("button", { name: "Deny Ben Again" }).click();
   await ben2.page.getByText("The host didn't let you in").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("…denied", (await ben2.page.getByText("The host didn't let you in").count()) === 1);

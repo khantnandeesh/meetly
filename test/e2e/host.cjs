@@ -9,8 +9,8 @@ module.exports = async function hostSurvives(browser) {
   const code = url.split("/").pop();
 
   // Before anyone has joined, the creating browser is already known as the host.
-  await ada.page.getByText("You're the host of this meeting").waitFor({ timeout: 8000 }).catch(() => {});
-  H.ok("the creator's pre-join screen says they are the host", (await ada.page.getByText("You're the host of this meeting").count()) === 1);
+  await ada.page.getByText("You're the host when you join from this browser").waitFor({ timeout: 8000 }).catch(() => {});
+  H.ok("the creator's pre-join screen says they are the host", (await ada.page.getByText("You're the host when you join from this browser").count()) === 1);
   await H.shot(ada, "host-prejoin-desktop");
 
   // A guest who gets there first does not become host.

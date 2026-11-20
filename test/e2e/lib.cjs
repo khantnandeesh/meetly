@@ -159,6 +159,7 @@ module.exports = {
   createMeeting,
   randomCode,
   press,
+  leaveButton,
   inCall,
   isInCall,
   join,

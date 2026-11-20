@@ -6,7 +6,7 @@ import "./globals.css";
 import { Providers } from "@/components/Providers";
 
 export const metadata: Metadata = {
-  title: "Meetly: video meetings with no sign-up",
+  title: "Meetly: video meetings, one link away",
   description: "Start or join a video meeting from your browser. No account and nothing to install.",
 };
 
