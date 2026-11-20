@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { handQueue } from "@/lib/handQueue";
-import { holdList, useListHold } from "@/lib/listHold";
+import { holdList, useFlip, useListHold } from "@/lib/listHold";
 import { BULK_CONFIRM, FIRST_ROWS, matchesName, oldestFirst, ordinal, people, waitingFor, type Departure } from "@/lib/hostLists";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
@@ -111,6 +111,8 @@ function MainView({
   // is added to it or moved in it, so a flood of hands or arrivals never shifts the row under
   // your finger. What arrived meanwhile waits behind the "N new" pill.
   const hold = useListHold(boxRef);
+  // Left live (at the top, untouched), rows that move glide rather than jump.
+  useFlip(boxRef);
   const [snapshot, setSnapshot] = useState<{ hands: RtcParticipant[]; participants: RtcParticipant[] } | null>(null);
   if (hold.held && !snapshot) setSnapshot({ hands, participants });
   if (!hold.held && snapshot) setSnapshot(null);
@@ -204,15 +206,15 @@ function MainView({
         {matches === 0 ? (
           <p className="px-6 pt-10 text-center text-sm leading-relaxed text-muted">Nobody here is called “{query.trim()}”.</p>
         ) : (
-          <div role="list" aria-label="Participants" style={{ height }} className="relative">
+          <div data-flip="everyone" role="list" aria-label="Participants" style={{ height }} className="relative">
             {visible.map((item) =>
               item.kind === "header" ? (
-                <h3 key={item.key} className="eyebrow absolute inset-x-0 flex items-end gap-2 px-5 pb-1.5" style={{ top: item.top, height: HEADER }}>
+                <h3 key={item.key} data-flip={item.key} className="eyebrow absolute inset-x-0 flex items-end gap-2 px-5 pb-1.5" style={{ top: item.top, height: HEADER }}>
                   {item.label}
                   <span className="tracking-normal tabular-nums">{item.count.toLocaleString("en-US")}</span>
                 </h3>
               ) : (
-                <div key={item.key} role="listitem" className="absolute inset-x-2" style={{ top: item.top, height: ROW }}>
+                <div key={item.key} data-flip={`row:${item.key}`} role="listitem" className="absolute inset-x-2" style={{ top: item.top, height: ROW }}>
                   <PersonRow participant={item.participant} hand={item.participant.handRaised} />
                 </div>
               ),
@@ -236,24 +238,27 @@ function MainView({
 const identityOf = (participant: RtcParticipant) => participant.identity;
 
 /**
- * Over a held list, at its top: how much arrived while it held still. One tap shows it: the hold
- * ends and the list goes back to the top, where new hands are. It floats in a sticky strip of no
- * height, so its coming and going never moves a row.
+ * Over a held list, 8px below its top: how much arrived while it held still. One tap shows it:
+ * the hold ends and the list goes back to the top, where new hands are. It floats in a sticky
+ * strip of no height, so its coming and going never moves a row. It lines up with the names and
+ * stops short of the row buttons (a hand, the camera, the microphone and the host's menu, which
+ * is larger for a finger), because a hold is exactly when the host is pressing those.
  */
 function NewPill({ hands, people, onShow }: { hands: number; people: number; onShow: () => void }) {
   const count = hands + people;
   if (count === 0) return null;
+  const label = count > 99 ? "99+" : count.toLocaleString("en-US");
   const parts = [hands > 0 && `${hands.toLocaleString("en-US")} raised ${hands === 1 ? "hand" : "hands"}`, people > 0 && `${people.toLocaleString("en-US")} ${people === 1 ? "person" : "people"}`].filter(Boolean);
   return (
-    <div className="pointer-events-none sticky top-2 z-10 flex h-0 justify-center">
+    <div className="pointer-events-none sticky top-2 z-10 flex h-0 justify-start pr-[10.5rem] pl-[4.25rem] pointer-coarse:pr-[11.25rem]">
       <button
         data-new-pill
         onClick={onShow}
         aria-label={`Show what's new: ${parts.join(" and ")}`}
-        className="anim-pop pointer-events-auto inline-flex h-9 shrink-0 cursor-pointer items-center gap-1.5 rounded-full bg-accent pr-3.5 pl-3 text-sm font-semibold text-accent-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/0.7)] pointer-coarse:h-11"
+        className="anim-pop pointer-events-auto inline-flex h-9 max-w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-full bg-accent pr-3 pl-2.5 text-sm font-semibold whitespace-nowrap text-accent-ink shadow-[0_8px_24px_-8px_rgb(0_0_0/0.7)] pointer-coarse:h-11"
       >
-        <ArrowUp className="size-4" aria-hidden="true" />
-        {count.toLocaleString("en-US")} new
+        <ArrowUp className="size-4 shrink-0" aria-hidden="true" />
+        {label} new
       </button>
     </div>
   );
@@ -651,7 +656,7 @@ function HandsSection({ hands, shown = hands }: { hands: RtcParticipant[]; /** T
       </div>
       <ul className="px-2">
         {shown.slice(0, FIRST_ROWS).map((participant, index) => (
-          <li key={participant.identity} style={{ height: ROW }}>
+          <li key={participant.identity} data-flip={`hand:${participant.identity}`} style={{ height: ROW }}>
             <PersonRow participant={participant} hand note={ordinal(index + 1)} />
           </li>
         ))}
@@ -659,6 +664,7 @@ function HandsSection({ hands, shown = hands }: { hands: RtcParticipant[]; /** T
       {shown.length > FIRST_ROWS && (
         <button
           data-see-all="hands"
+          data-flip="see-all-hands"
           onClick={() => setPeopleView("hands")}
           aria-label={`See all ${hands.length} raised hands`}
           className="mx-3 flex h-11 w-[calc(100%-1.5rem)] cursor-pointer items-center justify-center gap-1 rounded-xl bg-surface-2/70 text-sm font-semibold transition-colors hover:bg-surface-3"

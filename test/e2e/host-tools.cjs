@@ -57,6 +57,8 @@ module.exports = async function hostTools(browser) {
   await ben.page.keyboard.press("h");
   await H.until(async () => (await hands(ada)) === 2, 6000);
   await H.openPeople(ada);
+  // The row menu left the pointer resting on the list, which holds it still (listHold.ts); off it, the list catches up.
+  await ada.page.mouse.move(10, 10);
   const handsSection = H.people(ada).getByRole("region", { name: "Raised hands" });
   await handsSection.getByText("2nd").waitFor({ timeout: 6000 }).catch(() => {});
   H.ok("the raised hands section numbers them in the order they went up", (await handsSection.getByText("1st").count()) === 1 && (await handsSection.getByText("2nd").count()) === 1);
