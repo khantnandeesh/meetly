@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
+import { badgeCount, fullCount, shortCount } from "@/lib/counts";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { miniTile } from "@/lib/miniTile";
 import { handQueue } from "@/lib/handQueue";
@@ -535,8 +536,11 @@ function Call({ code }: { code: string }) {
             >
               <Users className="size-[1.125rem]" aria-hidden="true" />
               <span className="sr-only">People, </span>
-              {participants.length}
-              <span className="sr-only"> in the meeting</span>
+              {/* "1.2k" fits the top bar; a screen reader hears the whole number. */}
+              <span aria-hidden="true" data-headcount>
+                {shortCount(participants.length)}
+              </span>
+              <span className="sr-only">{fullCount(participants.length)} in the meeting</span>
               <WaitingCount />
             </button>
           </div>
@@ -615,7 +619,7 @@ function Call({ code }: { code: string }) {
               onAnimationEnd={(event) => {
                 if (leaving && event.target === event.currentTarget) setShown(null);
               }}
-              className={`panel flex w-[22.5rem] shrink-0 flex-col ${leaving ? "md:absolute md:inset-y-3 md:right-3" : ""} overflow-hidden rounded-[1.25rem] bg-surface shadow-[inset_0_0_0_1px_var(--border)] max-md:fixed max-md:inset-x-0 max-md:top-[max(3.5rem,env(safe-area-inset-top))] max-md:bottom-0 max-md:z-50 max-md:w-auto max-md:rounded-b-none`}
+              className={`panel flex w-[22.5rem] shrink-0 flex-col ${leaving ? "md:absolute md:inset-y-3 md:right-3" : ""} overflow-hidden rounded-[1.25rem] bg-surface shadow-[inset_0_0_0_1px_var(--border)] max-md:fixed max-md:inset-x-0 max-md:top-(--sheet-top) max-md:bottom-0 max-md:z-50 max-md:w-auto max-md:rounded-b-none`}
             >
               <div
                 className="relative flex items-center justify-between py-2.5 pr-2.5 pl-5 max-md:touch-none max-md:pt-4"
@@ -848,12 +852,11 @@ function WaitingCount() {
   if (!canModerate || waiting.length === 0) return null;
   return (
     <span
-      className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+      className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink tabular-nums ring-3 ring-bg"
       data-waiting-count
     >
-      <span className="sr-only">, </span>
-      {waiting.length > 9 ? "9+" : waiting.length}
-      <span className="sr-only"> waiting to join</span>
+      <span aria-hidden="true">{badgeCount(waiting.length)}</span>
+      <span className="sr-only">, {fullCount(waiting.length)} waiting to join</span>
     </span>
   );
 }

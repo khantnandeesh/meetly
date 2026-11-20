@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
+import { badgeCount, fullCount } from "@/lib/counts";
 import { useCopied } from "@/lib/hooks";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { useActiveDevice, useCall, useCallQuality, useLocalEffects, useLocalToggle } from "@/lib/rtc/react";
@@ -326,16 +327,16 @@ export function ControlBar({
           >
             <Users className="size-5" aria-hidden="true" />
             <span className="sr-only">People, </span>
-            <span className="text-sm font-semibold tabular-nums">{headcount}</span>
+            <span className="text-sm font-semibold tabular-nums">{fullCount(headcount)}</span>
             <span className="sr-only">{waiting.length > 0 ? " in the meeting, " : " in the meeting"}</span>
             {waiting.length > 0 && (
               // Stays for as long as somebody is waiting; the notification is what announces them.
               <span
-                className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+                className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink tabular-nums ring-3 ring-bg"
                 data-waiting-count
               >
-                {waiting.length > 9 ? "9+" : waiting.length}
-                <span className="sr-only"> waiting to join</span>
+                <span aria-hidden="true">{badgeCount(waiting.length)}</span>
+                <span className="sr-only">{fullCount(waiting.length)} waiting to join</span>
               </span>
             )}
           </button>
@@ -443,17 +444,19 @@ function ChatButton({
         id="toggle-chat"
         className="ctrl"
         aria-expanded={open}
-        aria-label={unread ? `Chat, ${unread} unread` : "Chat"}
+        aria-label={unread ? `Chat, ${fullCount(unread)} unread` : "Chat"}
         onClick={() => onToggle("chat")}
       >
         <MessageSquare className="size-5" />
         {unread > 0 && (
-          // Pops in for the first unread message only; after that the number just changes.
+          // Pops in for the first unread message only; after that the number just changes. The
+          // button's own name carries the whole number.
           <span
-            className="anim-pop absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+            className="anim-pop absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink tabular-nums ring-3 ring-bg"
             aria-hidden="true"
+            data-unread-count
           >
-            {unread > 9 ? "9+" : unread}
+            {badgeCount(unread)}
           </span>
         )}
       </button>
