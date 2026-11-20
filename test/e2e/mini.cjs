@@ -37,6 +37,36 @@ const fakeScreen = (person) =>
     navigator.mediaDevices.getDisplayMedia = () => navigator.mediaDevices.getUserMedia({ video: true });
   });
 const closed = (mini) => H.until(() => mini.isClosed(), 5000);
+/**
+ * Clicks a button in the mini window that closes the window: Close, or Leave. The click closes
+ * the very page it was sent to, so Playwright can learn the page is gone before its own click
+ * call has finished, and reject it with "Target page, context or browser has been closed"
+ * although the click landed and did what it should. That error is accepted only when the tab
+ * saw the click reach this button; a window that closed by itself, before the click, still fails.
+ */
+async function clickClosing(person, mini, name) {
+  const open = await person.page.evaluate((label) => {
+    window.__miniClicked = null;
+    const target = window.documentPictureInPicture.window;
+    if (!target) return false;
+    target.document.addEventListener(
+      "click",
+      (event) => {
+        if (event.target.closest("button")?.getAttribute("aria-label") === label) window.__miniClicked = label;
+      },
+      true,
+    );
+    return true;
+  }, name);
+  if (!open || mini.isClosed()) throw new Error(`the mini window closed by itself before "${name}" was pressed`);
+  await mini
+    .getByRole("button", { name })
+    .click()
+    .catch(async (error) => {
+      const landed = mini.isClosed() && (await person.page.evaluate(() => window.__miniClicked)) === name;
+      if (!landed) throw error;
+    });
+}
 
 module.exports = async function miniSuite(browser) {
   console.log("\n— mini window: opens, shows the right person, controls, closing, where it is absent —");
@@ -133,7 +163,7 @@ module.exports = async function miniSuite(browser) {
   H.ok("sound is still arriving from everyone", await ada.page.evaluate(() => Array.from(window.__meetly.room.remoteParticipants.values()).every((p) => Array.from(p.audioTrackPublications.values()).every((pub) => pub.isSubscribed && pub.track && pub.track.attachedElements.length > 0))));
 
   /* ------------------------------------------------------------------ closing it */
-  await mini.getByRole("button", { name: "Close mini window" }).click();
+  await clickClosing(ada, mini, "Close mini window");
   H.ok("\"Close mini window\" closes it", await closed(mini));
   H.ok("and the stage is back in the tab, pictures playing", (await H.until(async () => (await placeholder(ada).count()) === 0 && (await ada.page.locator("[data-tile]").count()) === 3, 5000)) && (await H.until(async () => (await playing(ada.page, "[data-tile] video")) >= 2, 8000)));
   H.ok("still in the call", (await status(ada)) === "connected");
@@ -172,13 +202,13 @@ module.exports = async function miniSuite(browser) {
   H.ok("opted in, starting to present opens it (here: no picker to wait for, see the report)", (await media(ada)).screenShare === true);
   const own = await showing(mini);
   H.ok("your own shared screen is never what it shows you", !!own && own !== `${adaId}:screen_share` && !own.startsWith(adaId), own);
-  await mini.getByRole("button", { name: "Close mini window" }).click();
+  await clickClosing(ada, mini, "Close mini window");
   await closed(mini);
   await ada.page.getByRole("toolbar", { name: "Meeting controls" }).getByRole("button", { name: "Stop sharing" }).click();
 
   /* -------------------------------------------------------------------- leaving */
   mini = await openFromMore(ada);
-  await mini.getByRole("button", { name: "Leave meeting" }).click();
+  await clickClosing(ada, mini, "Leave meeting");
   H.ok("its leave button leaves the call", await H.until(async () => (await ada.page.getByText("You left the meeting").count()) === 1, 8000));
   H.ok("and takes the mini window with it", await closed(mini));
   H.ok("the others stay in their call", (await status(ben)) === "connected" && (await H.until(async () => (await ben.page.evaluate(() => window.__meetly.room.remoteParticipants.size)) === 1, 8000)));
