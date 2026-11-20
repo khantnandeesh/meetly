@@ -17,7 +17,11 @@ Object.assign(process.env, {
   CLOUDFLARE_API_TOKEN: "not-a-real-token",
   MEETLY_SESSION_SECRET: "a-test-secret-a-test-secret",
 });
-const WEBINAR_PRESETS = { REALTIMEKIT_WEBINAR_HOST_PRESET: "meetly-webinar-host", REALTIMEKIT_WEBINAR_VIEWER_PRESET: "meetly-webinar-viewer" };
+const WEBINAR_PRESETS = {
+  REALTIMEKIT_WEBINAR_HOST_PRESET: "meetly-webinar-host",
+  REALTIMEKIT_WEBINAR_VIEWER_PRESET: "meetly-webinar-viewer",
+  REALTIMEKIT_WEBINAR_COHOST_PRESET: "meetly-webinar-cohost",
+};
 
 const { POST: meetingRoute } = await import("../src/app/api/meeting/route");
 const { POST: tokenRoute } = await import("../src/app/api/token/route");

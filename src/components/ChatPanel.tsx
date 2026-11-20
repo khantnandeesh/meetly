@@ -384,7 +384,9 @@ export function ChatPanel({
               </span>
               <p className="font-semibold">No messages yet</p>
               <p className="text-sm leading-relaxed text-muted">
-                Everyone in the meeting sees messages, including people who join later. To keep them, save the chat before you leave.
+                {readOnly
+                  ? "Messages from the people on stage appear here."
+                  : `Everyone in the ${call.mode === "webinar" ? "webinar" : "meeting"} sees messages, including people who join later. To keep them, save the chat before you leave.`}
               </p>
             </div>
           ) : (
@@ -424,7 +426,7 @@ export function ChatPanel({
 
       {readOnly ? (
         <p data-chat-read-only className="border-t border-border px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-center text-sm text-muted">
-          Only the people on stage can send messages.
+          Only speakers and hosts can send messages
         </p>
       ) : (
       <form onSubmit={submit} className="border-t border-border p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">

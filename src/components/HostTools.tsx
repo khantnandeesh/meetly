@@ -114,6 +114,7 @@ const dialogClass =
  */
 export function HostProvider({ localIdentity, children }: { localIdentity: string; children: React.ReactNode }) {
   const call = useCall();
+  const webinar = call.mode === "webinar";
   const hostId = useHostIdentity();
   const coHosts = useCoHosts();
   const access = useAccess();
@@ -323,7 +324,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                   setRemoving(null);
                 }}
               >
-                Remove from meeting
+                Remove from {webinar ? "webinar" : "meeting"}
               </button>
             </div>
           </Dialog.Content>
@@ -335,9 +336,13 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
           <Dialog.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/70" />
           <Dialog.Content className={dialogClass}>
             <div className="flex flex-col gap-2">
-              <Dialog.Title className="font-display text-xl font-semibold">End the meeting for everyone?</Dialog.Title>
+              <Dialog.Title className="font-display text-xl font-semibold">
+                {webinar ? "End webinar for everyone?" : "End the meeting for everyone?"}
+              </Dialog.Title>
               <Dialog.Description className="text-[0.9375rem] leading-relaxed text-muted">
-                Everyone leaves the meeting, including you. The link still works if you want to meet again.
+                {webinar
+                  ? "Everyone leaves the webinar, including you and the audience. The link still works for another one."
+                  : "Everyone leaves the meeting, including you. The link still works if you want to meet again."}
               </Dialog.Description>
             </div>
             <div className="flex justify-end gap-2">
@@ -347,11 +352,11 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                 onClick={() => {
                   setEnding(false);
                   // The goodbye screen is the confirmation.
-                  void run({ action: "end" }, null, "Couldn't end the meeting");
+                  void run({ action: "end" }, null, webinar ? "Couldn't end the webinar" : "Couldn't end the meeting");
                 }}
               >
                 <PhoneOff className="size-[1.125rem]" aria-hidden="true" />
-                End meeting
+                {webinar ? "End webinar for everyone" : "End meeting"}
               </button>
             </div>
           </Dialog.Content>
@@ -371,9 +376,12 @@ function useDepartures(): readonly Departure[] {
   const [list, setList] = useState<readonly Departure[]>([]);
   useEffect(() => {
     const stops = [
-      call.on("participantLeft", (person) =>
-        setList((current) => recordLeave(current, { identity: person.identity, name: person.name, at: Date.now() })),
-      ),
+      call.on("participantLeft", (person) => {
+        // Webinars: the list is of speakers and co-hosts. The audience comes and goes as a
+        // change in its count; who watched waits for an attendance export.
+        if (call.mode === "webinar" && person.role === "viewer" && !call.coHosts().includes(person.identity)) return;
+        setList((current) => recordLeave(current, { identity: person.identity, name: person.name, at: Date.now() }));
+      }),
       call.on("participantJoined", (person) => setList((current) => recordJoin(current, person))),
     ];
     return () => stops.forEach((stop) => stop());
@@ -399,6 +407,7 @@ export function HostMenu({
   variant: "row" | "tile";
 }) {
   const { canModerate, isHost, hostId, coHosts, supports, mute, stopCamera, lowerHand, setCoHost, askRemove } = useHost();
+  const webinar = useCall().mode === "webinar";
   if (!canModerate || participant.isLocal || participant.identity === hostId) return null;
   const name = displayName(participant);
   const isCoHost = coHosts.includes(participant.identity);
@@ -418,11 +427,14 @@ export function HostMenu({
       <Dropdown.Portal>
         <Dropdown.Content align="end" sideOffset={6} collisionPadding={12} className="menu">
           <Dropdown.Label className="menu-label">{name}</Dropdown.Label>
-          <Dropdown.Item className="menu-item" disabled={!micOn} onSelect={() => mute(participant)}>
-            <MicOff className="size-4 text-muted" aria-hidden="true" />
-            {micOn ? "Mute microphone" : "Already muted"}
-          </Dropdown.Item>
-          {supports.stopCamera && (
+          {/* The audience has no microphone or camera to turn off. */}
+          {participant.role !== "viewer" && (
+            <Dropdown.Item className="menu-item" disabled={!micOn} onSelect={() => mute(participant)}>
+              <MicOff className="size-4 text-muted" aria-hidden="true" />
+              {micOn ? "Mute microphone" : "Already muted"}
+            </Dropdown.Item>
+          )}
+          {supports.stopCamera && participant.role !== "viewer" && (
             <Dropdown.Item className="menu-item" disabled={!camOn} onSelect={() => stopCamera(participant)}>
               <VideoOff className="size-4 text-muted" aria-hidden="true" />
               {camOn ? "Turn off camera" : "Camera already off"}
@@ -448,7 +460,7 @@ export function HostMenu({
           <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant, variant)}>
             <UserX className="size-4" aria-hidden="true" />
-            Remove from meeting
+            Remove from {webinar ? "webinar" : "meeting"}
           </Dropdown.Item>
         </Dropdown.Content>
       </Dropdown.Portal>

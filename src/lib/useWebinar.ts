@@ -94,6 +94,11 @@ export function useAudience(): RtcParticipant[] {
   );
 }
 
+/** What the call is called in what people read: "webinar" in a webinar, "meeting" otherwise. */
+export function useCallNoun(): "meeting" | "webinar" {
+  return useCall().mode === "webinar" ? "webinar" : "meeting";
+}
+
 /** How many are watching, you included if you are. */
 export function useWatchingCount(): number {
   const call = useCall();

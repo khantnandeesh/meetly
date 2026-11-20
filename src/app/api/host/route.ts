@@ -1,8 +1,8 @@
 import { liveKitHostAction, lobbyWatchToken, verifyCaller } from "@/lib/host.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
 import { DENIED, parseHostAction } from "@/lib/rtc/hostAction";
-import { realtimeKitHostAction } from "@/lib/rtc/server/realtimekit";
-import { liveKitStage } from "@/lib/webinar.server";
+import { realtimeKitHostAction, realtimeKitWebinarRejoin } from "@/lib/rtc/server/realtimekit";
+import { liveKitRejoin, liveKitStage } from "@/lib/webinar.server";
 
 /**
  * Moderation by the host and co-hosts (see `HostAction` in src/lib/rtc/types.ts for the list).
@@ -22,6 +22,10 @@ import { liveKitStage } from "@/lib/webinar.server";
  * RealtimeKit builds also answer { session, action: "roles" } for any participant: who the
  * co-hosts are and who may join. LiveKit builds answer { token, action: "lobby" } for the host
  * and co-hosts with a token to watch who is asking to join.
+ *
+ * Webinars, both providers: { session | token, action: "rejoin" } answers anyone whose role just
+ * changed (made co-host, or no longer) with a fresh way in for the same person (see
+ * src/lib/webinar.server.ts and src/lib/rtc/server/realtimekit.ts).
  */
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -33,14 +37,23 @@ export async function POST(request: Request) {
   }
   if (RTC_PROVIDER === "realtimekit") {
     const wanted = body.action === "roles" ? ({ action: "roles" } as const) : parseHostAction(body);
-    if (!wanted || typeof body.session !== "string") return Response.json({ error: "Invalid request." }, { status: 400 });
-    const result = await realtimeKitHostAction(body.session, wanted);
+    if (body.action !== "rejoin" && (!wanted || typeof body.session !== "string")) {
+      return Response.json({ error: "Invalid request." }, { status: 400 });
+    }
+    // Webinars: a fresh token for someone whose role changed (see src/lib/rtc/server/realtimekit.ts).
+    const result =
+      body.action === "rejoin" ? await realtimeKitWebinarRejoin(body.session) : await realtimeKitHostAction(body.session, wanted!);
     return result.status === 200
       ? Response.json({ ok: true, ...result.data })
       : Response.json({ error: result.error }, { status: result.status });
   }
 
   if (typeof body.token !== "string") return Response.json({ error: "Invalid request." }, { status: 400 });
+  if (body.action === "rejoin") {
+    const caller = await verifyCaller(body.token);
+    const result = caller ? await liveKitRejoin(caller) : DENIED;
+    return result.status === 200 ? Response.json({ ok: true, token: result.token }) : Response.json({ error: result.error }, { status: result.status });
+  }
   if (body.action === "lobby") {
     // A way to see who is asking to join (see `lobbyOf` in src/lib/host.server.ts).
     const caller = await verifyCaller(body.token);

@@ -1,7 +1,7 @@
 import { GONE, NOT_THE_HOST, OWN_CONTROLS, DENIED, type HostActionResult } from "./rtc/hostAction";
 import { STAGE_ATTRIBUTE, STAGE_INVITED } from "./rtc/stage";
 import type { HostAction } from "./rtc/types";
-import { parseRoomMeta, roomService, type Caller } from "./host.server";
+import { mintJoinToken, parseRoomMeta, roomService, type Caller } from "./host.server";
 
 /**
  * Webinars on LiveKit, on the server: who may publish, and how many may watch.
@@ -23,13 +23,40 @@ const SPEAKER = { ...VIEWER, canPublish: true };
 const NOT_A_WEBINAR = { status: 400, error: "Only a webinar has a stage." } as const satisfies HostActionResult;
 const HOST_STAYS = { status: 400, error: "The host stays on stage." } as const satisfies HostActionResult;
 
-/** Whether the room's record says it is a webinar. False if LiveKit could not be asked. */
-export async function liveKitIsWebinar(room: string): Promise<boolean> {
+/**
+ * A fresh token for someone whose role in a webinar just changed (made co-host, or no longer),
+ * for the same identity. On LiveKit a co-host needs nothing new (our server reads the record on
+ * every request), but the client reconnects all the same, so that "Switching to co-host…" is the
+ * same moment on both providers. The token keeps what they may publish now: someone on stage
+ * stays on stage.
+ */
+export async function liveKitRejoin(caller: Caller): Promise<{ status: 200; token: string } | Exclude<HostActionResult, { status: 200 }>> {
+  const service = roomService();
+  if (!service) return DENIED;
+  if (caller.meta.mode !== "webinar" || caller.role === "host") return { status: 400, error: "Invalid request." };
+  try {
+    const person = await service.getParticipant(caller.room, caller.identity);
+    const kind = person.permission?.canPublish ? "member" : "viewer";
+    return { status: 200, token: await mintJoinToken(caller.room, caller.identity, person.name, kind) };
+  } catch {
+    return GONE;
+  }
+}
+
+/**
+ * Whether `identity` is in a webinar's audience and so reads the chat without writing in it:
+ * not on stage (cannot publish), and neither its host nor a co-host, who moderate from wherever
+ * they are. False if LiveKit could not be asked.
+ */
+export async function liveKitChatReadOnly(room: string, identity: string, canPublish: boolean): Promise<boolean> {
+  if (canPublish) return false;
   const service = roomService();
   if (!service) return false;
   try {
     const [existing] = await service.listRooms([room]);
-    return !!existing && parseRoomMeta(existing.metadata).mode === "webinar";
+    if (!existing) return false;
+    const meta = parseRoomMeta(existing.metadata);
+    return meta.mode === "webinar" && meta.host !== identity && !meta.cohosts?.includes(identity);
   } catch {
     return false;
   }

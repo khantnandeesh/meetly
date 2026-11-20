@@ -300,6 +300,12 @@ export interface RtcCall {
   readonly native: unknown;
   /** A meeting or a webinar. It never changes during the call. */
   readonly mode: CallMode;
+  /**
+   * Webinars: you were just made co-host ("cohost"), or are no longer one ("audience"), and the
+   * call is reconnecting you with what that role needs. Null otherwise. A change is announced by
+   * the `status` event; the call stays the same object throughout.
+   */
+  readonly switching: "cohost" | "audience" | null;
 
   /* connection */
   readonly status: ConnectionStatus;
@@ -453,6 +459,8 @@ export type JoinGrant =
       reactions?: boolean;
       /** Absent means "meeting". */
       mode?: CallMode;
+      /** Webinars: the audience's preset and a co-host's, so the client knows which one it holds. */
+      webinarPresets?: { viewer: string; cohost: string };
     };
 
 export type RtcProviderModule = {

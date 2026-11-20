@@ -175,7 +175,7 @@ test("livekit: the audience reads the chat but cannot write in it; the host and 
   const { host, viewer } = await webinarWithViewer();
   const send = async (token: string) => (await chatRoute(post({ token, action: "send", text: "Hello" }))).status;
   const refused = await chatRoute(post({ token: viewer.token, action: "send", text: "Hello" }));
-  assert.deepEqual([refused.status, await refused.json()], [403, { error: "Only people on stage can send messages in this webinar." }]);
+  assert.deepEqual([refused.status, await refused.json()], [403, { error: "Only speakers and hosts can send messages." }]);
   assert.equal(await send(host.token), 200);
   await stage(host.token, viewer.id, true);
   assert.equal(await send(viewer.token), 200, "on stage, or invited");
@@ -293,7 +293,8 @@ const rtkGrant: Extract<JoinGrant, { provider: "realtimekit" }> = {
 
 async function rtkWebinar(setup: { host?: boolean; canStage?: boolean } = {}) {
   const self = new FakeSelf("self", "Vic", { presetName: setup.host ? "meetly-webinar-host" : "meetly-webinar-viewer" });
-  self.permissions = { acceptWaitingRequests: false, canDisableParticipantVideo: false, acceptStageRequests: setup.canStage ?? !!setup.host };
+  const canStage = setup.canStage ?? !!setup.host;
+  self.permissions = { acceptWaitingRequests: false, canDisableParticipantVideo: false, acceptStageRequests: canStage, canChangeParticipantPermissions: canStage };
   const meeting = new FakeMeeting(self);
   meeting.stage.direct = !!setup.host;
   if (setup.host) meeting.stage.status = "ACCEPTED_TO_JOIN_STAGE";

@@ -18,7 +18,7 @@ import {
   type HostApi,
   notice,
 } from "./shared";
-import { RealtimeKitStage, stageRole } from "./stage.realtimekit";
+import { RealtimeKitStage, mayChangeStage, stageRole } from "./stage.realtimekit";
 import { POLL_LIMITS } from "./types";
 import type {
   BackgroundMode,
@@ -270,7 +270,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "realtimekit" as const;
   readonly mode: CallMode;
 
-  private readonly grant: Grant;
+  /** Replaced only when a new role brings a new token (see `switchRole`). */
+  private grant: Grant;
+  switching: "cohost" | "audience" | null = null;
   private readonly choices: JoinChoices;
   private readonly factory: MeetingFactory;
   private readonly api: HostApi;
@@ -595,6 +597,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.emit("speakers");
     // Webinars: the host takes the stage. Failing to is said, since nobody would see or hear them.
     this.stage.joined(meeting, this.isHost()).catch(() => this.fail(notice("Couldn't put you on stage. Leave and rejoin the webinar.")));
+    if (this.switching) {
+      this.switching = null;
+      this.emit("status");
+    }
   }
 
   /**
@@ -614,6 +620,12 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private finish(reason: DisconnectReason): void {
     if (this.ended) return;
     this.ended = true;
+    this.release();
+    this.emit("disconnected", reason);
+  }
+
+  /** Lets go of the meeting object and everything attached to it. The conversation is kept. */
+  private release(): void {
     this.joined = false;
     this.waitlisted = false;
     this.waiters = [];
@@ -646,7 +658,41 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.statusChanged();
     this.rosterChanged();
     this.tilesChanged();
-    this.emit("disconnected", reason);
+  }
+
+  /**
+   * Webinars: a co-host moderates from the audience with a preset of their own, and a preset is
+   * fixed when a token is made. So someone made co-host (or no longer one) gets a fresh token for
+   * the same participant record from our server, and this client leaves and joins again with it:
+   * "Switching to co-host…" for a second or two. Should RealtimeKit apply a preset change to a
+   * live participant, the server's PATCH alone would do and this could go; that is untested.
+   */
+  private syncPreset(): void {
+    const presets = this.grant.webinarPresets;
+    const me = this.meeting?.self;
+    if (this.mode !== "webinar" || !presets || !me || !this.joined || this.switching || this.isHost()) return;
+    const want = this.cohosts.includes(this.self.identity) ? presets.cohost : presets.viewer;
+    if (me.presetName && me.presetName !== want) void this.switchRole(want === presets.cohost);
+  }
+
+  private async switchRole(coHost: boolean): Promise<void> {
+    this.switching = coHost ? "cohost" : "audience";
+    this.emit("status");
+    try {
+      const data = await this.api({ session: this.grant.session, action: "rejoin" });
+      if (typeof data.authToken !== "string") throw new Error("No token");
+      const meeting = this.meeting;
+      // Quietly: listeners go first, so leaving is not taken for the call ending.
+      this.release();
+      this.meeting = null;
+      await meeting?.leave().catch(() => {});
+      this.grant = { ...this.grant, authToken: data.authToken };
+      this.connect();
+    } catch {
+      this.switching = null;
+      this.emit("status");
+      this.fail(notice(coHost ? "Couldn't switch you to co-host. Leave and rejoin the webinar." : "Couldn't update your role. Leave and rejoin the webinar."));
+    }
   }
 
   /* ------------------------------------------------------------------ people */
@@ -715,8 +761,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       // RealtimeKit's own polls: each preset says whether its holders see them, vote and start them.
       polls: !!permissions?.polls?.canView,
       createPolls: !!permissions?.polls?.canCreate,
-      // Co-hosts hold the audience's preset, which cannot change the stage: in practice, the host.
-      stage: this.mode === "webinar" && !!permissions?.acceptStageRequests,
+      // Both the stage and the speaker's chat (see stage.realtimekit.ts): the host, and co-hosts if their preset allows both.
+      stage: this.mode === "webinar" && !!this.meeting && mayChangeStage(this.meeting),
     };
   }
 
@@ -767,6 +813,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     if (coHosts.join() !== this.cohosts.join()) {
       this.cohosts = coHosts;
       this.emit("host");
+      this.syncPreset();
     }
     if (access !== this.gate) {
       this.gate = access;
@@ -922,7 +969,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     peer.on("mediaScoreUpdate", onScore);
     // Webinars: coming on stage, or going back to the audience. Statuses arrive with the
     // participant and with this event; nobody is asked who is on stage.
-    const onStage = () => this.stageChanged();
+    const onStage = () => {
+      this.stageChanged();
+      if (this.meeting) this.stage.peerStageChanged(this.meeting, peer);
+    };
     if (this.mode === "webinar") peer.on("stageStatusUpdate", onStage);
     const stop = () => {
       peer.off("stageStatusUpdate", onStage);

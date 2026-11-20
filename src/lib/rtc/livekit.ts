@@ -331,6 +331,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "livekit" as const;
   readonly native: Room;
   readonly mode: CallMode;
+  switching: "cohost" | "audience" | null = null;
+  /** Reconnecting on purpose, with a new token (see `switchRole`): not the call ending. */
+  private swapping = false;
+  /** Webinars: whether you were a co-host when this connection was made. Null until known. */
+  private coHostAsJoined: boolean | null = null;
 
   private readonly people = new WeakMap<Participant, LiveKitParticipant>();
   private readonly videos = new WeakMap<TrackPublication, LiveKitVideo>();
@@ -415,6 +420,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   /* -------------------------------------------------------------- connection */
 
   get status(): ConnectionStatus {
+    if (this.swapping && this.native.state === ConnectionState.Disconnected) return "connecting";
     if (this.lobby) return this.lobby.state === ConnectionState.Connecting ? "connecting" : "waiting";
     switch (this.native.state) {
       case ConnectionState.Connecting:
@@ -590,6 +596,46 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     this.readPolls();
     this.repairVotes();
     this.syncLobbyWatch();
+    this.syncWebinarRole();
+  }
+
+  /**
+   * Webinars: someone made co-host, or no longer one, reconnects with a fresh token for the same
+   * identity, the way RealtimeKit has to (its presets decide what a co-host may do). On LiveKit
+   * our server reads the record on every request, so nothing would strictly need it; doing the
+   * same here keeps "Switching to co-host…" the same moment on both providers.
+   */
+  private syncWebinarRole(): void {
+    const me = this.native.localParticipant.identity;
+    if (this.mode !== "webinar" || this.switching || !me || this.native.state !== ConnectionState.Connected) return;
+    if (this.meta.host === null || this.meta.host === me) return;
+    const coHost = this.meta.coHosts.includes(me);
+    if (this.coHostAsJoined === null) {
+      this.coHostAsJoined = coHost;
+      return;
+    }
+    if (coHost !== this.coHostAsJoined) void this.switchRole(coHost);
+  }
+
+  private async switchRole(coHost: boolean): Promise<void> {
+    this.switching = coHost ? "cohost" : "audience";
+    this.emit("status");
+    try {
+      const data = await postHost({ token: this.token, action: "rejoin" });
+      if (typeof data.token !== "string") throw new Error("No token");
+      this.swapping = true;
+      this.memberToken = data.token;
+      this.coHostAsJoined = null;
+      await this.native.disconnect();
+      this.enter(++this.attempt);
+    } catch {
+      this.swapping = false;
+      this.switching = null;
+      // What the server records is what counts; the next change of role tries again.
+      this.coHostAsJoined = coHost;
+      this.emit("status");
+      this.emit("error", notice(coHost ? "Couldn't switch you to co-host. Leave and rejoin the webinar." : "Couldn't update your role. Leave and rejoin the webinar."));
+    }
   }
 
   private get canModerate(): boolean {
@@ -1468,6 +1514,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       })
       .on(RoomEvent.Connected, this.sweepUnattached)
       .on(RoomEvent.Connected, () => {
+        if (this.switching) {
+          this.swapping = false;
+          this.switching = null;
+          this.emit("status");
+        }
         if (room.remoteParticipants.size > 0) this.askForHistory();
         this.resync("noise");
         // Something else may have had the microphone open when the call opened it (the pre-join
@@ -1494,6 +1545,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         this.audioSink?.remove();
         this.audioSink = null;
         this.stopLobbyWatch();
+        // Reconnecting with a new token for a new role is not the call ending.
+        if (this.swapping) return;
         this.emit("disconnected", whyDisconnected(reason, false));
       })
       .on(RoomEvent.RoomMetadataChanged, () => this.readMeta())

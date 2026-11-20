@@ -119,6 +119,8 @@ export class FakeSelf extends FakeParticipant {
     polls?: { canCreate: boolean; canVote: boolean; canView: boolean };
     /** PermissionPreset.acceptStageRequests (`can_accept_production_requests`): may change who is on stage. */
     acceptStageRequests?: boolean;
+    /** PermissionPreset.canChangeParticipantPermissions: may use `participants.updatePermissions`. */
+    canChangeParticipantPermissions?: boolean;
   } = { acceptWaitingRequests: false, canDisableParticipantVideo: false };
   /** RTKSelfMedia.updateVideoConstraints: what the running camera was asked to become. */
   videoConstraintCalls: unknown[] = [];
@@ -203,6 +205,20 @@ export class FakeParticipants extends EventEmitter {
   waitlisted = new FakeParticipantMap();
   accepted: string[] = [];
   rejected: string[] = [];
+  /**
+   * Participants.updatePermissions: what someone may do for the rest of the session. The calls
+   * are recorded; set `failPermissions` to make the next one fail. What a real session does
+   * with them has not been tried.
+   */
+  permissionCalls: { ids: string[]; patch: unknown }[] = [];
+  failPermissions = false;
+  async updatePermissions(ids: string[], patch: unknown) {
+    if (this.failPermissions) {
+      this.failPermissions = false;
+      throw new Error("permissions update failed");
+    }
+    this.permissionCalls.push({ ids, patch });
+  }
   acceptWaitingRoomRequest(id: string) {
     this.accepted.push(id);
     this.waitlisted.remove(id);

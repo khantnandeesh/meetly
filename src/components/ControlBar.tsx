@@ -42,6 +42,7 @@ import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
 import { deviceError } from "@/lib/notices";
 import { noteOwnMicToggle, useOffByHost, useSoundSettings } from "@/lib/useSounds";
+import { useCallNoun, useOnStage } from "@/lib/useWebinar";
 import { DataSaverBadge, setDataSaver } from "./CallQuality";
 import { useUnread } from "./ChatStore";
 import { useHost } from "./HostTools";
@@ -49,6 +50,7 @@ import { LayoutMenuItems } from "./LayoutMenu";
 import { useMini } from "./MiniWindow";
 import { ChatPreviewsSwitch, ReactionsSwitch } from "./NoticeSwitches";
 import { ReactMenu } from "./Reactions";
+import { OnStageChip } from "./StageInvite";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -96,6 +98,9 @@ export function ControlBar({
   const toast = useToast();
   const copyState = useCopied(onCopyLink);
   const { isHost, waiting, askEnd } = useHost();
+  // "Leave webinar", "End webinar for everyone": the call is named as what it is.
+  const noun = useCallNoun();
+  const onStage = useOnStage();
   const mini = useMini();
 
   // Tagged per device: tapping a failing button again updates the one notification.
@@ -157,8 +162,8 @@ export function ControlBar({
   );
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
-    <Tip label="Leave meeting">
-      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave meeting" onClick={() => call.disconnect().catch(() => {})}>
+    <Tip label={`Leave ${noun}`}>
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label={`Leave ${noun}`} onClick={() => call.disconnect().catch(() => {})}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
@@ -234,12 +239,13 @@ export function ControlBar({
       {/* At the narrowest large screens the controls take the room: the clock goes first, so the
           bar's right-hand buttons never slide over the leave button (see the grid's third column). */}
       <div className="@container flex min-w-0 items-center gap-1 text-sm text-muted @max-[5rem]:*:hidden">
-        <Clock className="@max-[11rem]:hidden" />
+        {/* On a webinar's stage the clock's place says so, with the way back to the audience. */}
+        {onStage ? <OnStageChip /> : <Clock className="@max-[11rem]:hidden" />}
         <span className="mx-2 h-4 w-px shrink-0 bg-border-strong @max-[11rem]:hidden" aria-hidden="true" />
-        <Tip label="Copy meeting link">
+        <Tip label={`Copy ${noun} link`}>
           <button
             onClick={copyState.copy}
-            aria-label={`Copy meeting link, code ${code}`}
+            aria-label={`Copy ${noun} link, code ${code}`}
             className="-ml-2 inline-flex h-10 min-w-0 cursor-pointer items-center gap-2 rounded-xl px-2 font-mono text-[0.8125rem] transition-colors hover:bg-surface-2 hover:text-text"
           >
             {/* Both labels share one cell, so the confirmation does not change the button's width. */}
@@ -292,11 +298,11 @@ export function ControlBar({
                 <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu">
                   <Dropdown.Item className="menu-item" onSelect={() => call.disconnect().catch(() => {})}>
                     <LogOut className="size-4 text-muted" aria-hidden="true" />
-                    Leave meeting
+                    Leave {noun}
                   </Dropdown.Item>
                   <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                     <PhoneOff className="size-4" aria-hidden="true" />
-                    End meeting for everyone
+                    End {noun} for everyone
                   </Dropdown.Item>
                 </Dropdown.Content>
               </Dropdown.Portal>
@@ -331,7 +337,7 @@ export function ControlBar({
             <Users className="size-5" aria-hidden="true" />
             <span className="sr-only">People, </span>
             <span className="text-sm font-semibold tabular-nums">{fullCount(headcount)}</span>
-            <span className="sr-only">{waiting.length > 0 ? " in the meeting, " : " in the meeting"}</span>
+            <span className="sr-only">{waiting.length > 0 ? ` in the ${noun}, ` : ` in the ${noun}`}</span>
             {waiting.length > 0 && (
               // Stays for as long as somebody is waiting; the notification is what announces them.
               <span
@@ -367,6 +373,7 @@ function PhoneMoreItems({
   onEnd?: () => void;
 }) {
   const [view, setView] = useState<"main" | "layout" | "devices">("main");
+  const noun = useCallNoun();
   const first = useRef<HTMLDivElement>(null);
   const moved = useRef(false);
   // Changing level keeps the menu open and puts focus at the top of the new level (not when the
@@ -425,7 +432,7 @@ function PhoneMoreItems({
           <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={onEnd}>
             <PhoneOff className="size-4" aria-hidden="true" />
-            End meeting for everyone
+            End {noun} for everyone
           </Dropdown.Item>
         </>
       )}

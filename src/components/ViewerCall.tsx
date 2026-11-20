@@ -1,17 +1,21 @@
 "use client";
 
-import { LoaderCircle, Mic, Volume2, WifiOff, X } from "lucide-react";
+import { LoaderCircle, Mic, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
-import { useAudioBlocked, useCall, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
+import { copyText, useCopied, useIsPhone } from "@/lib/hooks";
+import { useCall, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
 import type { RtcTile } from "@/lib/rtc/types";
-import { useWatchingCount } from "@/lib/useWebinar";
-import { ChatPanel } from "./ChatPanel";
+import { useStageParticipants, useWatchingCount } from "@/lib/useWebinar";
+import { ChatPanel, SaveChatButton } from "./ChatPanel";
+import { HostProvider, useHost } from "./HostTools";
+import { ModerationNotices } from "./ModerationNotices";
+import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { Stage, refKey } from "./Stage";
-import { StageInvite } from "./StageInvite";
-import { ViewerControlBar } from "./ViewerControlBar";
+import { StageInvite, Switching } from "./StageInvite";
+import { StatusLane } from "./StatusLane";
+import { LiveCount, PeopleToggle, ViewerControlBar, type ViewerPanel } from "./ViewerControlBar";
 import { CopyIcon } from "./ui/CopyIcon";
 import { LogoMark } from "./ui/Logo";
 
@@ -20,19 +24,33 @@ const PHONE_PAGE_SIZE = 6;
 
 /**
  * A webinar, as its audience sees it: the people on stage and what they share, never a tile of
- * your own; "Live · N watching" at the top; Raise hand, React and Leave below. The chat is there
- * to read and polls to vote in. Nothing here names anyone else who is watching, and nothing
- * announces them coming or going.
+ * your own, with Raise hand, React and Leave below and "● Live · N watching" beside them (on a
+ * phone, in the top bar). The chat is there to read and polls to vote in. Nothing here names
+ * anyone else who is watching, and nothing announces them coming or going.
+ *
+ * A co-host moderates from here, off stage: People (with the Audience, the waiting list and the
+ * host's controls) is theirs, and so is the chat's composer.
  *
  * When the host invites you to speak and you say yes, you are on stage, and the meeting's own
  * screen takes over (see the branch at the end of Conference.tsx).
  */
 export function ViewerCall({ code }: { code: string }) {
   const call = useCall();
+  return (
+    <HostProvider localIdentity={call.local.identity}>
+      <Audience code={code} />
+    </HostProvider>
+  );
+}
+
+function Audience({ code }: { code: string }) {
+  const call = useCall();
   const phone = useIsPhone();
   const connection = useConnectionStatus();
+  const { canModerate } = useHost();
   // A hand going up or down is a roster change, so this is current on every render.
   useParticipants();
+  const onStage = useStageParticipants();
   const handRaised = call.local.handRaised;
   const watching = useWatchingCount();
 
@@ -76,63 +94,66 @@ export function ViewerCall({ code }: { code: string }) {
   }, []);
 
   /* --------------------------------------------------------------- controls */
-  const [chatOpen, setChatOpen] = useState(false);
+  const [panel, setPanel] = useState<ViewerPanel>(null);
+  // People is a co-host's only; losing the role closes it.
+  const shown: ViewerPanel = panel === "people" && !canModerate ? null : panel;
+  const togglePanel = useCallback((next: Exclude<ViewerPanel, null>) => setPanel((current) => (current === next ? null : next)), []);
   const [reactOpen, setReactOpen] = useState(false);
   const toggleHand = useCallback(() => void call.setHandRaised(!call.local.handRaised).catch(() => {}), [call]);
-  const openChat = useCallback(() => setChatOpen(true), []);
+  const openChat = useCallback(() => setPanel("chat"), []);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.altKey || event.repeat) return;
       const target = event.target as HTMLElement;
       if (target.closest("input, textarea, select, [contenteditable='true'], [role='menu'], [role='dialog']")) return;
       if (event.key === "Escape") {
-        setChatOpen(false);
+        setPanel(null);
         return;
       }
       const key = event.key.toLowerCase();
       if (key === "h") toggleHand();
       else if (key === "r" && call.status === "connected") setReactOpen(true);
-      else if (key === "c") setChatOpen((open) => !open);
+      else if (key === "c") togglePanel("chat");
       else return;
       event.preventDefault();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [call, toggleHand]);
+  }, [call, toggleHand, togglePanel]);
 
   const copyLink = useCallback(() => copyText(`${window.location.origin}/${code}`), [code]);
   const copied = useCopied(copyLink);
-  const live = connection === "connected" || connection === "reconnecting";
+  const sheetOpen = phone && shown !== null;
+  const panelTitle = shown === "people" ? "People" : "Chat";
+  const closePanel = () => {
+    if (shown) document.getElementById(`toggle-${shown}`)?.focus();
+    setPanel(null);
+  };
 
   return (
     <>
+      {canModerate && <ModerationNotices localIdentity={call.local.identity} peopleOpen={shown === "people"} onShowPeople={() => setPanel("people")} />}
       <ReactionFeed />
-      <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))] md:px-4 md:pt-3">
-        <button
-          onClick={copied.copy}
-          aria-label={`Copy webinar link, code ${code}`}
-          className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted transition-colors hover:bg-surface-2 active:bg-surface-2"
-        >
-          <LogoMark className="size-7 shrink-0" />
-          <span className="truncate">{copied.copied ? "Copied" : code}</span>
-          <CopyIcon copied={copied.copied} />
-          <span className="sr-only" role="status">
-            {copied.copied ? "Webinar link copied" : ""}
-          </span>
-        </button>
-        {live && (
-          <p data-live className="chip h-9 shrink-0 gap-2 px-3 text-sm font-medium">
-            <span className="size-2 rounded-full bg-danger" aria-hidden="true" />
-            <span className="font-semibold">Live</span>
-            <span className="text-muted" aria-hidden="true">
-              ·
+      {phone && (
+        <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
+          <button
+            onClick={copied.copy}
+            aria-label={`Copy webinar link, code ${code}`}
+            className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
+          >
+            <LogoMark className="size-7 shrink-0" />
+            <span className="truncate">{copied.copied ? "Copied" : code}</span>
+            <CopyIcon copied={copied.copied} />
+            <span className="sr-only" role="status">
+              {copied.copied ? "Link copied" : ""}
             </span>
-            <span className="tabular-nums" data-watching>
-              {watching.toLocaleString("en-US")} watching
-            </span>
-          </p>
-        )}
-      </header>
+          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <LiveCount watching={watching} compact />
+            {canModerate && <PeopleToggle open={shown === "people"} onToggle={() => togglePanel("people")} />}
+          </div>
+        </header>
+      )}
 
       <div className="relative flex min-h-0 flex-1 gap-3 p-3 max-md:py-2">
         <main className="relative min-w-0 flex-1" aria-label="Webinar stage">
@@ -160,34 +181,31 @@ export function ViewerCall({ code }: { code: string }) {
             />
           )}
           <ReactionLane />
-          <div className="pointer-events-none absolute inset-x-0 top-3 z-40 flex flex-col items-center gap-2 px-3">
-            <Reconnecting show={connection === "reconnecting"} />
-            <AudioUnlock />
-            <StageInvite />
-          </div>
+          <StatusLane phone={phone} sheetOpen={sheetOpen} />
         </main>
 
-        {chatOpen && (
+        {shown && (
           <>
-            {phone && <div className="panel-scrim fixed inset-0 z-40 bg-black/55" onClick={() => setChatOpen(false)} aria-hidden="true" />}
+            {phone && <div className="panel-scrim fixed inset-0 z-40 bg-black/55" onClick={() => setPanel(null)} aria-hidden="true" />}
             <aside
-              aria-label="Chat"
+              aria-label={panelTitle}
               className="panel flex w-[22.5rem] shrink-0 flex-col overflow-hidden rounded-[1.25rem] bg-surface shadow-[inset_0_0_0_1px_var(--border)] max-md:fixed max-md:inset-x-0 max-md:top-[max(3.5rem,env(safe-area-inset-top))] max-md:bottom-0 max-md:z-50 max-md:w-auto max-md:rounded-b-none"
             >
               <div className="flex items-center justify-between py-2.5 pr-2.5 pl-5 max-md:pt-4">
-                <h2 className="font-display text-lg font-semibold">Chat</h2>
-                <button
-                  className="icon-btn"
-                  onClick={() => {
-                    setChatOpen(false);
-                    document.getElementById("toggle-chat")?.focus();
-                  }}
-                  aria-label="Close chat"
-                >
-                  <X className="size-5" aria-hidden="true" />
-                </button>
+                <h2 className="font-display text-lg font-semibold">{panelTitle}</h2>
+                <div className="flex items-center gap-0.5">
+                  {shown === "chat" && canModerate && <SaveChatButton code={code} />}
+                  <button className="icon-btn" onClick={closePanel} aria-label={`Close ${panelTitle.toLowerCase()}`}>
+                    <X className="size-5" aria-hidden="true" />
+                  </button>
+                </div>
               </div>
-              <ChatPanel autoFocus={false} readOnly />
+              {shown === "chat" ? (
+                // The audience reads; a co-host, who moderates from here, writes too.
+                <ChatPanel autoFocus={false} readOnly={!canModerate} />
+              ) : (
+                <PeoplePanel participants={onStage} code={code} onCopyLink={copyLink} />
+              )}
             </aside>
           </>
         )}
@@ -195,14 +213,20 @@ export function ViewerCall({ code }: { code: string }) {
 
       <ViewerControlBar
         phone={phone}
+        code={code}
+        watching={watching}
         handRaised={handRaised}
         onToggleHand={toggleHand}
         reactOpen={reactOpen}
         onReactOpenChange={setReactOpen}
-        chatOpen={chatOpen}
-        onToggleChat={() => setChatOpen((open) => !open)}
+        panel={shown}
+        onTogglePanel={togglePanel}
+        moderating={canModerate}
+        onCopyLink={copyLink}
       />
-      <PollToasts open={chatOpen} onShow={openChat} />
+      <PollToasts open={shown === "chat"} onShow={openChat} />
+      <StageInvite />
+      <Switching />
     </>
   );
 }
@@ -226,34 +250,5 @@ function EmptyStage({ connecting }: { connecting: boolean }) {
         </div>
       )}
     </div>
-  );
-}
-
-function Reconnecting({ show }: { show: boolean }) {
-  const presence = usePresence(show);
-  if (!presence.mounted) return null;
-  return (
-    <p
-      role={show ? "status" : undefined}
-      data-leaving={presence.leaving}
-      onAnimationEnd={presence.onAnimationEnd}
-      className="anim-pop chip h-9 gap-2 px-3.5 text-warn shadow-lg"
-    >
-      <WifiOff className="size-4" aria-hidden="true" />
-      Connection lost. Reconnecting…
-    </p>
-  );
-}
-
-/** Browsers may block sound until the page is interacted with; for an audience that is the whole point. */
-function AudioUnlock() {
-  const call = useCall();
-  const blocked = useAudioBlocked();
-  if (!blocked) return null;
-  return (
-    <button onClick={() => call.startAudio().catch(() => {})} className="btn btn-primary anim-pop pointer-events-auto h-11 rounded-xl shadow-lg">
-      <Volume2 className="size-[1.125rem]" aria-hidden="true" />
-      Turn on sound
-    </button>
   );
 }

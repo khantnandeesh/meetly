@@ -34,6 +34,8 @@ const FEATURES = [
 export default function Home() {
   const router = useRouter();
   const [starting, setStarting] = useState(false);
+  // The menu covers part of the illustration on a phone; its floating message steps aside.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // The server makes the meeting, with this browser as its host. If it cannot be asked, any new
   // code works as well: the first person into it becomes host instead.
@@ -103,7 +105,7 @@ export default function Home() {
                   )}
                   New meeting
                 </button>
-                <Dropdown.Root>
+                <Dropdown.Root onOpenChange={setMenuOpen}>
                   <Dropdown.Trigger
                     className="btn btn-primary group w-11 rounded-l-md px-0"
                     aria-label="More ways to start a meeting"
@@ -143,7 +145,7 @@ export default function Home() {
           </section>
 
           <div className="anim-rise px-3 [animation-delay:120ms] sm:px-8 lg:px-0 lg:pl-6">
-            <HeroArt />
+            <HeroArt quiet={menuOpen} />
           </div>
         </div>
 

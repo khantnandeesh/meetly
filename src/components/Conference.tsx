@@ -28,7 +28,7 @@ import { useCallSettings } from "@/lib/useCallSettings";
 import { useMiniWindow } from "@/lib/usePip";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
-import { useHandsShown, useStageParticipants, useWatching } from "@/lib/useWebinar";
+import { useCallNoun, useHandsShown, useStageParticipants, useWatching } from "@/lib/useWebinar";
 import { CallQualityDialog, DataSaverBadge } from "./CallQuality";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
@@ -40,7 +40,7 @@ import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ShortcutsDialog } from "./ShortcutsDialog";
-import { OnStageBar } from "./StageInvite";
+import { OnStageChip, Switching } from "./StageInvite";
 import { ViewerCall } from "./ViewerCall";
 import { StatusLane } from "./StatusLane";
 import { Tile } from "./Tile";
@@ -126,6 +126,7 @@ function Call({ code }: { code: string }) {
   // Webinars: the stage, People and the layout are about who is on stage; the audience has its
   // own section in People (see AudienceSection.tsx). In a meeting this is everyone.
   const participants = useStageParticipants();
+  const noun = useCallNoun();
   const localParticipant = call.local;
   // A hand going up or down is a roster change, so this is current on every render.
   const handRaised = localParticipant.handRaised;
@@ -517,19 +518,21 @@ function Call({ code }: { code: string }) {
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
           <button
             onClick={headerCopy.copy}
-            aria-label={`Copy meeting link, code ${code}`}
+            aria-label={`Copy ${noun} link, code ${code}`}
             className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
           >
             <LogoMark className="size-7 shrink-0" />
             <span className="truncate">{headerCopy.copied ? "Copied" : code}</span>
             <CopyIcon copied={headerCopy.copied} />
             <span className="sr-only" role="status">
-              {headerCopy.copied ? "Meeting link copied" : ""}
+              {headerCopy.copied ? `Link copied` : ""}
             </span>
           </button>
           <div className="flex shrink-0 items-center gap-2">
             <DataSaverBadge onOpen={showQuality} compact />
             <RaisedHands hands={raisedHands} onShow={showPeople} compact />
+            {/* On a webinar's stage: "Live · On stage", with the way back to the audience. */}
+            <OnStageChip compact />
             <button
               id="toggle-people"
               onClick={() => togglePanel("people")}
@@ -542,7 +545,9 @@ function Call({ code }: { code: string }) {
               <span aria-hidden="true" data-headcount>
                 {shortCount(participants.length)}
               </span>
-              <span className="sr-only">{fullCount(participants.length)} in the meeting</span>
+              <span className="sr-only">
+                {fullCount(participants.length)} {noun === "webinar" ? "on stage" : "in the meeting"}
+              </span>
               <WaitingCount />
             </button>
           </div>
@@ -595,7 +600,7 @@ function Call({ code }: { code: string }) {
 
           <InviteCard show={alone} code={code} onCopy={copyLink} />
 
-          <Connecting show={connecting} />
+          <Connecting show={connecting} noun={noun} />
 
           <StatusLane phone={phone} sheetOpen={sheetOpen} />
         </main>
@@ -632,7 +637,7 @@ function Call({ code }: { code: string }) {
                   {shown === "people" && (
                     <span className="font-sans text-sm font-medium text-muted tabular-nums">
                       {participants.length}
-                      <span className="sr-only"> in the meeting</span>
+                      <span className="sr-only">{noun === "webinar" ? " on stage" : " in the meeting"}</span>
                     </span>
                   )}
                 </h2>
@@ -681,7 +686,7 @@ function Call({ code }: { code: string }) {
       <CallQualityDialog open={qualityOpen} onOpenChange={setQualityOpen} />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
       <PollToasts open={panel === "chat"} onShow={openChat} />
-      <OnStageBar />
+      <Switching />
       </MiniProvider>
     </HostProvider>
   );
@@ -861,7 +866,7 @@ function WaitingCount() {
 }
 
 /** Covers the stage until the room is connected, then fades away to reveal it. */
-function Connecting({ show }: { show: boolean }) {
+function Connecting({ show, noun }: { show: boolean; noun: "meeting" | "webinar" }) {
   const presence = usePresence(show);
   if (!presence.mounted) return null;
   return (
@@ -873,7 +878,7 @@ function Connecting({ show }: { show: boolean }) {
     >
       <div className="flex flex-col items-center gap-3 text-muted">
         <LoaderCircle className="anim-spin size-8" aria-hidden="true" />
-        <p>Joining the meeting…</p>
+        <p>Joining the {noun}…</p>
       </div>
     </div>
   );

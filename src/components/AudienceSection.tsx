@@ -6,7 +6,7 @@ import { FIRST_ROWS, matchesName, ordinal } from "@/lib/hostLists";
 import { useCall } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant } from "@/lib/rtc/types";
 import { useAudience } from "@/lib/useWebinar";
-import { useHost } from "./HostTools";
+import { HostMenu, useHost } from "./HostTools";
 import { useBox } from "./Stage";
 import { Avatar } from "./ui/Avatar";
 import { Dropdown } from "./ui/Menu";
@@ -175,9 +175,10 @@ export function AudienceView({ onBack }: { onBack: () => void }) {
 function AudienceRow({ participant, place, pending }: { participant: RtcParticipant; place?: number; pending: boolean }) {
   const mayStage = useMayStage();
   const stage = useStageAction();
+  const { coHosts } = useHost();
   const name = displayName(participant);
   const invited = participant.stageInvite;
-  const details = [place && ordinal(place), invited && "Invited to speak"].filter(Boolean);
+  const details = [place && ordinal(place), coHosts.includes(participant.identity) && "Co-host", invited && "Invited to speak"].filter(Boolean);
   return (
     <div className="flex h-full items-center gap-3 rounded-xl px-3 hover:bg-surface-2/60" data-audience-row={participant.identity}>
       <Avatar name={name} seed={participant.identity} />
@@ -208,6 +209,8 @@ function AudienceRow({ participant, place, pending }: { participant: RtcParticip
             Invite to speak
           </button>
         ))}
+      {/* Make co-host, lower a hand, remove: the host's menu, as on every other row. */}
+      <HostMenu participant={participant} micOn={false} camOn={false} handRaised={participant.handRaised} variant="row" />
     </div>
   );
 }

@@ -68,6 +68,8 @@ type Config = {
   /** Webinars: the host's preset and the audience's (see `missingWebinarEnv`). Without both there are no webinars. */
   webinarHostPreset: string | null;
   webinarViewerPreset: string | null;
+  /** Webinars: co-hosts moderate from the audience with their own preset (see `rejoin` below). */
+  webinarCohostPreset: string | null;
   sessionSecret: string;
 };
 
@@ -85,7 +87,11 @@ export function missingRealtimeKitEnv(): string[] {
 }
 
 /** Both preset names a webinar needs. They are optional for meetings, so they are checked only when a webinar is made or joined. */
-export const REALTIMEKIT_WEBINAR_ENV = ["REALTIMEKIT_WEBINAR_HOST_PRESET", "REALTIMEKIT_WEBINAR_VIEWER_PRESET"] as const;
+export const REALTIMEKIT_WEBINAR_ENV = [
+  "REALTIMEKIT_WEBINAR_HOST_PRESET",
+  "REALTIMEKIT_WEBINAR_VIEWER_PRESET",
+  "REALTIMEKIT_WEBINAR_COHOST_PRESET",
+] as const;
 
 export function missingWebinarEnv(): string[] {
   return REALTIMEKIT_WEBINAR_ENV.filter((name) => !process.env[name]);
@@ -107,6 +113,7 @@ function config(): Config | null {
     knockPreset: process.env.REALTIMEKIT_KNOCK_PRESET || null,
     webinarHostPreset: process.env.REALTIMEKIT_WEBINAR_HOST_PRESET || null,
     webinarViewerPreset: process.env.REALTIMEKIT_WEBINAR_VIEWER_PRESET || null,
+    webinarCohostPreset: process.env.REALTIMEKIT_WEBINAR_COHOST_PRESET || null,
     sessionSecret: env.MEETLY_SESSION_SECRET,
   };
 }
@@ -298,6 +305,7 @@ export type RealtimeKitJoin = {
   mode: CallMode;
   /** Reactions allowed at the moment of joining. */
   reactions: boolean;
+  webinarPresets?: { viewer: string; cohost: string };
 };
 
 export type RealtimeKitJoinOutcome =
@@ -343,6 +351,9 @@ function grant(
     closedPolls: record?.closedPolls ?? [],
     mode: webinar ? "webinar" : "meeting",
     reactions: record?.reactions ?? true,
+    ...(webinar && c.webinarViewerPreset && c.webinarCohostPreset
+      ? { webinarPresets: { viewer: c.webinarViewerPreset, cohost: c.webinarCohostPreset } }
+      : {}),
   };
 }
 
@@ -357,7 +368,7 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
   const record = readRecord(created ? [] : await listParticipants(c, meeting.id), hostPresetsOf(c), c.knockPreset !== null);
   const expires = Date.now() + TOKEN_TTL_MS;
   const webinar = record.mode === "webinar";
-  if (webinar && (!c.webinarHostPreset || !c.webinarViewerPreset)) {
+  if (webinar && missingWebinarEnv().length > 0) {
     throw new Error(`Server is missing ${missingWebinarEnv().join(", ")}, which webinars need.`);
   }
 
@@ -420,7 +431,7 @@ export async function createRealtimeKitMeeting(code: string, mode: CallMode = "m
   const c = config();
   if (!c) return null;
   const webinar = mode === "webinar";
-  if (webinar && (!c.webinarHostPreset || !c.webinarViewerPreset)) return null;
+  if (webinar && missingWebinarEnv().length > 0) return null;
   try {
     const { meeting, created } = await findOrCreateMeeting(c, code);
     if (!created) return null;
@@ -479,6 +490,55 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
   } catch {
     return { access: "open", host: false, count: null };
   }
+}
+
+/* ---------------------------------------------------------------- webinars */
+
+/**
+ * Webinars: a fresh token for someone whose role changed, with the preset that role needs. A
+ * co-host moderates from the audience with `REALTIMEKIT_WEBINAR_COHOST_PRESET`; anyone else in
+ * the audience (and anyone on stage, who is there by the stage's leave, not the preset's) holds
+ * `REALTIMEKIT_WEBINAR_VIEWER_PRESET`. Any participant may ask: what they get is decided from the
+ * records, never from the request.
+ *
+ * The same participant record is kept, so they come back as the same person (the same identity,
+ * the same co-host record). Their client leaves and joins again with the new token, which takes
+ * a second or two ("Switching to co-host…").
+ *
+ * This is the one place to change if RealtimeKit turns out to apply a preset change to someone
+ * already connected: then the PATCH alone would do, and no new token would be needed. Whether it
+ * does has not been tried against a live session.
+ */
+export async function realtimeKitWebinarRejoin(sessionToken: unknown): Promise<HostActionResult & { data?: { authToken: string } }> {
+  const c = config();
+  if (!c) return DENIED;
+  const session = verifySession(sessionToken, c.sessionSecret);
+  if (!session) return DENIED;
+  try {
+    const record = readRecord(await listParticipants(c, session.meetingId), hostPresetsOf(c), c.knockPreset !== null);
+    const me = record.people.find((p) => p.id === session.participantId);
+    return me ? await webinarRejoin(c, session.meetingId, record, me) : DENIED;
+  } catch {
+    return UNREACHABLE;
+  }
+}
+
+async function webinarRejoin(
+  c: Config,
+  meetingId: string,
+  record: MeetingRecord,
+  me: Participant,
+): Promise<HostActionResult & { data?: { authToken: string } }> {
+  if (record.mode !== "webinar" || record.hosts.includes(me)) return { status: 400, error: "Invalid request." };
+  const preset = record.coHostIds.has(me.id) ? c.webinarCohostPreset : c.webinarViewerPreset;
+  if (!preset) return UNREACHABLE;
+  const base = `/meetings/${meetingId}/participants/${me.id}`;
+  if (me.preset_name !== preset) {
+    const patched = await api(c, "PATCH", base, { preset_name: preset });
+    if (!patched.ok) return UNREACHABLE;
+  }
+  const fresh = await api<{ token: string }>(c, "POST", `${base}/token`);
+  return fresh.ok ? { status: 200, data: { authToken: fresh.data.token } } : UNREACHABLE;
 }
 
 /* --------------------------------------------------------------- moderation */
