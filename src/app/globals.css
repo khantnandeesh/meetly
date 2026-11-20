@@ -351,7 +351,7 @@ body {
   .share-wait {
     transition: opacity var(--dur-base) ease-out;
   }
-  .tile-media:has(video[data-ready="true"]) .share-wait,
+  video[data-ready="true"] ~ .share-wait,
   .tile-ghost .share-wait {
     opacity: 0;
   }

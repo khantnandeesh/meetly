@@ -301,12 +301,16 @@ function Call({ code, token }: { code: string; token: string }) {
           : 0;
   const panelInset = (shown ? 23.25 : 0) + (beside ? 14.75 : 0);
   useEffect(() => {
-    const root = document.documentElement;
-    root.style.setProperty("--toast-inset", `${panelInset}rem`);
-    root.style.setProperty("--toast-lift", `${cornerLift}rem`);
+    // Set on the notification region itself, not on the page root: a custom property changed on
+    // the root makes the browser re-resolve the style of every element in the document, and
+    // this one changes on every panel toggle and layout switch.
+    const region = document.querySelector<HTMLElement>(".toast-region");
+    if (!region) return;
+    region.style.setProperty("--toast-inset", `${panelInset}rem`);
+    region.style.setProperty("--toast-lift", `${cornerLift}rem`);
     return () => {
-      root.style.removeProperty("--toast-inset");
-      root.style.removeProperty("--toast-lift");
+      region.style.removeProperty("--toast-inset");
+      region.style.removeProperty("--toast-lift");
     };
   }, [panelInset, cornerLift]);
 

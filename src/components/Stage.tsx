@@ -267,18 +267,27 @@ export function Stage({
   const signature = slots.map((s) => `${s.key}@${s.rect.x},${s.rect.y},${s.rect.w},${s.rect.h}`).join("|");
 
   useLayoutEffect(() => {
-    if (layerRef.current) placeTiles(layerRef.current, slots);
-    if (layerRef.current)
-      animateStage(layerRef.current, last, flights, {
-        slots,
-        layout,
-        page,
-        pinned,
-        box,
-        // On a phone a screen share rearranges everything at once; that swap is a cross-fade.
-        swap: phone && !!mainSlot && mainSlot.ref.source === Track.Source.ScreenShare ? "share" : "people",
-        phone,
-      });
+    const layer = layerRef.current;
+    if (!layer) return;
+    const state = {
+      slots,
+      layout,
+      page,
+      pinned,
+      box,
+      // On a phone a screen share rearranges everything at once; that swap is a cross-fade.
+      swap: phone && !!mainSlot && mainSlot.ref.source === Track.Source.ScreenShare ? "share" : "people",
+      phone,
+    };
+    // Moving the tiles and starting their animations waits for the end of this commit (a
+    // microtask: still before the browser paints). Other components measure the page while
+    // React commits (menus and tooltips read computed styles, video attaches read sizes); done
+    // in the middle of that, every one of those reads had to re-resolve the whole stage.
+    queueMicrotask(() => {
+      if (!layer.isConnected) return;
+      placeTiles(layer, state.slots);
+      animateStage(layer, last, flights, state);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `signature` stands for the slots
   }, [signature, layout, page, pinned, box]);
 
@@ -594,20 +603,18 @@ function animateStage(
     return before && !sameRect(before, s.rect);
   });
 
-  // 1. Read: where is everything right now (only tiles already mid-flight need measuring).
-  const origin = layer.getBoundingClientRect();
+  // 1. Read: where is everything right now. Only tiles already mid-flight need measuring, and
+  // measuring forces the browser to lay out the new arrangement on the spot, so it is skipped
+  // entirely when nothing is in flight (the usual case).
   const starts = new Map<string, Rect>();
+  let origin: DOMRect | null = null;
   for (const slot of moving) {
     const el = elements.get(slot.key);
     const before = prev.rects.get(slot.key)!;
     if (el && flights.has(el)) {
+      origin ??= layer.getBoundingClientRect();
       const r = el.getBoundingClientRect();
-      starts.set(slot.key, {
-        x: r.left - origin.left,
-        y: r.top - origin.top,
-        w: r.width,
-        h: r.height,
-      });
+      starts.set(slot.key, { x: r.left - origin.left, y: r.top - origin.top, w: r.width, h: r.height });
     } else {
       starts.set(slot.key, before);
     }
