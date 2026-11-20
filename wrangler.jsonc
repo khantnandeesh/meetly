@@ -39,11 +39,12 @@
 		"REALTIMEKIT_WEBINAR_HOST_PRESET": "meetly-webinar-host",
 		"REALTIMEKIT_WEBINAR_VIEWER_PRESET": "meetly-webinar-viewer",
 		"REALTIMEKIT_WEBINAR_COHOST_PRESET": "meetly-webinar-cohost",
+		// Off until webinars are verified in a real RealtimeKit session (see README "Webinars").
 		// Webinars on ("1") or off ("0"): off, none can be started or joined and the cost guard
 		// ends those running. To switch off at once, change it in the dashboard (Workers → meetly →
 		// Settings → Variables, which deploys straight away) and then here, or the next deploy
 		// switches it back on. See "Webinar costs" in the README.
-		"MEETLY_WEBINARS_ENABLED": "1",
+		"MEETLY_WEBINARS_ENABLED": "0",
 		// The most participant-minutes one webinar session may use before it is ended.
 		"MEETLY_WEBINAR_MINUTE_LIMIT": "5000"
 	}
