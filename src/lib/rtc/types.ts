@@ -17,9 +17,11 @@ export type ConnectionStatus = "connecting" | "waiting" | "connected" | "reconne
 
 /**
  * Why the call ended for you: you left, the host removed you, the connection was lost, the host
- * did not let you in ("denied"), or the host ended the call for everyone ("ended").
+ * did not let you in ("denied"), or the host ended the call for everyone ("ended"). A webinar is
+ * also ended for everyone when it reaches its free time limit ("limit") or when webinars are
+ * switched off ("paused"); see src/lib/costGuard.server.ts.
  */
-export type DisconnectReason = "left" | "removed" | "dropped" | "denied" | "ended";
+export type DisconnectReason = "left" | "removed" | "dropped" | "denied" | "ended" | "limit" | "paused";
 
 /** Who may join: anyone with the link, people the host lets in one by one, or nobody new. */
 export type JoinAccess = "open" | "ask" | "locked";
@@ -278,6 +280,8 @@ export type RtcEvents = {
   reactionsAllowed: [];
   /** Somebody's `role`, or your `stageInvite`, changed. */
   stage: [];
+  /** `limitWarning` changed. */
+  limitWarning: [];
   /** `audioBlocked` changed. */
   audio: [];
   /** The list from `polls()` changed. */
@@ -319,6 +323,12 @@ export interface RtcCall {
   readonly access: JoinAccess;
   /** People asking to join. Empty unless you are the host or a co-host. A new array whenever `waiting` fires. */
   waiting(): RtcWaiter[];
+  /**
+   * A webinar near its free time limit: when it is expected to end (epoch ms), as our server's
+   * watchdog worked it out. Only the host and co-hosts are told; null otherwise, and always on
+   * LiveKit, where nothing is billed by the minute.
+   */
+  readonly limitWarning: { endsAt: number } | null;
   /**
    * Asks our server for a moderation action and does whatever the provider needs around it.
    * Rejects with a message fit to show if it was refused or failed.

@@ -439,7 +439,7 @@ export class FakeMeeting {
   participants = new FakeParticipants();
   stage = new FakeStage();
   /** RTKMeta, with the one property the adapter reads. */
-  meta: EventEmitter & { meetingStartedTimestamp?: Date } = new EventEmitter();
+  meta: EventEmitter & { meetingStartedTimestamp?: Date; sessionId?: string } = new EventEmitter();
   chat: FakeChat;
   joinCalls = 0;
   leaveCalls = 0;
@@ -548,4 +548,190 @@ export function installDom(): FakeElement {
   target.MediaStream = FakeMediaStream;
   FakeElement.blockPlayback = false;
   return body;
+}
+
+/* ------------------------------------------------------------ the REST API */
+
+/** A participant record as `GET /meetings/{id}/participants` lists it: a person, or one of our `meetly-…` markers. */
+export type FakeRecord = { id: string; custom_participant_id: string; preset_name: string; name: string; created_at: string };
+
+/** Someone in a session as `GET /sessions/{id}/participants?include_peer_events=true` gives them. */
+export type FakeSessionPerson = {
+  id: string;
+  joined_at?: string;
+  left_at?: string;
+  duration?: number;
+  peer_events?: { peer_id: string; event_name: "PEER_CREATED" | "PEER_JOINING" | "PEER_LEAVING"; created_at: string }[];
+};
+
+export type FakeSession = {
+  id: string;
+  associated_id: string;
+  meeting_display_name: string;
+  status: "LIVE" | "ENDED";
+  started_at: string;
+  created_at: string;
+  live_participants: number;
+  max_concurrent_participants: number;
+  minutes_consumed: number;
+  people: FakeSessionPerson[];
+};
+
+/** A session as the sessions endpoints describe it: its people are a separate call. */
+const withoutPeople = (session: FakeSession): Omit<FakeSession, "people"> =>
+  Object.fromEntries(Object.entries(session).filter(([key]) => key !== "people")) as Omit<FakeSession, "people">;
+
+/**
+ * A stand-in for the part of Cloudflare's RealtimeKit REST API our server uses, shaped after the
+ * API reference (fields, the `{ success, data }` envelope, `per_page` / `page_no` paging). It
+ * keeps every call made, and fails the ones a test asks it to. It imitates the API; nothing here
+ * proves how Cloudflare behaves.
+ */
+export class FakeRealtimeKitApi {
+  readonly base = "https://api.cloudflare.com/client/v4/accounts/acct/realtime/kit/app";
+  meetings: { id: string; title: string; status: "ACTIVE" | "INACTIVE"; created_at: string }[] = [];
+  records = new Map<string, FakeRecord[]>();
+  sessions: FakeSession[] = [];
+  calls: string[] = [];
+  /** "METHOD /path" patterns (the path without its query) that answer with this status. */
+  failing: { match: RegExp; status: number }[] = [];
+  now: () => number = () => Date.now();
+  private ids = 0;
+
+  meeting(id: string, title = id, mode?: "webinar"): string {
+    this.meetings.push({ id, title, status: "ACTIVE", created_at: new Date(this.now() - 3_600_000).toISOString() });
+    this.records.set(id, []);
+    if (mode === "webinar") this.record(id, "meetly-mode:webinar");
+    return id;
+  }
+
+  record(meetingId: string, customId: string, preset = "meetly-guest", name = "Meetly record"): FakeRecord {
+    this.ids++;
+    const record = { id: `rec-${this.ids}`, custom_participant_id: customId, preset_name: preset, name, created_at: new Date(this.now() + this.ids).toISOString() };
+    this.records.get(meetingId)!.push(record);
+    return record;
+  }
+
+  /** The `meetly-…` facts in a meeting's record, in the order they were written. */
+  facts(meetingId: string): string[] {
+    return (this.records.get(meetingId) ?? []).map((r) => r.custom_participant_id).filter((id) => id.startsWith("meetly-"));
+  }
+
+  /**
+   * A live session of `meetingId` that started `minutesAgo` minutes ago, with `people` people who
+   * have all been connected since it started (one connection each). Each also has a record in
+   * the meeting, as everyone our server lets in does.
+   */
+  live(meetingId: string, { minutesAgo, people, id }: { minutesAgo: number; people: number; id?: string }): FakeSession {
+    const started = new Date(this.now() - minutesAgo * 60_000).toISOString();
+    for (let i = 0; i < people; i++) this.record(meetingId, `m-${meetingId}-${i}`, "meetly-webinar-viewer", `Viewer ${i}`);
+    const session: FakeSession = {
+      id: id ?? `session-${++this.ids}`,
+      associated_id: meetingId,
+      meeting_display_name: this.meetings.find((m) => m.id === meetingId)?.title ?? meetingId,
+      status: "LIVE",
+      started_at: started,
+      created_at: started,
+      live_participants: people,
+      max_concurrent_participants: people,
+      minutes_consumed: 0,
+      people: Array.from({ length: people }, (_, i) => ({
+        id: `p-${i}`,
+        joined_at: started,
+        duration: 0,
+        peer_events: [
+          { peer_id: `peer-${i}`, event_name: "PEER_CREATED" as const, created_at: started },
+          { peer_id: `peer-${i}`, event_name: "PEER_JOINING" as const, created_at: started },
+        ],
+      })),
+    };
+    this.sessions.push(session);
+    return session;
+  }
+
+  private page<T>(items: T[], query: URLSearchParams): T[] {
+    const size = Number(query.get("per_page") ?? 25);
+    const page = Number(query.get("page_no") ?? 1);
+    return items.slice((page - 1) * size, page * size);
+  }
+
+  /** Removes everyone, as kick-all does: each open connection is closed now. */
+  private kickAll(session: FakeSession): number {
+    const kicked = session.live_participants;
+    const left = new Date(this.now()).toISOString();
+    for (const person of session.people) {
+      person.left_at ??= left;
+      const events = person.peer_events ?? [];
+      for (const peer of new Set(events.map((e) => e.peer_id))) {
+        if (!events.some((e) => e.peer_id === peer && e.event_name === "PEER_LEAVING")) {
+          events.push({ peer_id: peer, event_name: "PEER_LEAVING", created_at: left });
+        }
+      }
+    }
+    session.live_participants = 0;
+    return kicked;
+  }
+
+  fetch = async (input: string | URL | Request, init: RequestInit = {}): Promise<Response> => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+    const method = (init.method ?? "GET").toUpperCase();
+    const path = url.pathname.replace(new URL(this.base).pathname, "");
+    this.calls.push(`${method} ${path}${url.search}`);
+    const ok = (data: unknown) => Response.json({ success: true, data });
+    const no = (status: number) => Response.json({ success: false, errors: [{ message: "fake failure" }] }, { status });
+    const failure = this.failing.find((f) => f.match.test(`${method} ${path}`));
+    if (failure) return no(failure.status);
+    const body = typeof init.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
+    const q = url.searchParams;
+    let m: RegExpMatchArray | null;
+
+    if (method === "GET" && path === "/sessions") {
+      const status = q.get("status");
+      const listed = this.sessions.filter((s) => !status || s.status === status).map(withoutPeople);
+      return ok({ sessions: this.page(listed, q) });
+    }
+    if (method === "GET" && (m = path.match(/^\/sessions\/([^/]+)\/participants$/))) {
+      const session = this.sessions.find((s) => s.id === m![1]);
+      if (!session) return no(404);
+      const events = q.get("include_peer_events") === "true";
+      return ok({ participants: this.page(session.people, q).map((p) => (events ? p : { ...p, peer_events: undefined })) });
+    }
+    if (method === "GET" && path === "/meetings") {
+      const search = q.get("search") ?? "";
+      return ok(this.meetings.filter((meeting) => meeting.title.includes(search) || meeting.id === search));
+    }
+    if (method === "POST" && path === "/meetings") {
+      const id = this.meeting(`meeting-${++this.ids}`, String(body.title));
+      return ok(this.meetings.find((meeting) => meeting.id === id));
+    }
+    if ((m = path.match(/^\/meetings\/([^/]+)\/participants$/))) {
+      const records = this.records.get(m[1]);
+      if (!records) return no(404);
+      if (method === "GET") return ok(this.page(records, q));
+      if (method === "POST") {
+        const record = this.record(m[1], String(body.custom_participant_id), String(body.preset_name), String(body.name));
+        return ok({ ...record, token: `token-${record.id}` });
+      }
+    }
+    if ((m = path.match(/^\/meetings\/([^/]+)\/participants\/([^/]+)(\/token)?$/))) {
+      const records = this.records.get(m[1]);
+      const record = records?.find((r) => r.id === m![2]);
+      if (!records || !record) return no(404);
+      if (method === "POST" && m[3]) return ok({ token: `token-${record.id}-fresh` });
+      if (method === "PATCH") return ok(record);
+      if (method === "DELETE") {
+        records.splice(records.indexOf(record), 1);
+        return ok({});
+      }
+    }
+    if ((m = path.match(/^\/meetings\/([^/]+)\/active-session(\/kick-all)?$/))) {
+      const session = this.sessions.find((s) => s.associated_id === m![1] && s.status === "LIVE");
+      if (!session) return no(404);
+      if (method === "GET" && !m[2]) {
+        return ok(withoutPeople(session));
+      }
+      if (method === "POST" && m[2]) return ok({ action: "kick-all", kicked_participants_count: this.kickAll(session) });
+    }
+    return no(404);
+  };
 }

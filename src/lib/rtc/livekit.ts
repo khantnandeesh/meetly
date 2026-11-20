@@ -547,6 +547,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
+  /** Never: LiveKit is not billed by the participant-minute, so no watchdog runs on it. */
+  get limitWarning(): null {
+    return null;
+  }
+
   /** Always true for now: there is no switch to turn reactions off yet. */
   get reactionsAllowed(): boolean {
     return true;

@@ -43,7 +43,7 @@ server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `s
 `node test/e2e/run.cjs` runs the browser tests: real Chromium clients with fake cameras, against
 a running LiveKit build (`MEETLY_URL`, default `http://localhost:3000`). Name suites to run only
 some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`, `polls`,
-`quality`, `mini`, `rating`, `notices`); set
+`quality`, `mini`, `rating`, `notices`, `cost-guard`); set
 `MEETLY_SHOTS=<dir>` to keep screenshots.
 They need [Playwright](https://playwright.dev) where Node can find it (`npm i --no-save playwright`,
 or a global install on `NODE_PATH`). `node test/e2e/realtimekit-rest.cjs` checks a RealtimeKit
@@ -330,6 +330,43 @@ The record is marked like this, for anything on the server that needs to know:
 
 Viewer names are shown to the host and co-hosts only, by the interface. On both providers the
 audience is in the same room as everyone else, so a modified client could still read them.
+
+## Webinar costs
+
+Webinars are free and anyone can start one, but on RealtimeKit every viewer is a billed
+participant-minute (10,000 a month are included, then about $0.002 a minute). Two settings keep
+that in hand:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MEETLY_WEBINARS_ENABLED` | on | Set to `0`, `false`, `off` or `no` to switch webinars off at once: "New webinar" is no longer offered, the server refuses to start one or to let anyone into one ("Webinars are paused right now."), and the watchdog ends the ones running. Ordinary meetings are not affected. It is read on every request, so on the Worker a change to the variable takes effect with the next request, without a rebuild. |
+| `MEETLY_WEBINAR_MINUTE_LIMIT` | 5000 | The most participant-minutes one webinar session may use. At 80% the host and co-hosts are told roughly how long is left; past it the session is ended for everyone ("This webinar reached its free time limit.") and its link stops letting anyone in. |
+
+The watchdog (`src/lib/costGuard.server.ts`) runs once a minute on the Cloudflare Worker, as a
+Cron Trigger. Each run lists the app's live sessions in one call. A session that cannot yet be
+near the warning (its largest audience times its length is under 80% of the limit) costs nothing
+more. For the others it reads the meeting's record (to make sure it is a webinar, and see what
+was already done) and the session's participants, adds up each person's connected time, and
+writes at most two records. A run makes at most 30 calls, well inside RealtimeKit's 3,500 per five
+minutes; what does not fit, or fails, is done the next minute. It never joins a session. Before
+removing anyone it writes a `meetly-limit:<session>` record, so every client that is removed asks
+our server why and shows the right ending.
+
+Limits and what is not covered:
+
+- **Precision.** The count is each participant's own connected time, to the second, as
+  RealtimeKit reports it (a reload is a new connection, counted from when it joined), or
+  RealtimeKit's own `minutes_consumed` for the session where that is higher. A webinar is ended
+  in the first run after it passes the limit, so up to a minute late (about 250 minutes at 250
+  viewers), plus however Cloudflare rounds each participant's minutes when it bills.
+- **A missed run** changes nothing but timing: the next one counts from the participants'
+  timestamps, not from the last run, so nothing is lost; the warning or the ending simply comes
+  later. Nothing ends a webinar while the Cron Trigger is not running.
+- **The warning** reaches the host and co-hosts through their own clients, which ask our server
+  once a minute during a webinar (our server cannot push to a RealtimeKit client).
+- **LiveKit** is not billed per minute, so there is no watchdog there; the switch still applies.
+- A webinar link that reached the limit stays closed. Starting a new webinar gives a new link,
+  with a new limit.
 
 ## How it fits together
 

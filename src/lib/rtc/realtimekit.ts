@@ -105,6 +105,14 @@ export const LOWER_MESSAGE = "meetly-lower-hands";
 export const ENDING_MESSAGE = "meetly-ending";
 /** How long after that message being disconnected counts as the call having been ended. */
 const ENDING_WINDOW_MS = 15_000;
+/**
+ * How often the host and co-hosts of a webinar ask our server whether the free time limit is
+ * near. The watchdog that decides runs once a minute (src/lib/costGuard.server.ts), and our
+ * server cannot tell a RealtimeKit client anything unless asked.
+ */
+export const LIMIT_POLL_MS = 60_000;
+/** How long a client removed from a webinar waits to hear why before saying it was removed. */
+const WHY_WAIT_MS = 5000;
 /** Media scores run 0 to 10; below this the connection is shown as weak. */
 export const WEAK_SCORE = 5;
 /** The SDK accepts at most this many participants in its active set, you included. */
@@ -301,6 +309,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   /** When this browser first saw each person in `waiters` asking. RealtimeKit does not say when they started. */
   private readonly knocks = new Map<string, number>();
   private endingAt = -Infinity;
+  /** The watchdog's warning, as our server last gave it, for this session. */
+  private warning: { endsAt: number } | null = null;
+  /** Why our server last said this webinar would be ended for everyone, if it would. */
+  private stopped: "limit" | "paused" | null = null;
 
   private meeting: Meeting | null = null;
   private attempt = 0;
@@ -585,6 +597,17 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     }, MIC_SETTLE_MS);
     (settle as { unref?: () => void }).unref?.();
     this.teardown.push(() => clearTimeout(settle));
+    if (this.mode === "webinar") {
+      // Only those who can do something about it are told; asking costs our server a lookup.
+      // Not at the moment of joining: the warning is rare and minutes ahead, and a whole
+      // audience reconnecting at once should not bring its hosts' lookups with it.
+      const ask = () => {
+        if (this.mayModerate()) this.refreshRoles().catch(() => {});
+      };
+      const poll = setInterval(ask, LIMIT_POLL_MS);
+      (poll as { unref?: () => void }).unref?.();
+      this.teardown.push(() => clearInterval(poll));
+    }
     this.self.changes.notify();
     this.statusChanged();
     this.rosterChanged();
@@ -720,6 +743,16 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
+  get limitWarning(): { endsAt: number } | null {
+    return this.warning;
+  }
+
+  /** You are the host or a co-host, as far as this client knows. */
+  private mayModerate(): boolean {
+    const me = this.self.identity;
+    return !!me && (this.hostIdentity === me || this.cohosts.includes(me));
+  }
+
   /** Always true for now: there is no switch to turn reactions off yet. */
   get reactionsAllowed(): boolean {
     return true;
@@ -742,6 +775,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const access: JoinAccess = data.access === "ask" || data.access === "locked" ? data.access : "open";
     const pin = typeof data.pin === "string" ? data.pin : null;
     const closed = Array.isArray(data.closedPolls) ? data.closedPolls.filter((id): id is string => typeof id === "string") : [];
+    this.stopped = data.stopped === "limit" || data.stopped === "paused" ? data.stopped : null;
+    this.readWarning(data.warning);
     if (closed.slice().sort().join() !== Array.from(this.closedPolls).sort().join()) {
       this.closedPolls = new Set(closed);
       this.readPolls();
@@ -759,6 +794,40 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       this.gate = access;
       this.emit("access");
     }
+  }
+
+  /**
+   * The watchdog's warning applies to one session. One from an earlier session of the same link
+   * is left out; where the SDK does not say which session this is, so is one already past.
+   */
+  private readWarning(value: unknown): void {
+    const given = value as { session?: unknown; endsAt?: unknown } | undefined;
+    const session = this.meeting?.meta?.sessionId;
+    const fits =
+      !!given &&
+      typeof given.endsAt === "number" &&
+      (session ? given.session === session : given.endsAt > Date.now() - LIMIT_POLL_MS);
+    const next = fits ? (given.endsAt as number) : null;
+    if (next === (this.warning?.endsAt ?? null)) return;
+    this.warning = next === null ? null : { endsAt: next };
+    this.emit("limitWarning");
+  }
+
+  /**
+   * Removed from a webinar: by the host, or by our watchdog because the free time limit was
+   * reached or webinars were switched off. The watchdog writes why before removing anyone, so
+   * our server is asked. Without an answer, it was the host.
+   */
+  private async whyRemoved(): Promise<DisconnectReason> {
+    const asked = this.api({ session: this.grant.session, action: "roles" }).then(
+      (data) => (data.stopped === "limit" || data.stopped === "paused" ? data.stopped : null),
+      () => null,
+    );
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise<null>((resolve) => (timer = setTimeout(() => resolve(null), WHY_WAIT_MS)));
+    const stopped = await Promise.race([asked, waited]);
+    clearTimeout(timer);
+    return stopped ?? this.stopped ?? "removed";
   }
 
   private tell(type: string, payload: Record<string, unknown> = {}): Promise<void> {
@@ -1603,6 +1672,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       // Ending the call for everyone reaches each person as being removed; the host's client
       // says so just before (see ENDING_MESSAGE), which is what tells the two apart.
       const ending = Date.now() - this.endingAt < ENDING_WINDOW_MS;
+      if (state === "kicked" && !ending && this.mode === "webinar") {
+        void this.whyRemoved().then((reason) => this.finish(reason));
+        return;
+      }
       this.finish(
         state === "rejected"
           ? "denied"

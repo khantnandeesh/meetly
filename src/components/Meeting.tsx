@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
+import { CalendarPlus, CircleAlert, CirclePause, DoorClosed, Download, Home, Hourglass, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { saveChat } from "@/lib/chatExport";
@@ -196,6 +196,13 @@ const ENDINGS: Record<DisconnectReason, { icon: typeof LogOut; title: string; no
     note: "If that was a mistake, ask again or check with whoever sent you the link.",
   },
   ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link still works if people want to meet again." },
+  // Ended by our server's watchdog, not by the host (see src/lib/costGuard.server.ts).
+  limit: {
+    icon: Hourglass,
+    title: "This webinar reached its free time limit",
+    note: "Webinars are free for now, so each one has a time limit. This link can't be joined again.",
+  },
+  paused: { icon: CirclePause, title: "Webinars are paused right now", note: "The webinar was ended for everyone. Try again later." },
 };
 
 function LeftScreen({
@@ -215,7 +222,9 @@ function LeftScreen({
   // and for someone who was removed it is not an option at all. When the host ended the meeting
   // there is nobody to go back to, so the way out leads there too.
   const turnedAway = reason === "removed" || reason === "denied";
-  const homeFirst = turnedAway || (reason === "ended" && !byYou);
+  // A webinar our server ended: there is nothing to rejoin.
+  const closed = reason === "limit" || reason === "paused";
+  const homeFirst = turnedAway || closed || (reason === "ended" && !byYou);
   const home = (
     <Link href="/" className={`btn ${homeFirst ? "btn-primary" : "btn-secondary"}`}>
       <Home className="size-[1.125rem]" aria-hidden="true" />
@@ -242,7 +251,7 @@ function LeftScreen({
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-center">
           {homeFirst && home}
-          {reason !== "removed" && (
+          {reason !== "removed" && !closed && (
             <button className={`btn ${homeFirst ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!homeFirst}>
               <RotateCcw className="size-[1.125rem]" aria-hidden="true" />
               {reason === "denied" ? "Ask again" : byYou ? "Start again" : "Rejoin"}

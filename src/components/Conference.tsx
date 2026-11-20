@@ -34,6 +34,7 @@ import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
 import { ControlBar, type Panel } from "./ControlBar";
+import { LimitNotice } from "./LimitNotice";
 import { MiniPlaceholder, MiniProvider, MiniWindow, type MiniControl } from "./MiniWindow";
 import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
@@ -509,6 +510,7 @@ function Call({ code }: { code: string }) {
     <HostProvider localIdentity={localParticipant.identity}>
       <MiniProvider value={mini}>
       <ModerationNotices localIdentity={localParticipant.identity} peopleOpen={panel === "people"} onShowPeople={showPeople} />
+      <LimitNotice />
       <ReactionFeed />
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">

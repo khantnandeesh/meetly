@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { PASS_MAX_AGE_S, type Pass } from "../../pass.server";
 import { DENIED, GONE, HOST_ONLY, NOT_THE_HOST, OWN_CONTROLS, isHostOnly, type HostActionResult } from "../hostAction";
 import { webinarGate, type WebinarRefusal } from "../../webinarGate.server";
+import { readLimitFacts, webinarsEnabled, type LimitRecord, type LimitWarning } from "../../webinarLimit";
 import type { CallMode, HostAction, JoinAccess, MeetingPeek } from "../types";
 import { signSession, verifySession, type Session } from "./session";
 
@@ -215,6 +216,8 @@ type MeetingRecord = {
   closedPolls: string[];
   /** A webinar's record says so; anything else is a meeting. */
   mode: CallMode;
+  /** What the cost watchdog wrote: sessions that reached the free limit, and warnings given (see src/lib/webinarLimit.ts). */
+  limit: LimitRecord;
   markers: Participant[];
 };
 
@@ -239,6 +242,8 @@ export function readRecord(participants: Participant[], hostPreset: string | rea
     pin: pins.length > 0 ? pins[pins.length - 1].custom_participant_id.slice(PIN.length) : null,
     closedPolls: Array.from(new Set(tagged(POLL_CLOSED))),
     mode: tagged(MODE).includes("webinar") ? "webinar" : "meeting",
+    // Oldest first, so the newest warning is the last one.
+    limit: readLimitFacts([...markers].sort(oldestFirst).map((m) => m.custom_participant_id)),
     markers,
   };
 }
@@ -368,7 +373,7 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
   const mine = pass.key ? record.hosts.find((p) => p.id === pass.key) : undefined;
   if (mine) {
     // The host passes the same gate as everyone else, so a rule for webinars is never skipped by a rejoin.
-    const refused = webinar ? await webinarGate({ host: true, watching: () => liveCount(c, meeting.id) }) : null;
+    const refused = webinar ? await webinarGate({ host: true, watching: () => liveCount(c, meeting.id), limited: record.limit.limited.length > 0 }) : null;
     if (refused) return { refused };
     const base = `/meetings/${meeting.id}/participants/${mine.id}`;
     // Renaming also marks the record as used, which is what keeps the role from lapsing.
@@ -385,7 +390,7 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
     if (record.access === "locked") return { refused: "locked" };
   }
   if (webinar) {
-    const refused = await webinarGate({ host, watching: () => liveCount(c, meeting.id) });
+    const refused = await webinarGate({ host, watching: () => liveCount(c, meeting.id), limited: record.limit.limited.length > 0 });
     if (refused) return { refused };
   }
   const role = host ? "host" : "guest";
@@ -466,7 +471,19 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
 
 /* --------------------------------------------------------------- moderation */
 
-export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess; pin: string | null; closedPolls: string[] };
+export type RealtimeKitRoles = {
+  coHosts: string[];
+  access: JoinAccess;
+  pin: string | null;
+  closedPolls: string[];
+  /**
+   * Webinars only. Why a webinar would be ended for everyone: it reached its free time limit, or
+   * webinars were switched off. A client removed from a webinar asks this to know which it was.
+   */
+  stopped?: "limit" | "paused";
+  /** Webinars only, and only for the host and co-hosts: the latest warning that the free limit is near. */
+  warning?: LimitWarning;
+};
 
 /**
  * Moderation, and `roles`: the one thing here any participant may ask, since RealtimeKit has no
@@ -491,10 +508,17 @@ export async function realtimeKitHostAction(
     const record = readRecord(await listParticipants(c, session.meetingId), hostPresetsOf(c), c.knockPreset !== null);
     const me = record.people.find((p) => p.id === session.participantId);
     if (!me) return DENIED;
-    if (request.action === "roles") {
-      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access, pin: record.pin, closedPolls: record.closedPolls } };
-    }
     const role = record.hosts.includes(me) ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
+    if (request.action === "roles") {
+      const data: RealtimeKitRoles = { coHosts: coHostIdentities(record), access: record.access, pin: record.pin, closedPolls: record.closedPolls };
+      if (record.mode === "webinar") {
+        const stopped = !webinarsEnabled() ? "paused" : record.limit.limited.length > 0 ? "limit" : null;
+        if (stopped) data.stopped = stopped;
+        const warning = record.limit.warnings[record.limit.warnings.length - 1];
+        if (warning && role !== "guest") data.warning = warning;
+      }
+      return { status: 200, data };
+    }
     if (role === "guest") return DENIED;
     if (isHostOnly(request) && role !== "host") return HOST_ONLY;
     const session_ = `/meetings/${session.meetingId}/active-session`;
