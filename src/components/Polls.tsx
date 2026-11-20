@@ -177,6 +177,7 @@ function PollCard({ poll, canModerate }: { poll: RtcPoll; canModerate: boolean }
       await call.moderate({ action: "closePoll", pollId: poll.id });
     } catch (error) {
       toast.push({
+        tag: "poll-error",
         tone: "danger",
         icon: <CircleAlert className="size-5" />,
         title: "Couldn't end the poll",

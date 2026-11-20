@@ -141,7 +141,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
 
   /** One request, one answer: a quiet confirmation, or what went wrong. */
   const run = useCallback(
-    async (action: HostAction, done: { icon: React.ReactNode; title: string } | null, failed: string) => {
+    async (action: HostAction, done: { icon: React.ReactNode; title: string; tag?: string } | null, failed: string) => {
       try {
         await call.moderate(action);
         if (done) toast.push({ ...done, priority: "you" });
@@ -223,6 +223,8 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
         void run(
           { action: "coHost", identity: p.identity, on },
           {
+            // One per person: the latest answer replaces the one before ("now", then "no longer").
+            tag: `role:${p.identity}`,
             icon: on ? <ShieldCheck className="size-5" /> : <ShieldMinus className="size-5" />,
             title: on ? `${named(p)} is now a co-host` : `${named(p)} is no longer a co-host`,
           },
@@ -234,7 +236,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
         setRemoving(participant);
       },
       muteAll: () =>
-        void run({ action: "muteAll" }, { icon: <MicOff className="size-5" />, title: "You muted everyone" }, "Couldn't mute everyone"),
+        void run({ action: "muteAll" }, { tag: "mute-all", icon: <MicOff className="size-5" />, title: "You muted everyone" }, "Couldn't mute everyone"),
       lowerAllHands: () => void run({ action: "lowerAllHands" }, null, "Couldn't lower everyone's hands"),
       // The control showing the new choice is the confirmation.
       setAccess: (next) => void run({ action: "access", access: next }, null, "Couldn't change who can join"),

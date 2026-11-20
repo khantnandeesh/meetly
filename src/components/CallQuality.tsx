@@ -7,7 +7,6 @@ import { copyText, useCopied, usePresence } from "@/lib/hooks";
 import { useCall, useCallQuality, useConnectionStatus } from "@/lib/rtc/react";
 import type { CallStats, ConnectionHealth, RtcCall } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
-import { useCallHealth } from "@/lib/useCallHealth";
 import { Tip } from "./ui/Tip";
 
 /** Switches "use less data" on or off. It is the person's choice: nothing here ever turns it on for them. */
@@ -20,17 +19,17 @@ export function setDataSaver(call: RtcCall, on: boolean): void {
  * The one signal that your own connection is the problem: a chip at the top of the stage, where
  * "Reconnecting…" also lives. It appears after the connection has been poor for a while, offers
  * the one switch that helps, and goes when things improve or when it is dismissed (see
- * src/lib/useCallHealth.ts for the timing). No toast, no sound, no repeat.
+ * src/lib/useCallHealth.ts for the timing). No toast, no sound, no repeat. The status lane holds
+ * that state and says when to show it: never beside a more important banner (StatusLane.tsx).
  */
-export function WeakConnectionNotice() {
+export function WeakConnectionNotice({ show, onDismiss }: { show: boolean; onDismiss: () => void }) {
   const call = useCall();
-  const { weak, dismiss } = useCallHealth();
   const { dataSaver } = useCallQuality();
-  const presence = usePresence(weak);
+  const presence = usePresence(show);
   if (!presence.mounted) return null;
   return (
     <div
-      role={weak ? "status" : undefined}
+      role={show ? "status" : undefined}
       data-weak-connection
       data-leaving={presence.leaving}
       onAnimationEnd={presence.onAnimationEnd}
@@ -57,7 +56,7 @@ export function WeakConnectionNotice() {
           Use less data
         </button>
       )}
-      <button className="icon-btn size-9 hover:bg-surface-3 pointer-coarse:size-11" aria-label="Dismiss" onClick={dismiss}>
+      <button className="icon-btn size-9 hover:bg-surface-3 pointer-coarse:size-11" aria-label="Dismiss" onClick={onDismiss}>
         <X className="size-4" aria-hidden="true" />
       </button>
     </div>

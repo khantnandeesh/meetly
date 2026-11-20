@@ -183,7 +183,8 @@ jobs:
           echo "Meetly did not start"; cat "$ARTIFACTS/logs/next.log"; exit 1
 
       # Every suite: host, reactions, host-tools, access, effects, schedule, chat, fixes, polls,
-      # quality, mini, rating.
+      # quality, mini, rating, notices, perf. perf prints what it measured for each flood on the
+      # line above its results, so a budget's headroom on this runner can be read from the log.
       - name: Browser tests (all suites)
         env:
           MEETLY_FAILURE_SHOTS: ${{ github.workspace }}/e2e-artifacts/screenshots
