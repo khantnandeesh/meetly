@@ -26,6 +26,7 @@ type Route = { POST: (request: Request) => Promise<Response> };
 let token: Route;
 let meetingRoute: Route;
 let host: Route;
+let forgetStopLookups: () => void;
 let api: FakeRealtimeKitApi;
 const realFetch = globalThis.fetch;
 
@@ -33,12 +34,14 @@ before(async () => {
   token = await import("../src/app/api/token/route");
   meetingRoute = await import("../src/app/api/meeting/route");
   host = await import("../src/app/api/host/route");
+  ({ forgetStopLookups } = await import("../src/lib/rtc/server/realtimekit"));
 });
 
 beforeEach(() => {
   api = new FakeRealtimeKitApi();
   globalThis.fetch = api.fetch as typeof fetch;
   delete process.env.MEETLY_WEBINARS_ENABLED;
+  forgetStopLookups();
 });
 
 afterEach(() => {
@@ -133,4 +136,42 @@ test("a removed client can ask why; only the host and co-hosts are given the war
   assert.equal((await roles(viewerSession)).stopped, "limit");
   process.env.MEETLY_WEBINARS_ENABLED = "off";
   assert.equal((await roles(viewerSession)).stopped, "paused");
+});
+
+test("250 viewers removed at once and asking why cost our server a handful of REST calls, not hundreds", async () => {
+  const { code, meetingId } = await newWebinar();
+  const sessions: string[] = [];
+  for (let i = 0; i < 250; i++) sessions.push(((await (await join(code, `Viewer ${i}`)).json()) as { session: string }).session);
+  // The record now holds the mode, the host and 250 viewers: three pages of 100.
+  assert.ok(api.records.get(meetingId)!.length > 250);
+  api.record(meetingId, "meetly-limit:session-1");
+
+  const why = (session: string) => post(host, "/api/host", { session, action: "why" });
+  api.calls = [];
+  const answers = await Promise.all(sessions.map(async (session) => (await (await why(session)).json()) as Record<string, unknown>));
+  assert.ok(answers.every((answer) => answer.stopped === "limit"));
+  assert.ok(api.calls.length <= 3, `${api.calls.length} calls:\n${api.calls.join("\n")}`);
+
+  // Stragglers a moment later are answered from what was found: no calls at all.
+  api.calls = [];
+  assert.equal(((await (await why(sessions[0])).json()) as Record<string, unknown>).stopped, "limit");
+  assert.equal(api.calls.length, 0);
+
+  // Webinars switched off is answered without asking Cloudflare.
+  process.env.MEETLY_WEBINARS_ENABLED = "0";
+  forgetStopLookups();
+  const paused = await Promise.all(sessions.slice(0, 50).map(async (session) => ((await (await why(session)).json()) as Record<string, unknown>).stopped));
+  assert.ok(paused.every((stopped) => stopped === "paused"));
+  assert.equal(api.calls.length, 0);
+});
+
+test("asking why is shared while under way, but \"not limited\" is not remembered: the fact may be written next", async () => {
+  const { code, meetingId } = await newWebinar();
+  const session = ((await (await join(code, "Vic")).json()) as { session: string }).session;
+  const why = async () => ((await (await post(host, "/api/host", { session, action: "why" })).json()) as Record<string, unknown>).stopped;
+  assert.equal(await why(), undefined);
+  api.record(meetingId, "meetly-limit:session-1");
+  assert.equal(await why(), "limit");
+  // Without a signed session there is no answer.
+  assert.equal((await post(host, "/api/host", { session: "forged", action: "why" })).status, 403);
 });

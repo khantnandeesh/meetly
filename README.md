@@ -350,7 +350,9 @@ was already done) and the session's participants, adds up each person's connecte
 writes at most two records. A run makes at most 30 calls, well inside RealtimeKit's 3,500 per five
 minutes; what does not fit, or fails, is done the next minute. It never joins a session. Before
 removing anyone it writes a `meetly-limit:<session>` record, so every client that is removed asks
-our server why and shows the right ending.
+our server why and shows the right ending. Everyone removed asks at the same moment, so our server
+shares one lookup of the record between them (and keeps a "limit" answer for a minute): 250
+viewers cost about three REST calls per Worker instance, not one lookup each.
 
 Limits and what is not covered:
 

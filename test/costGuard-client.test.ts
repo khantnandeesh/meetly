@@ -65,7 +65,7 @@ test("removed from a webinar that reached its limit: the call ends as \"limit\",
   await tick();
   await tick();
   assert.deepEqual(ended, ["limit"]);
-  assert.deepEqual(asked, [{ session: "not-a-real-session", action: "roles" }]);
+  assert.deepEqual(asked, [{ session: "not-a-real-session", action: "why" }]);
 });
 
 test("removed from a webinar while webinars are switched off: \"paused\"", async () => {

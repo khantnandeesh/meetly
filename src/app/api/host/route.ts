@@ -1,7 +1,7 @@
 import { liveKitHostAction, lobbyWatchToken, verifyCaller } from "@/lib/host.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
 import { DENIED, parseHostAction } from "@/lib/rtc/hostAction";
-import { realtimeKitHostAction } from "@/lib/rtc/server/realtimekit";
+import { realtimeKitHostAction, realtimeKitWhyStopped } from "@/lib/rtc/server/realtimekit";
 import { liveKitStage } from "@/lib/webinar.server";
 
 /**
@@ -16,7 +16,8 @@ import { liveKitStage } from "@/lib/webinar.server";
  * the body, and nothing a browser can write about itself, is taken as proof of a role.
  *
  * RealtimeKit builds also answer { session, action: "roles" } for any participant: who the
- * co-hosts are and who may join. LiveKit builds answer { token, action: "lobby" } for the host
+ * co-hosts are and who may join; and { session, action: "why" }: why a webinar was ended for
+ * everyone (its free time limit, or webinars switched off). LiveKit builds answer { token, action: "lobby" } for the host
  * and co-hosts with a token to watch who is asking to join.
  */
 export async function POST(request: Request) {
@@ -28,6 +29,13 @@ export async function POST(request: Request) {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
   if (RTC_PROVIDER === "realtimekit") {
+    if (body.action === "why") {
+      // Asked by everyone removed from a webinar at once; see `realtimeKitWhyStopped`.
+      const result = await realtimeKitWhyStopped(body.session);
+      return result.status === 200
+        ? Response.json({ ok: true, ...result.data })
+        : Response.json({ error: result.error }, { status: result.status });
+    }
     const wanted = body.action === "roles" ? ({ action: "roles" } as const) : parseHostAction(body);
     if (!wanted || typeof body.session !== "string") return Response.json({ error: "Invalid request." }, { status: 400 });
     const result = await realtimeKitHostAction(body.session, wanted);

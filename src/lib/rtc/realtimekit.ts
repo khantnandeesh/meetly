@@ -819,7 +819,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * our server is asked. Without an answer, it was the host.
    */
   private async whyRemoved(): Promise<DisconnectReason> {
-    const asked = this.api({ session: this.grant.session, action: "roles" }).then(
+    // "why" rather than "roles": everyone removed asks at once, and our server shares one
+    // lookup between them (see `realtimeKitWhyStopped`).
+    const asked = this.api({ session: this.grant.session, action: "why" }).then(
       (data) => (data.stopped === "limit" || data.stopped === "paused" ? data.stopped : null),
       () => null,
     );

@@ -469,6 +469,67 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
   }
 }
 
+/* ------------------------------------------------------- why a webinar ended */
+
+/**
+ * Answers for `realtimeKitWhyStopped`, per meeting. The cost guard removes everyone from a
+ * webinar at once, and every one of them then asks why: 250 viewers each reading a record of
+ * 250-odd participants would be about 750 REST calls in a few seconds. So the lookups for one
+ * meeting are shared: whoever asks while one is under way waits for it, and a "limit" answer is
+ * kept, since that fact is written once and never taken back. "Not limited" is not kept: the
+ * watchdog may write the fact a moment later, and the next person to ask must see it.
+ */
+const stopLookups = new Map<string, { limited: Promise<boolean>; settled?: number }>();
+/** How long a "limit" answer is kept. Long enough to cover everyone removed at once. */
+const STOPPED_KEEP_MS = 60_000;
+const MAX_STOP_LOOKUPS = 500;
+
+/** For tests: start with nothing shared. */
+export function forgetStopLookups(): void {
+  stopLookups.clear();
+}
+
+/**
+ * Why a webinar was ended for everyone, asked by a client that was just removed from one: the
+ * free time limit, webinars switched off, or neither (then it was the host). Only the leave
+ * screen's wording depends on it, so the caller's signed session is all that is checked, and
+ * webinars being off is answered without asking Cloudflare anything.
+ */
+export async function realtimeKitWhyStopped(sessionToken: unknown): Promise<HostActionResult & { data?: { stopped?: "limit" | "paused" } }> {
+  const c = config();
+  if (!c) return DENIED;
+  const session = verifySession(sessionToken, c.sessionSecret);
+  if (!session) return DENIED;
+  if (!webinarsEnabled()) return { status: 200, data: { stopped: "paused" } };
+  const id = session.meetingId;
+  let entry = stopLookups.get(id);
+  if (entry?.settled !== undefined && Date.now() - entry.settled >= STOPPED_KEEP_MS) entry = undefined;
+  if (!entry) {
+    if (stopLookups.size >= MAX_STOP_LOOKUPS) stopLookups.clear();
+    const limited = listParticipants(c, id).then((participants) => {
+      const record = readRecord(participants, [], false);
+      return record.mode === "webinar" && record.limit.limited.length > 0;
+    });
+    const made: { limited: Promise<boolean>; settled?: number } = { limited };
+    stopLookups.set(id, made);
+    limited.then(
+      (yes) => {
+        if (yes) made.settled = Date.now();
+        else if (stopLookups.get(id) === made) stopLookups.delete(id);
+      },
+      () => {
+        if (stopLookups.get(id) === made) stopLookups.delete(id);
+      },
+    );
+    entry = made;
+  }
+  try {
+    return { status: 200, data: (await entry.limited) ? { stopped: "limit" } : {} };
+  } catch {
+    return UNREACHABLE;
+  }
+}
+
 /* --------------------------------------------------------------- moderation */
 
 export type RealtimeKitRoles = {
