@@ -17,6 +17,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
+import { miniTile } from "@/lib/miniTile";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
@@ -31,7 +32,7 @@ import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
 import { ControlBar, type Panel } from "./ControlBar";
-import { MiniPlaceholder, MiniProvider, MiniWindow, miniTile, type MiniControl } from "./MiniWindow";
+import { MiniPlaceholder, MiniProvider, MiniWindow, type MiniControl } from "./MiniWindow";
 import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";

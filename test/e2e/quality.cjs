@@ -78,7 +78,7 @@ const videosShown = (person) =>
 module.exports = async function quality(browser) {
   console.log("\n— call quality: one notice for a weak connection, and using less data —");
   const ada = await H.client(browser, { scale: 2 });
-  const ben = await H.client(browser);
+  const ben = await H.client(browser, { scale: 2 });
   const cy = await H.client(browser);
   for (const person of [ada, ben, cy]) await person.ctx.addInitScript(KEEP_CONNECTIONS);
   const url = await H.createMeeting(ada);

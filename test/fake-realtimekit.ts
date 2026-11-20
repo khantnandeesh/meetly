@@ -105,7 +105,19 @@ export class FakeSelf extends FakeParticipant {
   /** Self.roomState: 'init' | 'joined' | 'waitlisted' | LeaveRoomState. */
   roomState = "init";
   /** The few PermissionPreset getters the adapter reads. */
-  permissions = { acceptWaitingRequests: false, canDisableParticipantVideo: false };
+  permissions: {
+    acceptWaitingRequests: boolean;
+    canDisableParticipantVideo: boolean;
+    /** PermissionPreset.polls, from the preset. Left out here, it stands for a preset that allows none of it. */
+    polls?: { canCreate: boolean; canVote: boolean; canView: boolean };
+  } = { acceptWaitingRequests: false, canDisableParticipantVideo: false };
+  /** RTKSelfMedia.updateVideoConstraints: what the running camera was asked to become. */
+  videoConstraintCalls: unknown[] = [];
+  async updateVideoConstraints(constraints: unknown) {
+    // The SDK's own error (1610) when the camera is off.
+    if (!this.videoTrack) throw new Error("No media track enabled!");
+    this.videoConstraintCalls.push(constraints);
+  }
   /** Set to make the next enable call fail the way a refused permission does: no change, no throw. */
   refuse = false;
   devices: { audio?: { deviceId: string }; video?: { deviceId: string }; speaker?: { deviceId: string } } = {};
@@ -254,7 +266,81 @@ export class FakeChat extends EventEmitter {
   }
 }
 
+/** A poll as the SDK's `Poll` type has it. */
+export type FakePoll = {
+  id: string;
+  question: string;
+  options: { text: string; votes: { id: string; name: string }[]; count: number }[];
+  anonymous: boolean;
+  hideVotes: boolean;
+  createdBy: string;
+  createdByUserId: string;
+  voted: string[];
+};
+
+/**
+ * RTKPolls: `items`, `create`, `vote` and the `pollsUpdate` event. As in the SDK, `create` and
+ * `vote` return without a word when the preset does not allow them, and neither says whether
+ * the server did anything: the answer is a `pollsUpdate`. What Cloudflare's server does with a
+ * second vote from the same person is not known; this stand-in counts whatever it is sent.
+ */
+export class FakePolls extends EventEmitter {
+  items: FakePoll[] = [];
+  createCalls: unknown[][] = [];
+  voteCalls: [string, number][] = [];
+  /** Set to make the server never answer a vote. */
+  deaf = false;
+  private count = 0;
+  private readonly self: FakeSelf;
+  constructor(self: FakeSelf) {
+    super();
+    this.self = self;
+  }
+  /** A poll arriving from the server: new, or an update to one already held. */
+  receive(poll: FakePoll) {
+    const at = this.items.findIndex((entry) => entry.id === poll.id);
+    if (at >= 0) this.items[at] = poll;
+    else this.items = [...this.items, poll];
+    this.emit("pollsUpdate", { polls: this.items, newPoll: at < 0 });
+  }
+  make(question: string, options: string[], anonymous = false, createdBy = "Host"): FakePoll {
+    return {
+      id: `poll-${++this.count}`,
+      question,
+      options: options.map((text) => ({ text, votes: [], count: 0 })),
+      anonymous,
+      hideVotes: false,
+      createdBy,
+      createdByUserId: "user-host",
+      voted: [],
+    };
+  }
+  async create(question: string, options: string[], anonymous = false, hideVotes = false) {
+    this.createCalls.push([question, options, anonymous, hideVotes]);
+    if (!this.self.permissions.polls?.canCreate) return;
+    this.receive({ ...this.make(question, options, anonymous, this.self.name), createdByUserId: this.self.userId });
+  }
+  async vote(id: string, index: number) {
+    this.voteCalls.push([id, index]);
+    const poll = this.items.find((entry) => entry.id === id);
+    if (!this.self.permissions.polls?.canVote || !poll || this.deaf) return;
+    this.receive(castFakeVote(poll, index, { id: this.self.userId, name: this.self.name }));
+  }
+}
+
+/** The poll with one more vote in it, as the server would send it back. */
+export function castFakeVote(poll: FakePoll, index: number, voter: { id: string; name: string }): FakePoll {
+  return {
+    ...poll,
+    voted: [...poll.voted, voter.id],
+    options: poll.options.map((option, at) =>
+      at === index ? { ...option, count: option.count + 1, votes: poll.anonymous ? [] : [...option.votes, voter] } : option,
+    ),
+  };
+}
+
 export class FakeMeeting {
+  polls: FakePolls;
   self: FakeSelf;
   participants = new FakeParticipants();
   /** RTKMeta, with the one property the adapter reads. */
@@ -268,6 +354,7 @@ export class FakeMeeting {
   constructor(self: FakeSelf) {
     this.self = self;
     this.chat = new FakeChat(self);
+    this.polls = new FakePolls(self);
   }
   async join() {
     this.joinCalls++;

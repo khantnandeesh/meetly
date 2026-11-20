@@ -1350,7 +1350,6 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         stop();
         resolve(seen());
       }, VOTE_WAIT_MS);
-      (timer as { unref?: () => void }).unref?.();
     });
     this.myChoices.set(pollId, option);
     await meeting.polls.vote(pollId, option);

@@ -41,7 +41,7 @@ async function startPoll(person, question, options, { named = false } = {}) {
 module.exports = async function pollsSuite(browser) {
   console.log("\n— polls: who may start one, one vote each, late joiners, ending —");
   const host = await H.client(browser, { scale: 2 });
-  const guest = await H.client(browser);
+  const guest = await H.client(browser, { scale: 2 });
   const url = await H.createMeeting(host);
   await H.join(host, url, "Maya Host");
   await H.join(guest, url, "Gus Guest");
@@ -197,6 +197,23 @@ module.exports = async function pollsSuite(browser) {
   const byCoHost = await pollApi(guest, { token: guest.token, action: "create", question: "From a co-host", options: ["A", "B"] });
   H.ok("and start one", byCoHost.status === 200, JSON.stringify(byCoHost));
   H.ok("the co-host is now offered \"Start a poll\"", await H.until(async () => (await panel(guest).getByRole("button", { name: "Start a poll" }).count()) === 1, 5000));
+
+  /* ----------------------------------------------- starting one from a phone */
+  const cyId = await H.identity(cy);
+  await H.hostApi(host, { token: host.token, action: "coHost", identity: cyId, on: true });
+  await H.hostApi(host, { token: host.token, action: "closePoll", pollId: (await pollNamed(host, "Extra 1")).id });
+  await H.until(async () => (await panel(cy).getByRole("button", { name: "Start a poll" }).getAttribute("aria-disabled").catch(() => "true")) !== "true", 8000);
+  await panel(cy).getByRole("button", { name: "Start a poll" }).tap();
+  const phoneForm = cy.page.getByRole("dialog", { name: "Start a poll" });
+  await phoneForm.waitFor();
+  await phoneForm.getByLabel("Question").fill("Shall we wrap up?");
+  await phoneForm.getByLabel("Option 1", { exact: true }).fill("Yes");
+  await phoneForm.getByLabel("Option 2", { exact: true }).fill("Five more minutes");
+  const start = await phoneForm.getByRole("button", { name: "Start poll" }).boundingBox();
+  H.ok("a co-host on a 390 px phone can reach the whole form", (await H.noOverflow(cy)) && start.y + start.height <= H.PHONE.height && start.x >= 0 && start.x + start.width <= H.PHONE.width, JSON.stringify(start));
+  await H.shot(cy, "poll-create-phone");
+  await phoneForm.getByRole("button", { name: "Start poll" }).tap();
+  H.ok("and start a poll from it", (await H.until(async () => !!(await pollNamed(host, "Shall we wrap up?")), 8000)) && (await H.until(async () => (await phoneForm.count()) === 0, 3000)));
 
   for (const person of [host, guest, cy]) await person.ctx.close();
 };

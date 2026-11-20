@@ -1,14 +1,13 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { Gauge, Leaf, SignalLow, X } from "lucide-react";
+import { Check, Copy, Gauge, Leaf, SignalLow, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { copyText, useCopied, usePresence } from "@/lib/hooks";
 import { useCall, useCallQuality, useConnectionStatus } from "@/lib/rtc/react";
 import type { CallStats, ConnectionHealth, RtcCall } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { useCallHealth } from "@/lib/useCallHealth";
-import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
 
 /** Switches "use less data" on or off. It is the person's choice: nothing here ever turns it on for them. */
@@ -38,9 +37,15 @@ export function WeakConnectionNotice() {
       className="anim-pop pointer-events-auto flex max-w-[calc(100%-1.5rem)] items-center gap-1 rounded-2xl bg-[rgb(11_11_15/0.86)] py-1 pr-1 pl-3.5 text-sm font-medium shadow-lg backdrop-blur-md"
     >
       <SignalLow className="size-4 shrink-0 text-warn" aria-hidden="true" />
-      <span className="mr-1.5 min-w-0 truncate">
-        Your connection is weak
-        <span className="sr-only">. Other people may see and hear you less well.</span>
+      {/* A phone has room for three words beside the action; whose connection it is goes to a screen reader either way. */}
+      <span className="mr-1.5 shrink-0">
+        <span className="max-md:hidden">Your connection is weak</span>
+        <span className="md:hidden" aria-hidden="true">
+          Weak connection
+        </span>
+        <span className="sr-only">
+          <span className="md:hidden">Your connection is weak</span>. Other people may see and hear you less well.
+        </span>
       </span>
       {dataSaver ? (
         <span className="mr-1 shrink-0 text-muted">Using less data</span>
@@ -203,7 +208,7 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
             </label>
             <div className="flex flex-col gap-2 border-t border-border px-6 py-4">
               <button className="btn btn-secondary h-11 rounded-xl text-sm" onClick={copy.copy}>
-                <CopyIcon copied={copy.copied} />
+                {copy.copied ? <Check className="size-4 text-accent" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
                 <span role="status">{copy.copied ? "Copied" : "Copy diagnostics"}</span>
               </button>
               <p className="text-center text-xs text-faint">These numbers stay in this browser unless you copy them.</p>

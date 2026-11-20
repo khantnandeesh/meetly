@@ -16,16 +16,6 @@ const MiniContext = createContext<MiniControl>({ supported: false, open: false, 
 export const MiniProvider = MiniContext.Provider;
 export const useMini = () => useContext(MiniContext);
 
-/**
- * What the mini window shows: whoever the stage would (the person talking, a pin, somebody's
- * shared screen), with one exception. Your own shared screen is never shown to you there: you
- * opened the mini window to see the call while you look at that very screen.
- */
-export function miniTile(main: RtcTile | undefined, fallbacks: (RtcTile | undefined)[]): RtcTile | undefined {
-  const own = (tile: RtcTile | undefined) => !!tile && tile.participant.isLocal && tile.source === "screen_share";
-  return [main, ...fallbacks].find((tile) => tile && !own(tile));
-}
-
 /** The call, small: one picture, and the three controls nobody should have to go looking for. */
 export function MiniWindow({ target, tile, onBack }: { target: Window; tile: RtcTile | undefined; onBack: () => void }) {
   return createPortal(<MiniView tile={tile} onBack={onBack} />, target.document.body);
