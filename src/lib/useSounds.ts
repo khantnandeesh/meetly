@@ -1,7 +1,7 @@
 "use client";
 
-import { ConnectionState, RoomEvent, Track, type Participant, type Room, type TrackPublication } from "livekit-client";
 import { useEffect, useSyncExternalStore } from "react";
+import type { RtcCall } from "./rtc/types";
 import { SOUND_DEFAULTS, sounds, type SoundSettings } from "./sounds";
 
 /** Past this many people, comings and goings are shown (toasts) but no longer heard. */
@@ -31,7 +31,7 @@ export function noteOwnMicToggle(): void {
 
 /**
  * What the call sounds like, in terms of things that happen in a call rather than any media
- * provider's events. Whatever connects to the call (LiveKit today) reports to these; they hold
+ * provider's events. Whatever connects to the call reports to these (see below); they hold
  * the rules: who hears what, the settle time after joining, bursts, and the large-call limit.
  */
 export function createCallSounds(headcount: () => number) {
@@ -119,75 +119,51 @@ export function playCallEndedSound(): void {
   sounds.suspend();
 }
 
-/* ---------------------------------------------------------- LiveKit adapter */
-
-const HAND = "hand";
+/* ------------------------------------------------------------ call adapter */
 
 /**
- * Feeds the call sounds from a LiveKit room. Mount once inside the call. This is the only part
- * that knows LiveKit: it translates room events into the neutral calls above and nothing else.
+ * Feeds the call sounds from the call. Mount once inside it. This is the only part that knows
+ * the call's events: it translates them into the neutral calls above and nothing else.
  */
-export function useCallSounds(room: Room, { onHostMuted }: { onHostMuted?: () => void } = {}): void {
+export function useCallSounds(call: RtcCall, { onHostMuted }: { onHostMuted?: () => void } = {}): void {
   useEffect(() => {
-    const call = createCallSounds(() => room.remoteParticipants.size + 1);
-    activeCall = call;
+    const sound = createCallSounds(() => call.remoteIds().length + 1);
+    activeCall = sound;
 
-    let wasConnected = room.state === ConnectionState.Connected;
-    if (wasConnected) call.onConnected();
-    const onConnection = (state: ConnectionState) => {
-      if (state === ConnectionState.Connected) {
-        if (wasConnected) call.onConnectionRestored();
-        else call.onConnected();
-        wasConnected = true;
-      } else if (state === ConnectionState.Reconnecting || state === ConnectionState.SignalReconnecting) {
-        call.onConnectionLost();
-      }
-    };
-    const onAttributes = (changed: Record<string, string>, participant: Participant) => {
-      if (changed[HAND] === "1" && !participant.isLocal) call.onHandRaised();
-    };
-    const isScreen = (publication: TrackPublication) => publication.source === Track.Source.ScreenShare;
-    const shareStarted = (publication: TrackPublication) => {
-      if (isScreen(publication)) call.onScreenShareStarted();
-    };
-    const shareStopped = (publication: TrackPublication) => {
-      if (isScreen(publication)) call.onScreenShareStopped();
-    };
-    const isOwnMic = (publication: TrackPublication, participant: Participant) =>
-      participant.isLocal && publication.source === Track.Source.Microphone;
-    const onMuted = (publication: TrackPublication, participant: Participant) => {
-      if (isOwnMic(publication, participant) && call.onOwnMicChanged(false)) onHostMuted?.();
-    };
-    const onUnmuted = (publication: TrackPublication, participant: Participant) => {
-      if (isOwnMic(publication, participant)) call.onOwnMicChanged(true);
-    };
-    const onDevice = (kind: MediaDeviceKind, deviceId: string) => {
-      if (kind === "audiooutput") call.onOutputDevice(deviceId);
-    };
-    const current = room.getActiveDevice("audiooutput");
-    if (current) call.onOutputDevice(current);
+    let wasConnected = call.status === "connected";
+    if (wasConnected) sound.onConnected();
+    const current = call.activeDevice("audiooutput");
+    if (current) sound.onOutputDevice(current);
 
-    room.on(RoomEvent.ConnectionStateChanged, onConnection);
-    room.on(RoomEvent.ParticipantAttributesChanged, onAttributes);
-    room.on(RoomEvent.TrackPublished, shareStarted);
-    room.on(RoomEvent.LocalTrackPublished, shareStarted);
-    room.on(RoomEvent.TrackUnpublished, shareStopped);
-    room.on(RoomEvent.LocalTrackUnpublished, shareStopped);
-    room.on(RoomEvent.TrackMuted, onMuted);
-    room.on(RoomEvent.TrackUnmuted, onUnmuted);
-    room.on(RoomEvent.ActiveDeviceChanged, onDevice);
+    const stops = [
+      call.on("status", () => {
+        if (call.status === "connected") {
+          if (wasConnected) sound.onConnectionRestored();
+          else sound.onConnected();
+          wasConnected = true;
+        } else if (call.status === "reconnecting") {
+          sound.onConnectionLost();
+        }
+      }),
+      call.on("handRaised", (participant) => {
+        if (!participant.isLocal) sound.onHandRaised();
+      }),
+      call.on("screenShare", (started) => {
+        if (started) sound.onScreenShareStarted();
+        else sound.onScreenShareStopped();
+      }),
+      call.on("localMic", (on) => {
+        if (sound.onOwnMicChanged(on)) onHostMuted?.();
+      }),
+      call.on("device", (kind) => {
+        const deviceId = kind === "audiooutput" ? call.activeDevice(kind) : undefined;
+        if (deviceId) sound.onOutputDevice(deviceId);
+      }),
+    ];
     return () => {
-      room.off(RoomEvent.ConnectionStateChanged, onConnection);
-      room.off(RoomEvent.ParticipantAttributesChanged, onAttributes);
-      room.off(RoomEvent.TrackPublished, shareStarted);
-      room.off(RoomEvent.LocalTrackPublished, shareStarted);
-      room.off(RoomEvent.TrackUnpublished, shareStopped);
-      room.off(RoomEvent.LocalTrackUnpublished, shareStopped);
-      room.off(RoomEvent.TrackMuted, onMuted);
-      room.off(RoomEvent.TrackUnmuted, onUnmuted);
-      room.off(RoomEvent.ActiveDeviceChanged, onDevice);
-      if (activeCall === call) activeCall = null;
+      stops.forEach((stop) => stop());
+      if (activeCall === sound) activeCall = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- onHostMuted is read when it fires
-  }, [room]);
+  }, [call]);
 }

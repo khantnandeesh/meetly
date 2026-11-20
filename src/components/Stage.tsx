@@ -1,7 +1,5 @@
 "use client";
 
-import { useRoomContext, type TrackReferenceOrPlaceholder } from "@livekit/components-react";
-import { Track } from "livekit-client";
 import { ChevronLeft, ChevronRight, MonitorUp } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
@@ -16,6 +14,9 @@ import {
   sameRect,
   type Rect,
 } from "@/lib/motion";
+import { useCall } from "@/lib/rtc/react";
+import type { RtcTile } from "@/lib/rtc/types";
+import { useVideoDemand } from "@/lib/videoDemand";
 import { Tile } from "./Tile";
 import { avatarColor, initials } from "./ui/Avatar";
 import { Tip } from "./ui/Tip";
@@ -36,7 +37,7 @@ const SHRINK_LIMIT = 2.2;
 /** Phones, screen share on top: how many cells (people, plus "+N more") sit underneath it. */
 const STACK_LIMIT = 6;
 
-export function refKey(ref: TrackReferenceOrPlaceholder): string {
+export function refKey(ref: RtcTile): string {
   return `${ref.participant.identity}:${ref.source}`;
 }
 
@@ -63,7 +64,7 @@ export function useBox<T extends HTMLElement>() {
 
 type Slot = {
   key: string;
-  ref: TrackReferenceOrPlaceholder;
+  ref: RtcTile;
   rect: Rect;
   role: "main" | "strip" | "grid";
 };
@@ -102,8 +103,8 @@ function gridRects(count: number, w: number, h: number, gap: number, minRatio: n
 }
 
 /** Height that fits a landscape screen share exactly at this width; 0 if it is not landscape. */
-function shareHeight(ref: TrackReferenceOrPlaceholder, width: number): number {
-  const size = ref.publication?.dimensions;
+function shareHeight(ref: RtcTile, width: number): number {
+  const size = ref.track?.dimensions;
   const ratio = size && size.width > 0 && size.height > 0 ? size.width / size.height : 16 / 9;
   return ratio > 1.2 ? Math.round(width / Math.min(ratio, 2.4)) : 0;
 }
@@ -111,7 +112,7 @@ function shareHeight(ref: TrackReferenceOrPlaceholder, width: number): number {
 type StageProps = {
   view: "tiled" | "sidebar" | "spotlight";
   /** Tiled: the tiles on the current page only. */
-  tiles: TrackReferenceOrPlaceholder[];
+  tiles: RtcTile[];
   /** Tiled: tiles across all pages. */
   total: number;
   /** Tiled: index of this page's first tile within the full list. */
@@ -120,11 +121,11 @@ type StageProps = {
   pageCount: number;
   onPage: (page: number) => void;
   /** Speaker-led views: the large tile and everyone else. */
-  main?: TrackReferenceOrPlaceholder;
-  others: TrackReferenceOrPlaceholder[];
+  main?: RtcTile;
+  others: RtcTile[];
   phone: boolean;
   pinned: boolean;
-  onTogglePin: (ref: TrackReferenceOrPlaceholder) => void;
+  onTogglePin: (ref: RtcTile) => void;
   onShowEveryone: () => void;
 };
 
@@ -167,7 +168,7 @@ export function Stage({
   onTogglePin,
   onShowEveryone,
 }: StageProps) {
-  const room = useRoomContext();
+  const call = useCall();
   // The whole stage is measured, and the page bar's height taken off in arithmetic. Measuring the
   // tile area itself would mean a second layout pass every time the bar appears or disappears.
   const [outerRef, outer] = useBox<HTMLDivElement>();
@@ -183,14 +184,14 @@ export function Stage({
 
   /* -------------------------------------------------------------- placement */
   const slots: Slot[] = [];
-  let more: { rect: Rect; hidden: TrackReferenceOrPlaceholder[] } | null = null;
+  let more: { rect: Rect; hidden: RtcTile[] } | null = null;
   if (ready && focused && main) {
     const showStrip = view === "sidebar" && others.length > 0;
     // Strip tiles are 224×126 in a column on large screens, 104×96 in a row on phones.
     const cell = phone ? { w: 104, h: 96 } : { w: 224, h: 126 };
     // A landscape screen share on an upright phone would be a thin band in a tall black box.
     // It gets a box of its own shape instead, and the people take the room that frees up.
-    const shareH = phone && showStrip && main.source === Track.Source.ScreenShare ? shareHeight(main, box.w) : 0;
+    const shareH = phone && showStrip && main.source === "screen_share" ? shareHeight(main, box.w) : 0;
     const stacked = shareH > 0 && box.h - shareH - STRIP_GAP >= cell.h * 2;
     const mainRect: Rect = !showStrip
       ? { x: 0, y: 0, w: box.w, h: box.h }
@@ -256,9 +257,14 @@ export function Stage({
       if (rects[index]) slots.push({ key: refKey(ref), ref, rect: rects[index], role: "grid" });
     });
   }
+  // Only what has a place on the stage needs to be streamed (see src/lib/videoDemand.ts).
+  useVideoDemand(
+    call,
+    slots.map((slot) => slot.ref),
+  );
   const mainSlot = slots[0]?.role === "main" ? slots[0] : null;
   const sharingOwnScreen =
-    !!mainSlot && mainSlot.ref.participant.isLocal && mainSlot.ref.source === Track.Source.ScreenShare;
+    !!mainSlot && mainSlot.ref.participant.isLocal && mainSlot.ref.source === "screen_share";
   const layout = focused ? (view === "sidebar" ? "focus" : "spotlight") : "grid";
 
   /* ------------------------------------------------------------------ motion */
@@ -276,7 +282,7 @@ export function Stage({
       pinned,
       box,
       // On a phone a screen share rearranges everything at once; that swap is a cross-fade.
-      swap: phone && !!mainSlot && mainSlot.ref.source === Track.Source.ScreenShare ? "share" : "people",
+      swap: phone && !!mainSlot && mainSlot.ref.source === "screen_share" ? "share" : "people",
       phone,
     };
     // Moving the tiles and starting their animations waits for the end of this commit (a
@@ -407,7 +413,7 @@ export function Stage({
               You&apos;re sharing your screen
               <button
                 className="h-9 cursor-pointer rounded-xl bg-danger px-3 font-semibold text-white transition-colors hover:bg-(--danger-hover)"
-                onClick={() => room.localParticipant.setScreenShareEnabled(false).catch(() => {})}
+                onClick={() => call.setEnabled("screen_share", false).catch(() => {})}
               >
                 Stop
               </button>

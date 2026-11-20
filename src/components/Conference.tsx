@@ -1,18 +1,6 @@
 "use client";
 
 import {
-  RoomAudioRenderer,
-  isTrackReference,
-  useConnectionState,
-  useLocalParticipant,
-  useParticipants,
-  useRoomContext,
-  useStartAudio,
-  useTracks,
-  type TrackReferenceOrPlaceholder,
-} from "@livekit/components-react";
-import { ConnectionState, RoomEvent, Track, type Participant } from "livekit-client";
-import {
   CircleAlert,
   EyeOff,
   Hand,
@@ -28,10 +16,10 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { HAND, displayName } from "@/lib/participant";
+import { useAudioBlocked, useCall, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
+import { displayName, type JoinGrant, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { useCallSettings } from "@/lib/useCallSettings";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
-import { useOffscreenVideoPause } from "@/lib/videoDemand";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
 import { ChatPanel } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
@@ -51,18 +39,9 @@ const AUTO_GRID_LIMIT = 12;
 /** Above this many people, joins and leaves are not announced at all: the people count is enough. */
 const ROSTER_TOAST_LIMIT = 24;
 const PHONE_PAGE_SIZE = 6;
-// Speaking and mute changes are handled by the tiles and rows themselves, so the whole call
-// does not re-render every time somebody talks.
-const ROSTER_EVENTS = [
-  RoomEvent.ParticipantConnected,
-  RoomEvent.ParticipantDisconnected,
-  RoomEvent.ParticipantAttributesChanged,
-  RoomEvent.ParticipantNameChanged,
-  RoomEvent.ConnectionStateChanged,
-];
 type OpenPanel = Exclude<Panel, null>;
 
-export function Conference(props: { code: string; token: string }) {
+export function Conference(props: { code: string; grant: JoinGrant }) {
   return (
     <ChatStore>
       <Call {...props} />
@@ -70,30 +49,35 @@ export function Conference(props: { code: string; token: string }) {
   );
 }
 
-function Call({ code, token }: { code: string; token: string }) {
-  const room = useRoomContext();
+function Call({ code, grant }: { code: string; grant: JoinGrant }) {
+  const call = useCall();
   const toast = useToast();
   const phone = useIsPhone();
-  const connection = useConnectionState();
+  const connection = useConnectionStatus();
   const [settings, updateSettings] = useCallSettings();
-  useOffscreenVideoPause(room);
-  useCallSounds(room, {
+  useCallSounds(call, {
     onHostMuted: () => toast.push({ icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
   });
 
   // Opt-in handle for load tests and debugging: set localStorage["meetly:debug"] = "1".
+  // `room` is the provider's own object (a LiveKit Room, or a RealtimeKit meeting).
   useEffect(() => {
     try {
       if (localStorage.getItem("meetly:debug") !== "1") return;
     } catch {
       return;
     }
-    const target = window as unknown as { __meetly?: { room: typeof room } };
-    target.__meetly = { room };
+    const target = window as unknown as { __meetly?: { room: unknown; call: typeof call } };
+    target.__meetly = {
+      call,
+      get room() {
+        return call.native;
+      },
+    };
     return () => {
       delete target.__meetly;
     };
-  }, [room]);
+  }, [call]);
 
   /* ------------------------------------------------------------------ panels */
   const [panel, setPanel] = useState<Panel>(null);
@@ -121,28 +105,25 @@ function Call({ code, token }: { code: string; token: string }) {
   }, [panel]);
 
   /* ------------------------------------------------------------ participants */
-  const participants = useParticipants({ updateOnlyOn: ROSTER_EVENTS });
-  const { localParticipant } = useLocalParticipant();
-  const handRaised = localParticipant.attributes[HAND] === "1";
-  const raisedHands = participants.filter((p) => p.attributes[HAND] === "1");
+  // Speaking and mute changes are handled by the tiles and rows themselves, so the whole call
+  // does not re-render every time somebody talks.
+  const participants = useParticipants();
+  const localParticipant = call.local;
+  // A hand going up or down is a roster change, so this is current on every render.
+  const handRaised = localParticipant.handRaised;
+  const raisedHands = participants.filter((p) => p.handRaised);
 
   /* ------------------------------------------------------------------ layout */
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: true },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { onlySubscribed: false },
-  );
+  const tracks = useTiles();
   const [pinnedKey, setPinnedKey] = useState<string | null>(null);
   const [page, setPage] = useState(0);
-  const togglePin = useCallback((ref: TrackReferenceOrPlaceholder) => {
+  const togglePin = useCallback((ref: RtcTile) => {
     const key = refKey(ref);
     setPinnedKey((current) => (current === key ? null : key));
   }, []);
 
   const pageSize = phone ? PHONE_PAGE_SIZE : settings.maxTiles;
-  const screenShares = tracks.filter((t) => isTrackReference(t) && t.source === Track.Source.ScreenShare);
+  const screenShares = tracks.filter((t) => t.source === "screen_share");
   const pinned = pinnedKey ? tracks.find((t) => refKey(t) === pinnedKey) : undefined;
   // A pin wins; otherwise a screen share takes the main view (unless the user insists on tiles).
   const focus = pinned ?? (settings.layout !== "tiled" ? screenShares[0] : undefined);
@@ -164,10 +145,10 @@ function Call({ code, token }: { code: string; token: string }) {
         : { start: 0, size: 6, pinned: pinned?.participant.identity },
     [view, page, pageSize, pinned],
   );
-  const { stageSpeaker, ordered } = useSpeakers(room, participants.length, visibleRange);
+  const { stageSpeaker, ordered } = useSpeakers(call, participants.length, visibleRange);
 
-  const cameras = new Map<string, TrackReferenceOrPlaceholder>();
-  for (const t of tracks) if (t.source === Track.Source.Camera) cameras.set(t.participant.identity, t);
+  const cameras = new Map<string, RtcTile>();
+  for (const t of tracks) if (t.source === "camera") cameras.set(t.participant.identity, t);
   const selfTile = cameras.get(localParticipant.identity);
   const everyone = ordered.flatMap((id) => cameras.get(id) ?? []);
   // Speaker-led: a pin or share, else whoever is talking, else the last speaker, else anyone.
@@ -175,7 +156,7 @@ function Call({ code, token }: { code: string; token: string }) {
   const main = focus ?? (stageSpeaker ? cameras.get(stageSpeaker) : undefined) ?? firstRemote ?? selfTile;
   // On a phone a screen share sits above a grid of people (see Stage). A floating self view would
   // have nowhere to go but on top of somebody, so there it takes a cell like everyone else.
-  const stackedShare = phone && view === "sidebar" && main?.source === Track.Source.ScreenShare;
+  const stackedShare = phone && view === "sidebar" && main?.source === "screen_share";
   const selfInGrid =
     settings.selfView === "grid" || participants.length === 1 || (stackedShare && settings.selfView === "float");
   const people = selfInGrid ? everyone : everyone.filter((t) => !t.participant.isLocal);
@@ -195,9 +176,8 @@ function Call({ code, token }: { code: string; token: string }) {
     (settings.selfView === "float" || (view === "spotlight" && settings.selfView === "grid"));
 
   const toggleHand = useCallback(() => {
-    const raised = localParticipant.attributes[HAND] === "1";
-    localParticipant.setAttributes({ [HAND]: raised ? "" : "1" }).catch(() => {});
-  }, [localParticipant]);
+    call.setHandRaised(!call.local.handRaised).catch(() => {});
+  }, [call]);
 
   const openChat = useCallback(() => setPanel("chat"), []);
 
@@ -207,8 +187,8 @@ function Call({ code, token }: { code: string; token: string }) {
     // small call its sound) is the signal. If it is not (another gallery page, the "+N more"
     // cell, Spotlight), a toast is, and bursts share one toast that updates in place. In a very
     // large call the people count is enough and nothing else is shown.
-    const onStage = (p: Participant) =>
-      document.querySelector(`[data-tile][data-key="${CSS.escape(`${p.identity}:${Track.Source.Camera}`)}"]`) !== null;
+    const onStage = (p: RtcParticipant) =>
+      document.querySelector(`[data-tile][data-key="${CSS.escape(`${p.identity}:camera`)}"]`) !== null;
     const roster = (verb: "joined" | "left", icon: React.ReactNode) => {
       let names: string[] = [];
       let lastAt = 0;
@@ -224,8 +204,8 @@ function Call({ code, token }: { code: string; token: string }) {
         toast.push({ tag: verb, icon, title: `${who} ${verb}` });
       };
       return {
-        announce(p: Participant) {
-          if (room.remoteParticipants.size + 1 > ROSTER_TOAST_LIMIT) return;
+        announce(p: RtcParticipant) {
+          if (call.remoteIds().length + 1 > ROSTER_TOAST_LIMIT) return;
           // A lull starts a new list; until then the visible toast keeps counting.
           if (Date.now() - lastAt > 5000) names = [];
           lastAt = Date.now();
@@ -238,7 +218,7 @@ function Call({ code, token }: { code: string; token: string }) {
     const arrivals = roster("joined", <UserPlus className="size-5" />);
     const departures = roster("left", <UserMinus className="size-5 text-muted" />);
     const pendingArrivals = new Set<ReturnType<typeof setTimeout>>();
-    const joined = (p: Participant) => {
+    const joined = (p: RtcParticipant) => {
       // Whether the newcomer got a tile is only known once the stage has drawn them.
       const timer = setTimeout(() => {
         pendingArrivals.delete(timer);
@@ -247,23 +227,23 @@ function Call({ code, token }: { code: string; token: string }) {
       }, 60);
       pendingArrivals.add(timer);
     };
-    const left = (p: Participant) => {
+    const left = (p: RtcParticipant) => {
       // Their tile, if they had one, is still on the stage at this moment.
       if (onStage(p)) notePresence("left");
       else departures.announce(p);
     };
     // A raised hand is signalled by the hands button beside People, the badge on the tile and
     // one sound. No toast: that would be a fourth signal for one event.
-    room.on(RoomEvent.ParticipantConnected, joined);
-    room.on(RoomEvent.ParticipantDisconnected, left);
+    const stopJoined = call.on("participantJoined", joined);
+    const stopLeft = call.on("participantLeft", left);
     return () => {
-      room.off(RoomEvent.ParticipantConnected, joined);
-      room.off(RoomEvent.ParticipantDisconnected, left);
+      stopJoined();
+      stopLeft();
       arrivals.cancel();
       departures.cancel();
       pendingArrivals.forEach(clearTimeout);
     };
-  }, [room, toast]);
+  }, [call, toast]);
 
   const showPeople = useCallback(() => setPanel("people"), []);
   const hideSelf = useCallback(() => {
@@ -351,14 +331,14 @@ function Call({ code, token }: { code: string; token: string }) {
         return;
       }
       if (!shortcutsOn) return;
-      const local = room.localParticipant;
+      const media = call.localMedia();
       switch (event.key.toLowerCase()) {
         case "m":
           noteOwnMicToggle();
-          local.setMicrophoneEnabled(!local.isMicrophoneEnabled).catch(() => {});
+          call.setEnabled("microphone", !media.microphone).catch(() => {});
           break;
         case "v":
-          local.setCameraEnabled(!local.isCameraEnabled).catch(() => {});
+          call.setEnabled("camera", !media.camera).catch(() => {});
           break;
         case "h":
           toggleHand();
@@ -376,17 +356,17 @@ function Call({ code, token }: { code: string; token: string }) {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [room, shortcutsOn, toggleHand, togglePanel, paged, currentPage, pageCount]);
+  }, [call, shortcutsOn, toggleHand, togglePanel, paged, currentPage, pageCount]);
 
   /* ------------------------------------------------------------------ render */
-  const connecting = connection === ConnectionState.Connecting;
-  const reconnecting = connection === ConnectionState.Reconnecting || connection === ConnectionState.SignalReconnecting;
+  const connecting = connection === "connecting";
+  const reconnecting = connection === "reconnecting";
   const alone = participants.length === 1 && !connecting;
   const leaving = panel === null && shown !== null;
   const panelTitle = shown === "chat" ? "Chat" : "People";
 
   return (
-    <HostProvider token={token} localIdentity={localParticipant.identity}>
+    <HostProvider grant={grant} localIdentity={localParticipant.identity}>
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
           <button
@@ -529,7 +509,6 @@ function Call({ code, token }: { code: string; token: string }) {
         onEnabledChange={(shortcuts) => updateSettings({ shortcuts })}
       />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
-      <RoomAudioRenderer />
     </HostProvider>
   );
 }
@@ -596,7 +575,7 @@ function FloatingSelf({
   offset,
   onHide,
 }: {
-  tile?: TrackReferenceOrPlaceholder;
+  tile?: RtcTile;
   /** Shift from the bottom-right corner, in rem. */
   offset: { x: number; y: number };
   onHide: () => void;
@@ -639,7 +618,7 @@ function FloatingSelf({
  * Who has a hand up, as a button that opens the people list (where the queue is). It lives with
  * the people control, in the bar on large screens and the top bar on phones, never over video.
  */
-function RaisedHands({ hands, onShow, compact = false }: { hands: Participant[]; onShow: () => void; compact?: boolean }) {
+function RaisedHands({ hands, onShow, compact = false }: { hands: RtcParticipant[]; onShow: () => void; compact?: boolean }) {
   const presence = usePresence(hands.length > 0);
   const [kept, setKept] = useState(hands);
   if (hands.length > 0 && hands !== kept) setKept(hands);
@@ -761,11 +740,11 @@ function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCop
 
 /** Browsers may block audio until the page is interacted with; offer a one-tap fix. */
 function AudioUnlock() {
-  const room = useRoomContext();
-  const { mergedProps, canPlayAudio } = useStartAudio({ room, props: {} });
-  if (canPlayAudio) return null;
+  const call = useCall();
+  const blocked = useAudioBlocked();
+  if (!blocked) return null;
   return (
-    <button onClick={mergedProps.onClick} className="btn btn-primary anim-pop pointer-events-auto h-11 rounded-xl shadow-lg">
+    <button onClick={() => call.startAudio().catch(() => {})} className="btn btn-primary anim-pop pointer-events-auto h-11 rounded-xl shadow-lg">
       <Volume2 className="size-[1.125rem]" aria-hidden="true" />
       Tap to hear others
     </button>

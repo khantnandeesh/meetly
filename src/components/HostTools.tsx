@@ -1,62 +1,54 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { useRoomInfo } from "@livekit/components-react";
-import type { Participant } from "livekit-client";
 import { CircleAlert, EllipsisVertical, MicOff, UserX } from "lucide-react";
 import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import { displayName } from "@/lib/participant";
+import { hostRequest } from "@/lib/rtc/provider";
+import { useHostIdentity } from "@/lib/rtc/react";
+import { displayName, type JoinGrant, type RtcParticipant } from "@/lib/rtc/types";
 import { Dropdown } from "./ui/Menu";
 import { useToast } from "./ui/Toaster";
 
 type HostState = {
-  /** Identity of the meeting host, as recorded by the server in the room metadata. */
+  /** Identity of the meeting host, as recorded by the server. */
   hostId: string | null;
   /** True when the local participant is that host. */
   isHost: boolean;
-  mute: (participant: Participant) => void;
+  mute: (participant: RtcParticipant) => void;
   /** `from` names the menu button it was asked from, so focus can return there. */
-  askRemove: (participant: Participant, from?: string) => void;
+  askRemove: (participant: RtcParticipant, from?: string) => void;
 };
 
 const HostContext = createContext<HostState>({ hostId: null, isHost: false, mute: () => {}, askRemove: () => {} });
 export const useHost = () => useContext(HostContext);
 
 /**
- * Who the host is comes from room metadata, which only the server can write. The buttons here
- * are a convenience: /api/host re-checks the caller's signed token before doing anything.
+ * Who the host is comes from the provider, in a form only our server can write (LiveKit room
+ * metadata, a RealtimeKit preset). The buttons here are a convenience: /api/host re-checks the
+ * caller's signed token before doing anything.
  */
 export function HostProvider({
-  token,
+  grant,
   localIdentity,
   children,
 }: {
-  token: string;
+  grant: JoinGrant;
   localIdentity: string;
   children: React.ReactNode;
 }) {
-  const { metadata } = useRoomInfo();
+  const hostId = useHostIdentity();
   const toast = useToast();
-  const [removing, setRemoving] = useState<Participant | null>(null);
+  const [removing, setRemoving] = useState<RtcParticipant | null>(null);
   const lastAsked = useRef<string | null>(null);
 
-  const hostId = useMemo(() => {
-    try {
-      const host = JSON.parse(metadata || "{}")?.host;
-      return typeof host === "string" ? host : null;
-    } catch {
-      return null;
-    }
-  }, [metadata]);
-
   const act = useCallback(
-    async (action: "mute" | "remove", participant: Participant) => {
+    async (action: "mute" | "remove", participant: RtcParticipant) => {
       const name = displayName(participant);
       try {
         const response = await fetch("/api/host", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ token, action, identity: participant.identity }),
+          body: JSON.stringify(hostRequest(grant, action, participant.identity)),
         });
         if (!response.ok) throw new Error((await response.json()).error);
         toast.push({
@@ -72,7 +64,7 @@ export function HostProvider({
         });
       }
     },
-    [token, toast],
+    [grant, toast],
   );
 
   const value = useMemo<HostState>(
@@ -133,7 +125,7 @@ export function HostProvider({
 }
 
 /** "More" menu with the host's actions for one participant. Renders nothing for non-hosts. */
-export function HostMenu({ participant, micOn, variant }: { participant: Participant; micOn: boolean; variant: "row" | "tile" }) {
+export function HostMenu({ participant, micOn, variant }: { participant: RtcParticipant; micOn: boolean; variant: "row" | "tile" }) {
   const { isHost, mute, askRemove } = useHost();
   if (!isHost || participant.isLocal) return null;
   const name = displayName(participant);

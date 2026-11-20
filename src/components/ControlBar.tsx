@@ -1,7 +1,5 @@
 "use client";
 
-import { useMediaDeviceSelect, useRoomContext, useTrackToggle } from "@livekit/components-react";
-import { Track } from "livekit-client";
 import {
   Bell,
   Check,
@@ -25,6 +23,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useCopied } from "@/lib/hooks";
+import { useActiveDevice, useCall, useLocalToggle } from "@/lib/rtc/react";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
@@ -66,7 +65,7 @@ export function ControlBar({
   settings: CallSettings;
   onSettings: (patch: Partial<CallSettings>) => void;
 }) {
-  const room = useRoomContext();
+  const call = useCall();
   const toast = useToast();
   const copyState = useCopied(onCopyLink);
 
@@ -78,12 +77,10 @@ export function ControlBar({
       icon: <CircleAlert className="size-5" />,
       duration: 7000,
     });
-  const mic = useTrackToggle({ source: Track.Source.Microphone, onDeviceError: deviceError("microphone") });
-  const cam = useTrackToggle({ source: Track.Source.Camera, onDeviceError: deviceError("camera") });
-  const share = useTrackToggle({
-    source: Track.Source.ScreenShare,
-    captureOptions: { audio: true, selfBrowserSurface: "include" },
-  });
+  const mic = useLocalToggle("microphone", deviceError("microphone"));
+  const cam = useLocalToggle("camera", deviceError("camera"));
+  // Dismissing the browser's screen picker is not an error worth a message.
+  const share = useLocalToggle("screen_share");
 
   const micLabel = mic.enabled ? "Mute microphone" : "Unmute microphone";
   const camLabel = cam.enabled ? "Turn off camera" : "Turn on camera";
@@ -124,7 +121,7 @@ export function ControlBar({
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
     <Tip label="Leave call">
-      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => room.disconnect()}>
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => call.disconnect().catch(() => {})}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
@@ -396,7 +393,8 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
   const meta = DEVICE_META[kind];
   const toast = useToast();
   const devices = useDeviceList(kind, null);
-  const { activeDeviceId, setActiveMediaDevice } = useMediaDeviceSelect({ kind, requestPermissions: false });
+  const call = useCall();
+  const activeDeviceId = useActiveDevice(kind);
   // Browsers that can't route audio output simply list no speakers; skip the group.
   if (kind === "audiooutput" && devices.length === 0) return null;
   return (
@@ -409,7 +407,7 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
         activeId={activeDeviceId}
         emptyText={meta.empty}
         onSelect={(id) =>
-          setActiveMediaDevice(id).catch(() =>
+          call.setDevice(kind, id).catch(() =>
             toast.push({
               title: `Couldn't switch ${meta.label.toLowerCase()}`,
               tone: "danger",

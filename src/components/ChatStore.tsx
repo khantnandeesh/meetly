@@ -1,8 +1,8 @@
 "use client";
 
-import { useChat } from "@livekit/components-react";
 import { MessageSquare } from "lucide-react";
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useChat } from "@/lib/rtc/react";
 import { playChatMessageSound } from "@/lib/useSounds";
 import { useToast } from "./ui/Toaster";
 

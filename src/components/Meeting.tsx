@@ -1,11 +1,12 @@
 "use client";
 
-import { LiveKitRoom, type LocalUserChoices } from "@livekit/components-react";
-import { DisconnectReason, type RoomOptions } from "livekit-client";
 import { CircleAlert, Home, LogOut, RotateCcw, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useMounted } from "@/lib/hooks";
+import { loadProvider, requestJoin } from "@/lib/rtc/provider";
+import { CallRoom } from "@/lib/rtc/react";
+import type { JoinChoices, JoinGrant, RtcCall } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
@@ -13,7 +14,7 @@ import { PreJoin, PreJoinSkeleton } from "./PreJoin";
 import { Logo } from "./ui/Logo";
 import { useToast } from "./ui/Toaster";
 
-type Session = { token: string; serverUrl: string; choices: LocalUserChoices; joinedAt: number };
+type Session = { call: RtcCall; grant: JoinGrant; joinedAt: number };
 type Stage = "prejoin" | "joined" | "left";
 type Departure = { minutes: number; dropped: boolean; removed: boolean };
 
@@ -30,29 +31,15 @@ export function Meeting({ code }: { code: string }) {
   const [error, setError] = useState<string | null>(null);
   const [departure, setDeparture] = useState<Departure>({ minutes: 0, dropped: false, removed: false });
 
-  const roomOptions = useMemo<RoomOptions>(
-    () => ({
-      adaptiveStream: true, // only pull the resolution each tile actually needs
-      dynacast: true, // stop publishing layers nobody is watching
-      publishDefaults: { simulcast: true },
-    }),
-    [],
-  );
-
-  async function join(choices: LocalUserChoices) {
+  async function join(choices: JoinChoices) {
     // Still inside the click that joins: the only moment a browser lets audio be switched on.
     sounds.unlock();
     setError(null);
     setJoining(true);
     try {
-      const response = await fetch("/api/token", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ room: code, name: choices.username }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error ?? "Could not join the meeting.");
-      setSession({ token: data.token, serverUrl: data.serverUrl, choices, joinedAt: Date.now() });
+      // The provider's SDK is fetched here, alongside the token, and not a moment earlier.
+      const [grant, provider] = await Promise.all([requestJoin(code, choices.username), loadProvider()]);
+      setSession({ call: provider.createCall(grant, choices), grant, joinedAt: Date.now() });
       setReady(false);
       setCovered(true);
       setStage("joined");
@@ -77,24 +64,16 @@ export function Meeting({ code }: { code: string }) {
   return (
     <>
       {inCall && (
-        <LiveKitRoom
-          token={session.token}
-          serverUrl={session.serverUrl}
-          connect
-          options={roomOptions}
-          audio={session.choices.audioEnabled ? { deviceId: session.choices.audioDeviceId || undefined } : false}
-          video={session.choices.videoEnabled ? { deviceId: session.choices.videoDeviceId || undefined } : false}
+        <CallRoom
+          call={session.call}
           onConnected={() => setReady(true)}
           onDisconnected={(reason) => {
             toast.clear();
             playCallEndedSound();
             setDeparture({
               minutes: Math.round((Date.now() - session.joinedAt) / 60_000),
-              removed: reason === DisconnectReason.PARTICIPANT_REMOVED,
-              dropped:
-                reason !== undefined &&
-                reason !== DisconnectReason.CLIENT_INITIATED &&
-                reason !== DisconnectReason.PARTICIPANT_REMOVED,
+              removed: reason === "removed",
+              dropped: reason === "dropped",
             });
             setStage("left");
           }}
@@ -108,11 +87,10 @@ export function Meeting({ code }: { code: string }) {
             })
           }
         >
-          {/* Own wrapper for sizing: LiveKitRoom's element doesn't take part in layout. */}
           <div className="flex h-dvh flex-col" data-in-call inert={covered}>
-            <Conference code={code} token={session.token} />
+            <Conference code={code} grant={session.grant} />
           </div>
-        </LiveKitRoom>
+        </CallRoom>
       )}
       {covered &&
         // Saved name and device choices live in localStorage, so the form renders on the client only.

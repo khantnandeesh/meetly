@@ -1,10 +1,9 @@
 "use client";
 
-import { useIsSpeaking } from "@livekit/components-react";
-import type { Participant } from "livekit-client";
 import { Hand, Mic, MicOff, Search, VideoOff, X } from "lucide-react";
 import { memo, useMemo, useState } from "react";
-import { HAND, displayName, useMediaState } from "@/lib/participant";
+import { useParticipantState } from "@/lib/rtc/react";
+import { displayName, type RtcParticipant } from "@/lib/rtc/types";
 import { HostMenu, useHost } from "./HostTools";
 import { useCopied } from "@/lib/hooks";
 import { useBox } from "./Stage";
@@ -17,14 +16,14 @@ const OVERSCAN = 6;
 
 type Item =
   | { kind: "header"; key: string; label: string; count: number; top: number }
-  | { kind: "row"; key: string; participant: Participant; hand: boolean; top: number };
+  | { kind: "row"; key: string; participant: RtcParticipant; hand: boolean; top: number };
 
 export function PeoplePanel({
   participants,
   code,
   onCopyLink,
 }: {
-  participants: Participant[];
+  participants: RtcParticipant[];
   code: string;
   onCopyLink: () => Promise<boolean>;
 }) {
@@ -36,18 +35,18 @@ export function PeoplePanel({
   // Raised hands first, then you, then everyone else A–Z. Speaking never reorders the list.
   const { items, height, matches } = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const byName = (a: Participant, b: Participant) => {
+    const byName = (a: RtcParticipant, b: RtcParticipant) => {
       if (a.isLocal !== b.isLocal) return a.isLocal ? -1 : 1;
       return displayName(a).localeCompare(displayName(b));
     };
     const found = needle
       ? participants.filter((p) => displayName(p).toLowerCase().includes(needle))
       : participants;
-    const hands = found.filter((p) => p.attributes[HAND] === "1").sort(byName);
-    const rest = found.filter((p) => p.attributes[HAND] !== "1").sort(byName);
+    const hands = found.filter((p) => p.handRaised).sort(byName);
+    const rest = found.filter((p) => !p.handRaised).sort(byName);
     const list: Item[] = [];
     let top = 0;
-    const section = (label: string, people: Participant[], hand: boolean) => {
+    const section = (label: string, people: RtcParticipant[], hand: boolean) => {
       if (people.length === 0) return;
       list.push({ kind: "header", key: `h:${label}`, label, count: people.length, top });
       top += HEADER;
@@ -160,13 +159,12 @@ const PersonRow = memo(function PersonRow({
   participant,
   hand,
 }: {
-  participant: Participant;
+  participant: RtcParticipant;
   hand: boolean;
 }) {
   const { hostId, isHost } = useHost();
-  const name = displayName(participant);
-  const speaking = useIsSpeaking(participant);
-  const { micOn, camOn } = useMediaState(participant);
+  const { name: rawName, speaking, micOn, camOn } = useParticipantState(participant);
+  const name = rawName || "Guest";
   return (
     <div className="group/row flex h-full items-center gap-3 rounded-xl px-3 hover:bg-surface-2/60">
       <Avatar name={name} seed={participant.identity} speaking={speaking && micOn} />
