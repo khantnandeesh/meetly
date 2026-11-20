@@ -1,0 +1,106 @@
+# Puts an earlier version of the `meetly` Worker back in production, or just lists the versions.
+#
+# Actions → Rollback → Run workflow:
+#   - action "list": shows recent deployments and versions; changes nothing.
+#   - action "rollback", version empty: goes back to the version before the current one.
+#   - action "rollback", version set: goes back to that version (an id from "list", the
+#     Deploy run's summary, or the Cloudflare dashboard: Workers & Pages → meetly → Deployments).
+#
+# A rollback is instant and does not rebuild anything: Cloudflare keeps every uploaded version
+# (the latest 100, and anything newer than 30 days). The next push to cloudflare-deploy deploys
+# that commit as usual, so revert or fix the bad commit there too.
+name: Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "list = only show versions; rollback = change production"
+        type: choice
+        options: [list, rollback]
+        default: list
+      version_id:
+        description: "Version id to go back to (empty = the version before the current one)"
+        type: string
+        required: false
+        default: ""
+      reason:
+        description: "Message recorded with the rollback"
+        type: string
+        required: false
+        default: "Rollback from GitHub Actions"
+
+permissions:
+  contents: read
+
+# Shared with deploy.yml, so a rollback and a deploy never run at the same time.
+concurrency:
+  group: production-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    name: ${{ inputs.action == 'rollback' && 'Roll back production' || 'List versions' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Same environment as deploys: an approval rule on it applies to rollbacks too.
+    environment: production
+    # The Cloudflare secrets are given only to the steps that run Wrangler, not to `npm ci`.
+    env:
+      VERSION_ID: ${{ inputs.version_id }}
+      REASON: ${{ inputs.reason }}
+    steps:
+      # wrangler.jsonc (the Worker's name and account) and the pinned Wrangler live on cloudflare-deploy.
+      - uses: actions/checkout@v6
+        with:
+          ref: cloudflare-deploy
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Check inputs
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          [ -n "$CLOUDFLARE_API_TOKEN" ] && [ -n "$CLOUDFLARE_ACCOUNT_ID" ] \
+            || { echo "::error::Set the GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID (README → Deploying)."; exit 1; }
+          if [ -n "$VERSION_ID" ] && ! [[ "$VERSION_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]; then
+            echo "::error::'$VERSION_ID' is not a version id (expected a UUID like 1a2b3c4d-...)."; exit 1
+          fi
+      - run: npm ci
+
+      - name: Deployments and versions now
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler deployments list
+          npx wrangler versions list
+
+      - name: Roll back
+        if: inputs.action == 'rollback'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          # Without a version id, Wrangler picks the version deployed before the current one.
+          npx wrangler rollback ${VERSION_ID:+"$VERSION_ID"} --message "${REASON:0:120}" --yes
+          npx wrangler deployments status
+
+      - name: Smoke test https://meet.nandeesh.dev
+        if: inputs.action == 'rollback'
+        run: node scripts/smoke-test.mjs https://meet.nandeesh.dev
+
+      - name: Summary
+        if: always() && inputs.action == 'rollback'
+        run: |
+          {
+            echo "## Rollback: ${{ job.status }}"
+            echo
+            echo "Production: https://meet.nandeesh.dev"
+            echo "Requested version: \`${VERSION_ID:-the one before the current}\`. The log of **Roll back** shows the version now live."
+          } >> "$GITHUB_STEP_SUMMARY"
