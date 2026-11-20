@@ -451,6 +451,17 @@ Limits and what is not covered:
 
 Media never touches this app: browsers connect straight to the provider with a short-lived token.
 
+## Filling a meeting with bots
+
+To try a meeting at size by hand, `scripts/join-bots.cjs` sends headless test bots into a live meeting through the real join screen:
+
+```bash
+npm install --no-save playwright && npx playwright install chromium   # once
+node scripts/join-bots.cjs https://meet.nandeesh.dev/abc-defg-hij 20  # bots, then minutes (15) and how many show a camera (4)
+```
+
+Bots join with the microphone off; in a meeting where people ask to join, they wait to be let in. They leave by themselves after the given minutes, or on Ctrl+C. Each bot is a real participant, so on RealtimeKit it uses participant-minutes (20 bots for 15 minutes is 300). Run it from a computer with ordinary internet access: a sandbox that only lets HTTPS out through a proxy can't carry the meeting's media.
+
 ## Deploying
 
 Production is the Cloudflare Worker `meetly` at https://meet.nandeesh.dev, built with
