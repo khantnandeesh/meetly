@@ -223,6 +223,34 @@ export class FakeParticipants extends EventEmitter {
     this.lastActiveSpeaker = peerId;
     this.emit("activeSpeaker", { peerId, volume: 1 });
   }
+  /**
+   * Participants.getAllJoinedPeers: a page of who is in the meeting, asked of the server.
+   * RealtimeKit allows 10 calls a minute, so the calls are counted. Only the fields the SDK's
+   * type names that this stand-in can fill are given.
+   */
+  joinedPeerCalls = 0;
+  async getAllJoinedPeers(_searchQuery: string, limit: number, offset: number) {
+    this.joinedPeerCalls++;
+    return this.joined
+      .toArray()
+      .slice(offset, offset + limit)
+      .map((p) => ({ id: p.id, userId: p.userId, name: p.name, displayName: p.name, customParticipantId: p.customParticipantId ?? "", waitlisted: false }));
+  }
+}
+
+/**
+ * RTKStage, for webinars: who may be on stage is changed by user id. Only the calls are
+ * recorded; this stand-in does not imitate the stage-request states.
+ */
+export class FakeStage extends EventEmitter {
+  granted: string[][] = [];
+  denied: string[][] = [];
+  async grantAccess(userIds: string[]) {
+    this.granted.push(userIds);
+  }
+  async denyAccess(userIds: string[]) {
+    this.denied.push(userIds);
+  }
 }
 
 export class FakeChat extends EventEmitter {
@@ -343,6 +371,7 @@ export class FakeMeeting {
   polls: FakePolls;
   self: FakeSelf;
   participants = new FakeParticipants();
+  stage = new FakeStage();
   /** RTKMeta, with the one property the adapter reads. */
   meta: EventEmitter & { meetingStartedTimestamp?: Date } = new EventEmitter();
   chat: FakeChat;
