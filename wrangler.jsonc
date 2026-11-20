@@ -34,6 +34,11 @@
 		"REALTIMEKIT_HOST_PRESET": "meetly-host",
 		"REALTIMEKIT_GUEST_PRESET": "meetly-guest",
 		"REALTIMEKIT_KNOCK_PRESET": "meetly-knock",
+		// Webinars: the host's, the audience's and a co-host's presets. All three are needed for
+		// webinars; without them "New webinar" is not offered.
+		"REALTIMEKIT_WEBINAR_HOST_PRESET": "meetly-webinar-host",
+		"REALTIMEKIT_WEBINAR_VIEWER_PRESET": "meetly-webinar-viewer",
+		"REALTIMEKIT_WEBINAR_COHOST_PRESET": "meetly-webinar-cohost",
 		// Webinars on ("1") or off ("0"): off, none can be started or joined and the cost guard
 		// ends those running. To switch off at once, change it in the dashboard (Workers → meetly →
 		// Settings → Variables, which deploys straight away) and then here, or the next deploy
