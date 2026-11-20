@@ -5,6 +5,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalS
 import { useIsPhone, usePresence } from "@/lib/hooks";
 import { LANE_LIMIT, PHONE_LANE_LIMIT, REACTION_SHOW_MS, reactions, type LaneEntry } from "@/lib/reactions";
 import { useCall, useConnectionStatus } from "@/lib/rtc/react";
+import { callSettings, useReactionsHidden } from "@/lib/useCallSettings";
 import { REACTIONS, displayName } from "@/lib/rtc/types";
 import { Dropdown } from "./ui/Menu";
 import { Tip } from "./ui/Tip";
@@ -32,6 +33,9 @@ export function ReactionFeed() {
     const rules = () => reactions.setRules({ limit, people: call.participants().length });
     rules();
     const stop = call.on("reaction", (participant, emoji) => {
+      // More › Reactions off: other people's reactions are neither shown nor announced. Your own
+      // still pop on your tile, as the sign that the tap was sent.
+      if (!participant.isLocal && callSettings().reactionsHidden) return;
       const onTile =
         document.querySelector(`[data-tile][data-key="${CSS.escape(`${participant.identity}:camera`)}"]`) !== null;
       const name = participant.isLocal ? "You" : displayName(participant).split(/\s+/)[0];
@@ -41,6 +45,11 @@ export function ReactionFeed() {
     return stop;
   }, [call, limit]);
   useEffect(() => () => reactions.clear(), [call]);
+  // Switching reactions off takes down what is already on screen, not only what comes next.
+  const hidden = useReactionsHidden();
+  useEffect(() => {
+    if (hidden) reactions.clear();
+  }, [hidden]);
   const announcement = useSyncExternalStore(reactions.subscribeAnnouncement, reactions.announcement, () => "");
   return (
     <p className="sr-only" role="status" aria-live="polite">
@@ -61,29 +70,37 @@ export function ReactionLane() {
   const lane = useSyncExternalStore(reactions.subscribeLane, reactions.lane, reactions.lane);
   const box = useRef<HTMLDivElement>(null);
   const rows = useRef(new Map<number, HTMLElement>());
-  const tops = useRef(new Map<number, number>());
+  /** Each row's height above the lane's bottom edge, from layout alone (no glide in it). */
+  const heights = useRef(new Map<number, number>());
   useLayoutEffect(() => {
-    if (box.current) {
-      const anchor = laneAnchor(box.current);
-      box.current.style.bottom = `${anchor.bottom}px`;
-      box.current.style.left = `${anchor.left}px`;
-      reactions.setRoom(anchor.rows);
+    const strip = box.current;
+    if (!strip) {
+      heights.current = new Map();
+      return;
     }
+    const anchor = laneAnchor(strip);
+    strip.style.bottom = `${anchor.bottom}px`;
+    strip.style.left = `${anchor.left}px`;
+    reactions.setRoom(anchor.rows);
     const still = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const next = new Map<number, number>();
     rows.current.forEach((row, id) => {
-      const top = row.getBoundingClientRect().top;
-      next.set(id, top);
-      const before = tops.current.get(id);
-      if (still || before === undefined || before === top) return;
+      // Measured from the bottom, where the lane is anchored, so it does not change when the
+      // lane grows; offsetTop ignores any glide still under way.
+      const height = strip.offsetHeight - row.offsetTop;
+      next.set(id, height);
+      const before = heights.current.get(id);
+      if (still || before === undefined || before === height) return;
+      // Start from where the row is drawn now, which includes what is left of an earlier glide.
+      const gliding = parseFloat(getComputedStyle(row).translate.split(" ")[1] ?? "0") || 0;
       // `translate`, not `transform`: the pop-in animation owns transform, and the two would fight.
       row.style.transition = "none";
-      row.style.translate = `0 ${before - top}px`;
+      row.style.translate = `0 ${height - before + gliding}px`;
       row.getBoundingClientRect();
       row.style.transition = "translate var(--dur-base) var(--ease-move)";
       row.style.translate = "";
     });
-    tops.current = next;
+    heights.current = next;
   }, [lane]);
   if (lane.length === 0) return null;
   return (

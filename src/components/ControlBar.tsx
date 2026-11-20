@@ -46,6 +46,7 @@ import { useUnread } from "./ChatStore";
 import { useHost } from "./HostTools";
 import { LayoutMenuItems } from "./LayoutMenu";
 import { useMini } from "./MiniWindow";
+import { ChatPreviewsSwitch, ReactionsSwitch } from "./NoticeSwitches";
 import { ReactMenu } from "./Reactions";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -201,6 +202,8 @@ export function ControlBar({
                 <Gauge className="size-4 text-muted" aria-hidden="true" />
                 Connection quality…
               </Dropdown.Item>
+              <ViewerSwitches />
+              <div className="menu-sep" />
               <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
                 <Keyboard className="size-4 text-muted" aria-hidden="true" />
                 Keyboard shortcuts
@@ -229,10 +232,12 @@ export function ControlBar({
   }
 
   return (
-    <footer className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 pt-1 pb-4">
-      <div className="flex min-w-0 items-center gap-1 text-sm text-muted">
-        <Clock />
-        <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" aria-hidden="true" />
+    <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-4 px-4 pt-1 pb-4">
+      {/* At the narrowest large screens the controls take the room: the clock goes first, so the
+          bar's right-hand buttons never slide over the leave button (see the grid's third column). */}
+      <div className="@container flex min-w-0 items-center gap-1 text-sm text-muted @max-[5rem]:*:hidden">
+        <Clock className="@max-[11rem]:hidden" />
+        <span className="mx-2 h-4 w-px shrink-0 bg-border-strong @max-[11rem]:hidden" aria-hidden="true" />
         <Tip label="Copy meeting link">
           <button
             onClick={copyState.copy}
@@ -393,14 +398,15 @@ function PhoneMoreItems({
     );
   }
   const layoutName = { auto: "Auto", tiled: "Tiled", spotlight: "Spotlight", sidebar: "Sidebar" }[settings.layout];
+  // Audio and video first: moving between earpiece, speaker and headset is the most frequent
+  // thing done here on a phone, whose controls have no device menu of their own.
   return (
     <>
-      <DataSaverSwitch />
-      <Dropdown.Item ref={first} className="menu-item" onSelect={onShowQuality}>
-        <Gauge className="size-4 text-muted" aria-hidden="true" />
-        Connection quality…
+      <Dropdown.Item ref={first} className="menu-item" onSelect={open("devices")}>
+        <Settings2 className="size-4 text-muted" aria-hidden="true" />
+        Audio and video
+        <ChevronRight className="ml-auto size-4 text-muted" aria-hidden="true" />
       </Dropdown.Item>
-      <div className="menu-sep" />
       <Dropdown.Item className="menu-item" onSelect={open("layout")}>
         <LayoutGrid className="size-4 text-muted" aria-hidden="true" />
         Layout
@@ -409,11 +415,13 @@ function PhoneMoreItems({
           <ChevronRight className="size-4" aria-hidden="true" />
         </span>
       </Dropdown.Item>
-      <Dropdown.Item className="menu-item" onSelect={open("devices")}>
-        <Settings2 className="size-4 text-muted" aria-hidden="true" />
-        Audio and video
-        <ChevronRight className="ml-auto size-4 text-muted" aria-hidden="true" />
+      <div className="menu-sep" />
+      <DataSaverSwitch />
+      <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
+        <Gauge className="size-4 text-muted" aria-hidden="true" />
+        Connection quality…
       </Dropdown.Item>
+      <ViewerSwitches />
       {onEnd && (
         <>
           <div className="menu-sep" />
@@ -423,6 +431,21 @@ function PhoneMoreItems({
           </Dropdown.Item>
         </>
       )}
+    </>
+  );
+}
+
+/**
+ * What you see of other people's activity: chat previews and reactions, each a switch that only
+ * affects this browser (src/components/NoticeSwitches.tsx). Their own group, after the
+ * connection group, in both More menus.
+ */
+function ViewerSwitches() {
+  return (
+    <>
+      <div className="menu-sep" />
+      <ChatPreviewsSwitch />
+      <ReactionsSwitch />
     </>
   );
 }
@@ -703,7 +726,7 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
   );
 }
 
-function Clock() {
+function Clock({ className = "" }: { className?: string }) {
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
     const tick = () => setNow(new Date());
@@ -715,7 +738,7 @@ function Clock() {
     };
   }, []);
   return (
-    <time className="shrink-0 font-medium tabular-nums">
+    <time className={`shrink-0 font-medium tabular-nums ${className}`}>
       {now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : " "}
     </time>
   );

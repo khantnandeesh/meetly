@@ -343,6 +343,99 @@ async function endedScreen(browser) {
   await guest.ctx.close();
 }
 
+/* ------------------------------------------------------------------ C12 */
+
+/** The open menu as its rows read, top to bottom: each item's first line, and "—" for a separator. */
+const menuRows = (person) =>
+  person.page.locator("[role=menu]").evaluate((menu) =>
+    [...menu.querySelectorAll(":scope [role^=menuitem], :scope .menu-sep")].map((el) =>
+      el.classList.contains("menu-sep") ? "—" : el.innerText.split("\n")[0].replace(/\s*(⇧P|\?)$/, "").trim(),
+    ),
+  );
+
+async function moreMenus(browser) {
+  const host = await H.client(browser, { viewport: { width: 1440, height: 900 }, scale: 2 });
+  const url = await H.createMeeting(host);
+  await H.join(host, url, "Hana Host");
+  await host.page.getByRole("button", { name: "More options" }).click();
+  await host.page.getByRole("menu").waitFor();
+  await H.sleep(300);
+  const desktop = await menuRows(host);
+  const wantDesktop = ["Open mini window", "—", "Use less data", "Connection quality…", "—", "Chat previews", "Reactions", "—", "Keyboard shortcuts"];
+  H.ok("C12 desktop More: mini window | Use less data, Connection quality | Chat previews, Reactions | Keyboard shortcuts", desktop.join("|") === wantDesktop.join("|"), desktop.join("|"));
+  H.ok("C12 desktop More: no calendar item and no copy of the link", desktop.every((row) => !/calendar|Copy meeting link/i.test(row)));
+  await H.shot(host, "c12-more-desktop");
+  await host.page.keyboard.press("Escape");
+
+  const mo = await H.client(browser, { viewport: H.PHONE, scale: 2, touch: true });
+  const phoneUrl = await H.createMeeting(mo);
+  await H.join(mo, phoneUrl, "Mo Phone");
+  await mo.page.getByRole("button", { name: "More options" }).tap();
+  await mo.page.getByRole("menu").waitFor();
+  await H.sleep(300);
+  const phone = await menuRows(mo);
+  const wantPhone = ["Audio and video", "Layout", "—", "Use less data", "Connection quality…", "—", "Chat previews", "Reactions", "—", "End meeting for everyone"];
+  H.ok("C12 phone More: Audio and video, Layout | Use less data, Connection quality | Chat previews, Reactions | End meeting for everyone", phone.join("|") === wantPhone.join("|"), phone.join("|"));
+  H.ok("C12 phone More: the menu fits the screen", await H.noOverflow(mo));
+  await H.shot(mo, "c12-more-phone");
+  for (const person of [host, mo]) await person.ctx.close();
+}
+
+/** More › Reactions off: nobody else's reactions show, on a tile or in the lane; yours still do. */
+async function reactionsSwitch(browser) {
+  const a = await inCrowd(browser, { viewport: { width: 1440, height: 900 } });
+  await a.page.evaluate(() => window.__crowd.join(30));
+  await H.sleep(800);
+  const switchItem = a.page.getByRole("menuitemcheckbox", { name: /^Reactions/ });
+  await a.page.getByRole("button", { name: "More options" }).click();
+  await switchItem.click();
+  H.ok("Reactions switch: turned off in More", (await switchItem.getAttribute("aria-checked")) === "false");
+  await a.page.keyboard.press("Escape");
+  // Someone off screen, and someone whose tile is on screen.
+  await a.page.evaluate(() => {
+    window.__crowd.react(0, "👏");
+    const onScreen = document.querySelector('[data-tile][data-key^="crowd-"]').dataset.key.replace(/:camera$/, "");
+    window.__meetly.call.emit("reaction", window.__meetly.call.participant(onScreen), "🎉");
+  });
+  await H.sleep(800);
+  H.ok("Reactions switch off: nothing in the lane, nothing on a tile", (await a.page.locator("[data-reaction-lane], [data-tile-reaction]").count()) === 0);
+  await a.page.evaluate(() => window.__meetly.call.emit("reaction", window.__meetly.call.local, "❤️"));
+  H.ok("Reactions switch off: your own still pops on your tile", await H.until(async () => (await a.page.locator('[data-tile-reaction="❤️"]').count()) === 1, 3000));
+  await a.page.getByRole("button", { name: "More options" }).click();
+  await switchItem.click();
+  await a.page.keyboard.press("Escape");
+  await a.page.evaluate(() => window.__crowd.react(1, "👏"));
+  H.ok("Reactions switch back on: the lane shows them again", await H.until(async () => (await a.page.locator("[data-lane-row]").count()) === 1, 3000));
+  await a.ctx.close();
+}
+
+/** Narrow large screens (768–899 px): the host's leave cluster used to sit under the Layout button. */
+async function narrowBar(browser) {
+  const host = await H.client(browser, { viewport: { width: 768, height: 800 } });
+  const url = await H.createMeeting(host);
+  await H.join(host, url, "Hana Host");
+  await host.page.evaluate(CROWD);
+  await host.page.evaluate(() => window.__crowd.join(3));
+  const covered = [];
+  for (const width of [768, 800, 850, 899, 1024]) {
+    await host.page.setViewportSize({ width, height: 800 });
+    await H.sleep(300);
+    const hidden = await host.page.evaluate(() =>
+      [...document.querySelectorAll("footer button")]
+        .filter((button) => button.offsetParent)
+        .filter((button) => {
+          const r = button.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+          return !hit || !(hit === button || button.contains(hit));
+        })
+        .map((button) => button.getAttribute("aria-label") || button.textContent.trim()),
+    );
+    if (hidden.length) covered.push(`${width}: ${hidden.join(", ")}`);
+  }
+  H.ok("the control bar at 768–1024 px: no button covers another (More ways to leave included)", covered.length === 0, covered.join("; "));
+  await host.ctx.close();
+}
+
 /* ------------------------------------------------- mute late joiners (UI) */
 
 /** Opens the pre-join screen with the peek's headcount replaced by `count`. */
@@ -408,4 +501,10 @@ module.exports = async function layout(browser) {
   await badges(browser);
   await endedScreen(browser);
   await lateJoiners(browser);
+  await moreMenus(browser);
+  await reactionsSwitch(browser);
+  await narrowBar(browser);
 };
+
+// For screenshot scripts that need the same synthetic crowd.
+module.exports.CROWD = CROWD;
