@@ -49,6 +49,7 @@ export function PreJoin({
   error,
   onJoin,
   onCancel,
+  noun = "meeting",
 }: {
   code: string;
   joining: boolean;
@@ -64,6 +65,8 @@ export function PreJoin({
   onJoin: (choices: JoinChoices) => void;
   /** Stop asking to join. */
   onCancel?: () => void;
+  /** What the call is called: a webinar's host joins here too. */
+  noun?: "meeting" | "webinar";
 }) {
   const [saved, save] = useSavedChoices();
   const [effects, saveEffects] = useEffectSettings();
@@ -218,7 +221,7 @@ export function PreJoin({
               <p role="status" className="flex items-center gap-3.5 rounded-2xl bg-surface-2 p-4 shadow-[inset_0_0_0_1px_var(--border)]">
                 <LoaderCircle className="anim-spin size-5 shrink-0 text-accent" aria-hidden="true" />
                 <span className="min-w-0">
-                  <span className="block font-medium">Someone in the meeting will let you in</span>
+                  <span className="block font-medium">Someone in the {noun} will let you in</span>
                   <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
                 </span>
               </p>
@@ -240,7 +243,7 @@ export function PreJoin({
                   setName(e.target.value);
                   setNameError(false);
                 }}
-                placeholder="Shown to everyone in the meeting"
+                placeholder={`Shown to everyone in the ${noun}`}
                 autoComplete="name"
                 maxLength={40}
                 aria-invalid={nameError ? true : undefined}
@@ -257,7 +260,7 @@ export function PreJoin({
             {locked && !error && (
               <p className="flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-3 text-sm text-muted">
                 <Lock className="mt-px size-4 shrink-0" aria-hidden="true" />
-                This meeting is locked. Nobody new can join until the host unlocks it.
+                This {noun} is locked. Nobody new can join until the host unlocks it.
               </p>
             )}
 
@@ -290,7 +293,7 @@ export function PreJoin({
               : crowd !== null && joinMuted && !micOn
                 ? `You'll join muted. ${fullCount(crowd)} people are here.`
                 : `You'll join with your camera ${camOn ? "on" : "off"}${camOn && background !== "none" ? " (background blurred)" : ""} and microphone ${micOn ? "on" : "off"}.`}
-            {mustAsk && !waiting && " Someone in the meeting has to let you in."}
+            {mustAsk && !waiting && ` Someone in the ${noun} has to let you in.`}
           </p>
         </section>
       </main>
@@ -319,7 +322,7 @@ const PROBLEM_COPY: Record<MediaProblem, (what: string) => { title: string; body
   }),
 };
 
-function Preview({
+export function Preview({
   name,
   audio,
   video,

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { PASS_MAX_AGE_S, type Pass } from "../../pass.server";
 import { DENIED, GONE, HOST_ONLY, NOT_THE_HOST, OWN_CONTROLS, isHostOnly, type HostActionResult } from "../hostAction";
-import type { HostAction, JoinAccess, MeetingPeek } from "../types";
+import { webinarGate, type WebinarRefusal } from "../../webinarGate.server";
+import { readLimitFacts, webinarsEnabled, type LimitRecord, type LimitWarning } from "../../webinarLimit";
+import type { CallMode, HostAction, JoinAccess, MeetingPeek } from "../types";
 import { signSession, verifySession, type Session } from "./session";
 
 /**
@@ -49,6 +51,8 @@ const ACCESS = "meetly-access:";
 const PIN = "meetly-pin:";
 /** "meetly-poll-closed:<poll id>": a RealtimeKit poll the host or a co-host ended. RealtimeKit itself has no way to end one. */
 const POLL_CLOSED = "meetly-poll-closed:";
+/** "meetly-mode:webinar": "New webinar" made this meeting. Written once, before anyone joins, and never removed. */
+const MODE = "meetly-mode:";
 /** Polls are ended a handful at a time; past this, something other than a person is asking. */
 const MAX_CLOSED_POLLS = 40;
 /** "meetly-reactions:off": the host or a co-host turned reactions off. No statement means they are allowed. */
@@ -62,6 +66,11 @@ type Config = {
   guestPreset: string;
   /** Optional: a guest preset with the waiting room switched on. Without it there is no "ask to join". */
   knockPreset: string | null;
+  /** Webinars: the host's preset and the audience's (see `missingWebinarEnv`). Without both there are no webinars. */
+  webinarHostPreset: string | null;
+  webinarViewerPreset: string | null;
+  /** Webinars: co-hosts moderate from the audience with their own preset (see `rejoin` below). */
+  webinarCohostPreset: string | null;
   sessionSecret: string;
 };
 
@@ -78,6 +87,17 @@ export function missingRealtimeKitEnv(): string[] {
   return REALTIMEKIT_ENV.filter((name) => !process.env[name]);
 }
 
+/** Both preset names a webinar needs. They are optional for meetings, so they are checked only when a webinar is made or joined. */
+export const REALTIMEKIT_WEBINAR_ENV = [
+  "REALTIMEKIT_WEBINAR_HOST_PRESET",
+  "REALTIMEKIT_WEBINAR_VIEWER_PRESET",
+  "REALTIMEKIT_WEBINAR_COHOST_PRESET",
+] as const;
+
+export function missingWebinarEnv(): string[] {
+  return REALTIMEKIT_WEBINAR_ENV.filter((name) => !process.env[name]);
+}
+
 /** What signs the browser's pass on RealtimeKit builds. */
 export function realtimeKitPassSecret(): string {
   return process.env.MEETLY_SESSION_SECRET ?? "";
@@ -92,6 +112,9 @@ function config(): Config | null {
     hostPreset: env.REALTIMEKIT_HOST_PRESET,
     guestPreset: env.REALTIMEKIT_GUEST_PRESET,
     knockPreset: process.env.REALTIMEKIT_KNOCK_PRESET || null,
+    webinarHostPreset: process.env.REALTIMEKIT_WEBINAR_HOST_PRESET || null,
+    webinarViewerPreset: process.env.REALTIMEKIT_WEBINAR_VIEWER_PRESET || null,
+    webinarCohostPreset: process.env.REALTIMEKIT_WEBINAR_COHOST_PRESET || null,
     sessionSecret: env.MEETLY_SESSION_SECRET,
   };
 }
@@ -160,6 +183,9 @@ async function listParticipants(c: Config, meetingId: string): Promise<Participa
   return all;
 }
 
+/** The presets whose holders are the host: the meeting host's, and the webinar host's where there is one. */
+const hostPresetsOf = (c: Config) => (c.webinarHostPreset ? [c.hostPreset, c.webinarHostPreset] : [c.hostPreset]);
+
 /** Whether anyone is connected right now. No session at all answers 404. */
 async function hasLiveSession(c: Config, meetingId: string): Promise<boolean> {
   const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
@@ -186,13 +212,18 @@ type MeetingRecord = {
   pin: string | null;
   /** Ids of RealtimeKit polls that were ended. */
   closedPolls: string[];
+  /** A webinar's record says so; anything else is a meeting. */
+  mode: CallMode;
+  /** What the cost watchdog wrote: sessions that reached the free limit, and warnings given (see src/lib/webinarLimit.ts). */
+  limit: LimitRecord;
   /** People may send reactions. */
   reactions: boolean;
   markers: Participant[];
 };
 
 /** Reads the meeting's record out of its participant list. Exported for tests. */
-export function readRecord(participants: Participant[], hostPreset: string, canAsk: boolean): MeetingRecord {
+export function readRecord(participants: Participant[], hostPreset: string | readonly string[], canAsk: boolean): MeetingRecord {
+  const hostPresets: readonly string[] = typeof hostPreset === "string" ? [hostPreset] : hostPreset;
   const markers = participants.filter(isMarker);
   const people = participants.filter((p) => !isMarker(p));
   const tagged = (prefix: string) =>
@@ -204,12 +235,15 @@ export function readRecord(participants: Participant[], hostPreset: string, canA
   const pins = markers.filter((m) => m.custom_participant_id.startsWith(PIN)).sort(oldestFirst);
   return {
     people,
-    hosts: people.filter((p) => p.preset_name === hostPreset),
+    hosts: people.filter((p) => hostPresets.includes(p.preset_name)),
     coHostIds: new Set(tagged(COHOST)),
     banned: new Set(tagged(BAN)),
     access,
     pin: pins.length > 0 ? pins[pins.length - 1].custom_participant_id.slice(PIN.length) : null,
     closedPolls: Array.from(new Set(tagged(POLL_CLOSED))),
+    mode: tagged(MODE).includes("webinar") ? "webinar" : "meeting",
+    // Oldest first, so the newest warning is the last one.
+    limit: readLimitFacts([...markers].sort(oldestFirst).map((m) => m.custom_participant_id)),
     reactions: !markers.some((m) => m.custom_participant_id === REACTIONS_OFF),
     markers,
   };
@@ -273,12 +307,14 @@ export type RealtimeKitJoin = {
   canAsk: boolean;
   pin: string | null;
   closedPolls: string[];
+  mode: CallMode;
   /** Reactions allowed at the moment of joining. */
   reactions: boolean;
+  webinarPresets?: { viewer: string; cohost: string };
 };
 
 export type RealtimeKitJoinOutcome =
-  | { refused: "removed" | "locked" }
+  | { refused: "removed" | "locked" | WebinarRefusal }
   | {
       refused?: undefined;
       join: RealtimeKitJoin;
@@ -296,6 +332,7 @@ function grant(
   role: "host" | "guest",
   expires: number,
 ): RealtimeKitJoin {
+  const webinar = record?.mode === "webinar";
   const session: Session = {
     meetingId: meeting.id,
     participantId: person.id,
@@ -309,13 +346,19 @@ function grant(
     participantId: person.id,
     meetingId: meeting.id,
     role,
-    hostPreset: c.hostPreset,
+    // In a webinar the host is whoever holds the webinar host's preset; clients look for that name.
+    hostPreset: webinar ? (c.webinarHostPreset ?? c.hostPreset) : c.hostPreset,
     coHosts: record ? coHostIdentities(record) : [],
     access: record?.access ?? "open",
-    canAsk: c.knockPreset !== null,
+    // The audience's preset has no waiting room, so a webinar has no "ask to join".
+    canAsk: c.knockPreset !== null && !webinar,
     pin: record?.pin ?? null,
     closedPolls: record?.closedPolls ?? [],
+    mode: webinar ? "webinar" : "meeting",
     reactions: record?.reactions ?? true,
+    ...(webinar && c.webinarViewerPreset && c.webinarCohostPreset
+      ? { webinarPresets: { viewer: c.webinarViewerPreset, cohost: c.webinarCohostPreset } }
+      : {}),
   };
 }
 
@@ -327,12 +370,19 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
   const c = config();
   if (!c) throw new Error(`Server is missing ${missingRealtimeKitEnv().join(", ")}.`);
   const { meeting, created } = await findOrCreateMeeting(c, code);
-  const record = readRecord(created ? [] : await listParticipants(c, meeting.id), c.hostPreset, c.knockPreset !== null);
+  const record = readRecord(created ? [] : await listParticipants(c, meeting.id), hostPresetsOf(c), c.knockPreset !== null);
   const expires = Date.now() + TOKEN_TTL_MS;
+  const webinar = record.mode === "webinar";
+  if (webinar && missingWebinarEnv().length > 0) {
+    throw new Error(`Server is missing ${missingWebinarEnv().join(", ")}, which webinars need.`);
+  }
 
   // The host coming back: the same participant, with a fresh token and today's name.
   const mine = pass.key ? record.hosts.find((p) => p.id === pass.key) : undefined;
   if (mine) {
+    // The host passes the same gate as everyone else, so a rule for webinars is never skipped by a rejoin.
+    const refused = webinar ? await webinarGate({ host: true, watching: () => liveCount(c, meeting.id), limited: record.limit.limited.length > 0 }) : null;
+    if (refused) return { refused };
     const base = `/meetings/${meeting.id}/participants/${mine.id}`;
     // Renaming also marks the record as used, which is what keeps the role from lapsing.
     await api(c, "PATCH", base, { name }).catch(() => {});
@@ -347,10 +397,22 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
     if (pass.ids.some((id) => record.banned.has(id))) return { refused: "removed" };
     if (record.access === "locked") return { refused: "locked" };
   }
+  if (webinar) {
+    const refused = await webinarGate({ host, watching: () => liveCount(c, meeting.id), limited: record.limit.limited.length > 0 });
+    if (refused) return { refused };
+  }
   const role = host ? "host" : "guest";
   // Identity is always minted server-side so a client can't impersonate another participant.
   const identity = `m-${randomUUID()}`;
-  const preset = host ? c.hostPreset : record.access === "ask" && c.knockPreset ? c.knockPreset : c.guestPreset;
+  const preset = webinar
+    ? host
+      ? c.webinarHostPreset!
+      : c.webinarViewerPreset!
+    : host
+      ? c.hostPreset
+      : record.access === "ask" && c.knockPreset
+        ? c.knockPreset
+        : c.guestPreset;
   const added = await api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
     name,
     preset_name: preset,
@@ -370,16 +432,20 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
  * key for the browser that asked. Null if the code is already in use or Cloudflare could not be
  * reached: the meeting still works, by the first-person-in rule.
  */
-export async function createRealtimeKitMeeting(code: string): Promise<{ key: string; identity: string } | null> {
+export async function createRealtimeKitMeeting(code: string, mode: CallMode = "meeting"): Promise<{ key: string; identity: string } | null> {
   const c = config();
   if (!c) return null;
+  const webinar = mode === "webinar";
+  if (webinar && missingWebinarEnv().length > 0) return null;
   try {
     const { meeting, created } = await findOrCreateMeeting(c, code);
     if (!created) return null;
+    // Written before anyone can join: the code is a webinar from its first moment, or not at all.
+    if (webinar && !(await addMarker(c, meeting.id, `${MODE}webinar`)).ok) return null;
     const identity = `m-${randomUUID()}`;
     const added = await api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
       name: "Host",
-      preset_name: c.hostPreset,
+      preset_name: webinar ? c.webinarHostPreset : c.hostPreset,
       custom_participant_id: identity,
     });
     return added.ok ? { key: added.data.id, identity } : null;
@@ -419,11 +485,126 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
       listParticipants(c, meeting.id),
       liveCount(c, meeting.id).catch(() => null),
     ]);
-    const record = readRecord(participants, c.hostPreset, c.knockPreset !== null);
-    return { access: record.access, host: !!pass.key && record.hosts.some((p) => p.id === pass.key), count };
+    const record = readRecord(participants, hostPresetsOf(c), c.knockPreset !== null);
+    return {
+      access: record.access,
+      host: !!pass.key && record.hosts.some((p) => p.id === pass.key),
+      count,
+      ...(record.mode === "webinar" ? { mode: "webinar" as const } : {}),
+    };
   } catch {
     return { access: "open", host: false, count: null };
   }
+}
+
+/* ------------------------------------------------------- why a webinar ended */
+
+/**
+ * Answers for `realtimeKitWhyStopped`, per meeting. The cost guard removes everyone from a
+ * webinar at once, and every one of them then asks why: 250 viewers each reading a record of
+ * 250-odd participants would be about 750 REST calls in a few seconds. So the lookups for one
+ * meeting are shared: whoever asks while one is under way waits for it, and a "limit" answer is
+ * kept, since that fact is written once and never taken back. "Not limited" is not kept: the
+ * watchdog may write the fact a moment later, and the next person to ask must see it.
+ */
+const stopLookups = new Map<string, { limited: Promise<boolean>; settled?: number }>();
+/** How long a "limit" answer is kept. Long enough to cover everyone removed at once. */
+const STOPPED_KEEP_MS = 60_000;
+const MAX_STOP_LOOKUPS = 500;
+
+/** For tests: start with nothing shared. */
+export function forgetStopLookups(): void {
+  stopLookups.clear();
+}
+
+/**
+ * Why a webinar was ended for everyone, asked by a client that was just removed from one: the
+ * free time limit, webinars switched off, or neither (then it was the host). Only the leave
+ * screen's wording depends on it, so the caller's signed session is all that is checked, and
+ * webinars being off is answered without asking Cloudflare anything.
+ */
+export async function realtimeKitWhyStopped(sessionToken: unknown): Promise<HostActionResult & { data?: { stopped?: "limit" | "paused" } }> {
+  const c = config();
+  if (!c) return DENIED;
+  const session = verifySession(sessionToken, c.sessionSecret);
+  if (!session) return DENIED;
+  if (!webinarsEnabled()) return { status: 200, data: { stopped: "paused" } };
+  const id = session.meetingId;
+  let entry = stopLookups.get(id);
+  if (entry?.settled !== undefined && Date.now() - entry.settled >= STOPPED_KEEP_MS) entry = undefined;
+  if (!entry) {
+    if (stopLookups.size >= MAX_STOP_LOOKUPS) stopLookups.clear();
+    const limited = listParticipants(c, id).then((participants) => {
+      const record = readRecord(participants, [], false);
+      return record.mode === "webinar" && record.limit.limited.length > 0;
+    });
+    const made: { limited: Promise<boolean>; settled?: number } = { limited };
+    stopLookups.set(id, made);
+    limited.then(
+      (yes) => {
+        if (yes) made.settled = Date.now();
+        else if (stopLookups.get(id) === made) stopLookups.delete(id);
+      },
+      () => {
+        if (stopLookups.get(id) === made) stopLookups.delete(id);
+      },
+    );
+    entry = made;
+  }
+  try {
+    return { status: 200, data: (await entry.limited) ? { stopped: "limit" } : {} };
+  } catch {
+    return UNREACHABLE;
+  }
+}
+
+/* ---------------------------------------------------------------- webinars */
+
+/**
+ * Webinars: a fresh token for someone whose role changed, with the preset that role needs. A
+ * co-host moderates from the audience with `REALTIMEKIT_WEBINAR_COHOST_PRESET`; anyone else in
+ * the audience (and anyone on stage, who is there by the stage's leave, not the preset's) holds
+ * `REALTIMEKIT_WEBINAR_VIEWER_PRESET`. Any participant may ask: what they get is decided from the
+ * records, never from the request.
+ *
+ * The same participant record is kept, so they come back as the same person (the same identity,
+ * the same co-host record). Their client leaves and joins again with the new token, which takes
+ * a second or two ("Switching to co-host…").
+ *
+ * This is the one place to change if RealtimeKit turns out to apply a preset change to someone
+ * already connected: then the PATCH alone would do, and no new token would be needed. Whether it
+ * does has not been tried against a live session.
+ */
+export async function realtimeKitWebinarRejoin(sessionToken: unknown): Promise<HostActionResult & { data?: { authToken: string } }> {
+  const c = config();
+  if (!c) return DENIED;
+  const session = verifySession(sessionToken, c.sessionSecret);
+  if (!session) return DENIED;
+  try {
+    const record = readRecord(await listParticipants(c, session.meetingId), hostPresetsOf(c), c.knockPreset !== null);
+    const me = record.people.find((p) => p.id === session.participantId);
+    return me ? await webinarRejoin(c, session.meetingId, record, me) : DENIED;
+  } catch {
+    return UNREACHABLE;
+  }
+}
+
+async function webinarRejoin(
+  c: Config,
+  meetingId: string,
+  record: MeetingRecord,
+  me: Participant,
+): Promise<HostActionResult & { data?: { authToken: string } }> {
+  if (record.mode !== "webinar" || record.hosts.includes(me)) return { status: 400, error: "Invalid request." };
+  const preset = record.coHostIds.has(me.id) ? c.webinarCohostPreset : c.webinarViewerPreset;
+  if (!preset) return UNREACHABLE;
+  const base = `/meetings/${meetingId}/participants/${me.id}`;
+  if (me.preset_name !== preset) {
+    const patched = await api(c, "PATCH", base, { preset_name: preset });
+    if (!patched.ok) return UNREACHABLE;
+  }
+  const fresh = await api<{ token: string }>(c, "POST", `${base}/token`);
+  return fresh.ok ? { status: 200, data: { authToken: fresh.data.token } } : UNREACHABLE;
 }
 
 /* --------------------------------------------------------------- moderation */
@@ -434,6 +615,13 @@ export type RealtimeKitRoles = {
   pin: string | null;
   closedPolls: string[];
   reactions: boolean;
+  /**
+   * Webinars only. Why a webinar would be ended for everyone: it reached its free time limit, or
+   * webinars were switched off. A client removed from a webinar asks this to know which it was.
+   */
+  stopped?: "limit" | "paused";
+  /** Webinars only, and only for the host and co-hosts: the latest warning that the free limit is near. */
+  warning?: LimitWarning;
 };
 
 /**
@@ -456,22 +644,26 @@ export async function realtimeKitHostAction(
   if (!session) return DENIED;
   try {
     // The signature proves what we said when they joined; the records say what is true now.
-    const record = readRecord(await listParticipants(c, session.meetingId), c.hostPreset, c.knockPreset !== null);
+    const record = readRecord(await listParticipants(c, session.meetingId), hostPresetsOf(c), c.knockPreset !== null);
     const me = record.people.find((p) => p.id === session.participantId);
     if (!me) return DENIED;
+    const role = record.hosts.includes(me) ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
     if (request.action === "roles") {
-      return {
-        status: 200,
-        data: {
-          coHosts: coHostIdentities(record),
-          access: record.access,
-          pin: record.pin,
-          closedPolls: record.closedPolls,
-          reactions: record.reactions,
-        },
+      const data: RealtimeKitRoles = {
+        coHosts: coHostIdentities(record),
+        access: record.access,
+        pin: record.pin,
+        closedPolls: record.closedPolls,
+        reactions: record.reactions,
       };
+      if (record.mode === "webinar") {
+        const stopped = !webinarsEnabled() ? "paused" : record.limit.limited.length > 0 ? "limit" : null;
+        if (stopped) data.stopped = stopped;
+        const warning = record.limit.warnings[record.limit.warnings.length - 1];
+        if (warning && role !== "guest") data.warning = warning;
+      }
+      return { status: 200, data };
     }
-    const role = me.preset_name === c.hostPreset ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
     if (role === "guest") return DENIED;
     if (isHostOnly(request) && role !== "host") return HOST_ONLY;
     const session_ = `/meetings/${session.meetingId}/active-session`;
@@ -481,13 +673,20 @@ export async function realtimeKitHostAction(
       if (target === session.identity || target === session.participantId) return OWN_CONTROLS;
       // The moderation endpoints take RealtimeKit's own participant ids, so look the person up.
       const person = record.people.find((p) => p.custom_participant_id === target || p.id === target);
-      if (person?.preset_name === c.hostPreset) return NOT_THE_HOST;
+      if (person && record.hosts.includes(person)) return NOT_THE_HOST;
       switch (request.action) {
         case "admit":
         case "deny":
         case "stopCamera":
         case "lowerHand":
           return { status: 200 };
+        // Inviting someone on stage, or sending them back, is done by the caller's client
+        // (`stage.grantAccess`, `denyAccess`, `kick`), which RealtimeKit checks against the
+        // caller's preset. What is decided here is that the caller is the host or a co-host, and
+        // that this is a webinar. Stepping down yourself needs no one's leave and never comes here.
+        case "stage":
+          if (record.mode !== "webinar") return { status: 400, error: "Only a webinar has a stage." };
+          return person ? { status: 200 } : GONE;
         case "mute": {
           if (!person) return GONE;
           const done = await api(c, "POST", `${session_}/mute`, { participant_ids: [person.id] });

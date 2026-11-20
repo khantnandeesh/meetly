@@ -34,7 +34,6 @@ import {
   createThrottle,
   isReaction,
   isSignedChat,
-  notAvailableYet,
   postChat,
   postHost,
   postPoll,
@@ -45,6 +44,8 @@ import {
   type SignedChat,
   notice,
 } from "./shared";
+import { liveKitRole, liveKitStageAction, liveKitStageInvite, stopPublishingIfViewer } from "./stage.livekit";
+import { STAGE_ATTRIBUTE } from "./stage";
 import {
   SAVER_FPS,
   SAVER_HEIGHT,
@@ -93,6 +94,8 @@ const PARTICIPANT_EVENTS = [
   ParticipantEvent.AttributesChanged,
   ParticipantEvent.ParticipantNameChanged,
   ParticipantEvent.ConnectionQualityChanged,
+  // Webinars: being invited on stage arrives as a change of what you may publish.
+  ParticipantEvent.ParticipantPermissionsChanged,
 ] as const;
 
 /** Everything that can change which track a publication is showing. */
@@ -113,6 +116,7 @@ class LiveKitParticipant implements RtcLocalParticipant {
     private readonly source: Participant,
     /** The call's `hostIdentity`, read live. */
     private readonly hostOf: () => string | null,
+    private readonly mode: CallMode,
   ) {}
   get identity() {
     return this.source.identity;
@@ -140,13 +144,12 @@ class LiveKitParticipant implements RtcLocalParticipant {
     const quality = this.source.connectionQuality;
     return quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost;
   }
-  /** There are no viewers yet: everyone but the host is a speaker. */
+  /** In a meeting everyone but the host is a speaker; in a webinar, see src/lib/rtc/stage.livekit.ts. */
   get role(): ParticipantRole {
-    return this.source.identity && this.source.identity === this.hostOf() ? "host" : "speaker";
+    return liveKitRole(this.source, this.mode, this.hostOf());
   }
-  /** Nobody can be invited on stage yet. */
   get stageInvite() {
-    return false;
+    return liveKitStageInvite(this.source, this.mode);
   }
   subscribe = (listener: () => void) => {
     PARTICIPANT_EVENTS.forEach((event) => this.source.on(event, listener));
@@ -328,6 +331,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "livekit" as const;
   readonly native: Room;
   readonly mode: CallMode;
+  switching: "cohost" | "audience" | null = null;
+  /** Reconnecting on purpose, with a new token (see `switchRole`): not the call ending. */
+  private swapping = false;
+  /** Webinars: whether you were a co-host when this connection was made. Null until known. */
+  private coHostAsJoined: boolean | null = null;
 
   private readonly people = new WeakMap<Participant, LiveKitParticipant>();
   private readonly videos = new WeakMap<TrackPublication, LiveKitVideo>();
@@ -360,7 +368,10 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   private waiters: RtcWaiter[] = [];
   /** When this browser first saw each person in `waiters` asking. */
   private readonly knocks = new Map<string, number>();
-  readonly supports = { askToJoin: true, stopCamera: true, polls: true, createPolls: true } as const;
+  /** On LiveKit our server changes who may publish, so the stage is the host's and co-hosts' in any webinar. */
+  get supports() {
+    return { askToJoin: true, stopCamera: true, polls: true, createPolls: true, stage: this.mode === "webinar" };
+  }
   private fx: LocalEffects;
   private noise: NoiseProcessor | null = null;
   private blur: BlurProcessor | null = null;
@@ -409,6 +420,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   /* -------------------------------------------------------------- connection */
 
   get status(): ConnectionStatus {
+    if (this.swapping && this.native.state === ConnectionState.Disconnected) return "connecting";
     if (this.lobby) return this.lobby.state === ConnectionState.Connecting ? "connecting" : "waiting";
     switch (this.native.state) {
       case ConnectionState.Connecting:
@@ -504,7 +516,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
 
   private wrap(participant: Participant): LiveKitParticipant {
     let wrapped = this.people.get(participant);
-    if (!wrapped) this.people.set(participant, (wrapped = new LiveKitParticipant(participant, () => this.meta.host)));
+    if (!wrapped) this.people.set(participant, (wrapped = new LiveKitParticipant(participant, () => this.meta.host, this.mode)));
     return wrapped;
   }
 
@@ -545,6 +557,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
+  /** Never: LiveKit is not billed by the participant-minute, so no watchdog runs on it. */
+  get limitWarning(): null {
+    return null;
+  }
+
   /** As the room's record says (see `reactions` in src/lib/host.server.ts). */
   get reactionsAllowed(): boolean {
     return this.meta.reactions;
@@ -556,7 +573,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   }
 
   async moderate(action: HostAction): Promise<void> {
-    if (action.action === "stage") throw notAvailableYet(action.action);
+    if (action.action === "stage") return liveKitStageAction(this.native, this.mode, this.token, action);
     if (action.action === "admitAll" || action.action === "denyAll") {
       // One request however many are waiting; our server answers each of them (src/lib/host.server.ts).
       const data = await postHost({ token: this.token, ...action });
@@ -584,6 +601,46 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     this.readPolls();
     this.repairVotes();
     this.syncLobbyWatch();
+    this.syncWebinarRole();
+  }
+
+  /**
+   * Webinars: someone made co-host, or no longer one, reconnects with a fresh token for the same
+   * identity, the way RealtimeKit has to (its presets decide what a co-host may do). On LiveKit
+   * our server reads the record on every request, so nothing would strictly need it; doing the
+   * same here keeps "Switching to co-host…" the same moment on both providers.
+   */
+  private syncWebinarRole(): void {
+    const me = this.native.localParticipant.identity;
+    if (this.mode !== "webinar" || this.switching || !me || this.native.state !== ConnectionState.Connected) return;
+    if (this.meta.host === null || this.meta.host === me) return;
+    const coHost = this.meta.coHosts.includes(me);
+    if (this.coHostAsJoined === null) {
+      this.coHostAsJoined = coHost;
+      return;
+    }
+    if (coHost !== this.coHostAsJoined) void this.switchRole(coHost);
+  }
+
+  private async switchRole(coHost: boolean): Promise<void> {
+    this.switching = coHost ? "cohost" : "audience";
+    this.emit("status");
+    try {
+      const data = await postHost({ token: this.token, action: "rejoin" });
+      if (typeof data.token !== "string") throw new Error("No token");
+      this.swapping = true;
+      this.memberToken = data.token;
+      this.coHostAsJoined = null;
+      await this.native.disconnect();
+      this.enter(++this.attempt);
+    } catch {
+      this.swapping = false;
+      this.switching = null;
+      // What the server records is what counts; the next change of role tries again.
+      this.coHostAsJoined = coHost;
+      this.emit("status");
+      this.emit("error", notice(coHost ? "Couldn't switch you to co-host. Leave and rejoin the webinar." : "Couldn't update your role. Leave and rejoin the webinar."));
+    }
   }
 
   private get canModerate(): boolean {
@@ -1426,6 +1483,13 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       this.tileList = null;
       this.emit("tiles");
     };
+    // Webinars: someone was invited on stage, said yes, or went back to the audience.
+    const stageChanged = () => {
+      if (this.mode !== "webinar") return;
+      rosterChanged();
+      tilesChanged();
+      this.emit("stage");
+    };
     const mediaChanged = () => {
       const next = this.readMedia();
       const last = this.media;
@@ -1455,6 +1519,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       })
       .on(RoomEvent.Connected, this.sweepUnattached)
       .on(RoomEvent.Connected, () => {
+        if (this.switching) {
+          this.swapping = false;
+          this.switching = null;
+          this.emit("status");
+        }
         if (room.remoteParticipants.size > 0) this.askForHistory();
         this.resync("noise");
         // Something else may have had the microphone open when the call opened it (the pre-join
@@ -1481,6 +1550,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         this.audioSink?.remove();
         this.audioSink = null;
         this.stopLobbyWatch();
+        // Reconnecting with a new token for a new role is not the call ending.
+        if (this.swapping) return;
         this.emit("disconnected", whyDisconnected(reason, false));
       })
       .on(RoomEvent.RoomMetadataChanged, () => this.readMeta())
@@ -1514,6 +1585,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       .on(RoomEvent.ParticipantAttributesChanged, (changed, participant) => {
         rosterChanged();
         if (changed[HAND] === "1") this.emit("handRaised", this.wrap(participant));
+        if (STAGE_ATTRIBUTE in changed) stageChanged();
+      })
+      .on(RoomEvent.ParticipantPermissionsChanged, (_before, participant) => {
+        stageChanged();
+        if (participant.isLocal) stopPublishingIfViewer(room, this.mode);
       })
       .on(RoomEvent.TrackPublished, (publication) => {
         tilesChanged();

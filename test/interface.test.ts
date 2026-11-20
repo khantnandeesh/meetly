@@ -4,7 +4,7 @@ import { RoomEvent } from "livekit-client";
 import { createCall as createLiveKitCall } from "../src/lib/rtc/livekit";
 import { RealtimeKitCall, type MeetingFactory } from "../src/lib/rtc/realtimekit";
 import { REACTION_MESSAGE, bulkError, bulkFailures, withSince, type HostApi } from "../src/lib/rtc/shared";
-import type { HostAction, JoinChoices, JoinGrant, RtcCall } from "../src/lib/rtc/types";
+import type { JoinChoices, JoinGrant, RtcCall } from "../src/lib/rtc/types";
 import { FakeMeeting, FakeParticipant, FakeSelf, installDom } from "./fake-realtimekit";
 
 /**
@@ -188,10 +188,10 @@ test("rtk: Admit all refused by our server answers nobody", async () => {
   assert.deepEqual(meeting.participants.acceptAllCalls, []);
 });
 
-test("rtk: the stage is refused as not available yet, without asking anyone", async () => {
+test("rtk: a meeting has no stage, and nobody is asked", async () => {
   const { call, meeting, requests, stageEvents } = await rtk({ host: true });
   meeting.arrive(new FakeParticipant("p1", "Grace"));
-  await assert.rejects(call.moderate({ action: "stage", identity: "m-p1", on: true }), /isn't available yet/);
+  await assert.rejects(call.moderate({ action: "stage", identity: "m-p1", on: true }), { message: "Only a webinar has a stage." });
   assert.equal(requests.length, 0);
   assert.deepEqual([meeting.stage.granted, meeting.stage.denied], [[], []]);
   assert.equal(stageEvents(), 0);
@@ -319,11 +319,10 @@ test("livekit: Admit all and Deny all are one request each, however many; failur
   }
 });
 
-test("livekit: the stage is refused as not available yet, without asking our server", async () => {
+test("livekit: a meeting has no stage, and our server is not asked", async () => {
   const { call, posted, restore } = livekit();
   try {
-    const refused: HostAction[] = [{ action: "stage", identity: "m-grace", on: true }];
-    for (const action of refused) await assert.rejects((call as RtcCall).moderate(action), /isn't available yet/);
+    await assert.rejects(call.moderate({ action: "stage", identity: "m-grace", on: true }), { message: "Only a webinar has a stage." });
     assert.equal(posted.length, 0);
   } finally {
     restore();

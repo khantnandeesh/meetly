@@ -45,7 +45,7 @@ server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `s
 `node test/e2e/run.cjs` runs the browser tests: real Chromium clients with fake cameras, against
 a running LiveKit build (`MEETLY_URL`, default `http://localhost:3000`). Name suites to run only
 some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`, `polls`,
-`quality`, `mini`, `rating`, `notices`); set
+`quality`, `mini`, `rating`, `notices`, `cost-guard`); set
 `MEETLY_SHOTS=<dir>` to keep screenshots.
 They need [Playwright](https://playwright.dev) where Node can find it (`npm i --no-save playwright`,
 or a global install on `NODE_PATH`). `node test/e2e/realtimekit-rest.cjs` checks a RealtimeKit
@@ -61,7 +61,7 @@ and rebuild. Only the chosen provider's SDK is downloaded, and only once Join is
 | Provider | Variables |
 | --- | --- |
 | `livekit` | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` |
-| `realtimekit` | `CLOUDFLARE_ACCOUNT_ID`, `REALTIMEKIT_APP_ID`, `REALTIMEKIT_HOST_PRESET`, `REALTIMEKIT_GUEST_PRESET`, `CLOUDFLARE_API_TOKEN`, `MEETLY_SESSION_SECRET`, and optionally `REALTIMEKIT_KNOCK_PRESET` |
+| `realtimekit` | `CLOUDFLARE_ACCOUNT_ID`, `REALTIMEKIT_APP_ID`, `REALTIMEKIT_HOST_PRESET`, `REALTIMEKIT_GUEST_PRESET`, `CLOUDFLARE_API_TOKEN`, `MEETLY_SESSION_SECRET`, and optionally `REALTIMEKIT_KNOCK_PRESET`, `REALTIMEKIT_WEBINAR_HOST_PRESET`, `REALTIMEKIT_WEBINAR_VIEWER_PRESET` and `REALTIMEKIT_WEBINAR_COHOST_PRESET` (see [Webinars](#webinars)) |
 
 For RealtimeKit, create an app and two presets in it: a host preset that may mute and remove
 participants, and a guest preset that may not. Both need to publish audio, video and screen
@@ -305,6 +305,122 @@ token that can do nothing, so nothing of the meeting reaches them; being let in 
 token for the meeting itself. On RealtimeKit the host's record lapses once the meeting is empty
 and the host has not joined for thirty days.
 
+## Webinars
+
+**Words.** A **webinar** is a call where a few people present and everyone else watches. The
+**speakers** are the people on stage (the host, and anyone the host brings up); the **audience**
+is everyone watching. In a webinar the interface says "webinar" wherever a meeting would be named
+("Leave webinar", "End webinar for everyone", "You left the webinar").
+
+"New webinar" (under the arrow next to New meeting on the home page) makes a link whose record
+says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
+and a meeting's link cannot become a webinar. The browser that made it is the host. Everyone else
+joins the audience: they watch and listen, raise a hand, react and vote in polls, and have no
+microphone, camera, screen share or tile. Chat is read-only for them ("Only speakers and hosts can
+send messages"). Their pre-join screen asks for a name only ("Watch"), so the browser never asks
+them for a camera or microphone. Their bar holds "● Live · N watching" and the link on the left,
+Raise hand, React and Leave in the middle, and Chat on the right, whose badge counts new messages
+and polls waiting for a vote (`ViewerPreJoin.tsx`, `ViewerCall.tsx`, `ViewerControlBar.tsx`).
+
+The host and co-hosts bring someone on stage from People › Audience, where raised hands come first
+in the order they went up ("Invite to speak", one person at a time). The invitation is a dialog
+that asks first, with the person's camera preview and microphone and camera switches in it from
+the start: nothing of theirs is sent until they choose "Join stage" ("Not now", or Esc, turns it
+down; `StageInvite.tsx`). On stage they get the meeting's screen, with "● Live · On stage" where the
+clock is (in the top bar on a phone), which holds "Back to audience". The host can send them back
+too, from their menu. Going back stops whatever they were sending.
+
+A speaker can chat, the audience cannot, and nobody is ever one without the other: the stage and
+the chat permission change together or not at all. People › Speakers lists who is on stage;
+"Left the webinar" lists speakers and co-hosts who left, never the audience, whose comings and
+goings show only in the Audience count, with no notification or sound. Audience reactions are
+shown without a name.
+
+**Co-hosts** moderate from the audience: People with the Audience, hands, the waiting list and
+the host's controls (Invite to speak, Back to audience, mute), and the chat. They are on stage
+only if invited, and cannot end the webinar or appoint co-hosts. Someone made co-host (or no
+longer one) reconnects with a fresh token for the same person, which shows "Switching to co-host…"
+for a second or two, the same on both providers.
+
+How many may watch at once is `MEETLY_WEBINAR_VIEWER_CAP` (250 unless set). Past it, people are
+told "This webinar is full" and can try again; the host always gets in. Every check made before
+someone joins a webinar is in `src/lib/webinarGate.server.ts`.
+
+The record is marked like this, for anything on the server that needs to know:
+
+- **LiveKit:** `mode: "webinar"` in the room's metadata (`parseRoomMeta(...).mode` in
+  `src/lib/host.server.ts`). The audience's tokens cannot publish, so LiveKit itself refuses
+  their media. Inviting someone is `RoomService.updateParticipant`: our server gives them the
+  right to publish together with a `stage: "invited"` attribute, and they count as audience until
+  their own client clears it by saying yes. Sending them back takes the right away again. Chat
+  goes through our server, which takes messages from whoever may publish, the host and co-hosts.
+  `src/lib/webinar.server.ts` holds those rules; anyone may send themselves back.
+- **RealtimeKit:** one more `meetly-…` record, `meetly-mode:webinar` (`readRecord(...).mode` in
+  `src/lib/rtc/server/realtimekit.ts`). Three presets, all `view_type` WEBINAR:
+  - `REALTIMEKIT_WEBINAR_HOST_PRESET` (`meetly-webinar-host`): the host, who goes straight on stage;
+  - `REALTIMEKIT_WEBINAR_VIEWER_PRESET` (`meetly-webinar-viewer`): the audience, whose media is
+    "can request" and who cannot send chat;
+  - `REALTIMEKIT_WEBINAR_COHOST_PRESET` (`meetly-webinar-cohost`): co-hosts, also "can request",
+    with the moderation the host's controls need. A new co-host's record is switched to it and
+    given a fresh token (`realtimeKitWebinarRejoin`); this is the one place to change if
+    RealtimeKit applies a preset change to someone already connected, which has not been tried.
+
+  The stage is RealtimeKit's own (`meeting.stage`): inviting is `grantAccess`, which puts them in
+  `ACCEPTED_TO_JOIN_STAGE`; saying yes is their `stage.join()`; sending back is `kick` (on stage)
+  or `denyAccess` (invited, not answered). Our server checks the caller is the host or a co-host
+  first. Their chat is turned on and off with the SDK's `participants.updatePermissions` (the REST
+  API has no call for a live participant's permissions), which needs
+  `can_change_participant_permissions` on the inviter's preset; whoever cannot do both is not
+  offered "Invite to speak". Who is on stage is read from the participants the SDK already
+  announced and their `stageStatusUpdate` events; `getAllJoinedPeers()` (10 calls a minute) is
+  never called. The audience limit is counted from the active session's `live_participants`,
+  which includes the people on stage. `test/e2e/realtimekit-webinar-rest.cjs` checks the presets
+  and the co-host token against the real REST API (it is not part of the browser suite).
+
+Viewer names are shown to the host and co-hosts only, by the interface: other people never see
+the audience list, the names of audience hands, or who voted for what in a named poll (they see
+the counts). On both providers the audience is in the same room as everyone else, so a modified
+client could still read them.
+
+## Webinar costs
+
+Webinars are free and anyone can start one, but on RealtimeKit every viewer is a billed
+participant-minute (10,000 a month are included, then about $0.002 a minute). Two settings keep
+that in hand:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `MEETLY_WEBINARS_ENABLED` | on | Set to `0`, `false`, `off` or `no` to switch webinars off at once: "New webinar" is no longer offered, the server refuses to start one or to let anyone into one ("Webinars are paused right now."), and the watchdog ends the ones running. Ordinary meetings are not affected. It is read on every request, so on the Worker a change to the variable takes effect with the next request, without a rebuild. |
+| `MEETLY_WEBINAR_MINUTE_LIMIT` | 5000 | The most participant-minutes one webinar session may use. At 80% the host and co-hosts are told roughly how long is left; past it the session is ended for everyone ("This webinar reached its free time limit.") and its link stops letting anyone in. |
+
+The watchdog (`src/lib/costGuard.server.ts`) runs once a minute on the Cloudflare Worker, as a
+Cron Trigger. Each run lists the app's live sessions in one call. A session that cannot yet be
+near the warning (its largest audience times its length is under 80% of the limit) costs nothing
+more. For the others it reads the meeting's record (to make sure it is a webinar, and see what
+was already done) and the session's participants, adds up each person's connected time, and
+writes at most two records. A run makes at most 30 calls, well inside RealtimeKit's 3,500 per five
+minutes; what does not fit, or fails, is done the next minute. It never joins a session. Before
+removing anyone it writes a `meetly-limit:<session>` record, so every client that is removed asks
+our server why and shows the right ending. Everyone removed asks at the same moment, so our server
+shares one lookup of the record between them (and keeps a "limit" answer for a minute): 250
+viewers cost about three REST calls per Worker instance, not one lookup each.
+
+Limits and what is not covered:
+
+- **Precision.** The count is each participant's own connected time, to the second, as
+  RealtimeKit reports it (a reload is a new connection, counted from when it joined), or
+  RealtimeKit's own `minutes_consumed` for the session where that is higher. A webinar is ended
+  in the first run after it passes the limit, so up to a minute late (about 250 minutes at 250
+  viewers), plus however Cloudflare rounds each participant's minutes when it bills.
+- **A missed run** changes nothing but timing: the next one counts from the participants'
+  timestamps, not from the last run, so nothing is lost; the warning or the ending simply comes
+  later. Nothing ends a webinar while the Cron Trigger is not running.
+- **The warning** reaches the host and co-hosts through their own clients, which ask our server
+  once a minute during a webinar (our server cannot push to a RealtimeKit client).
+- **LiveKit** is not billed per minute, so there is no watchdog there; the switch still applies.
+- A webinar link that reached the limit stays closed. Starting a new webinar gives a new link,
+  with a new limit.
+
 ## How it fits together
 
 | Piece | Where |
@@ -334,6 +450,17 @@ and the host has not joined for thirty days.
 | Meeting code format | `src/lib/code.ts` |
 
 Media never touches this app: browsers connect straight to the provider with a short-lived token.
+
+## Filling a meeting with bots
+
+To try a meeting at size by hand, `scripts/join-bots.cjs` sends headless test bots into a live meeting through the real join screen:
+
+```bash
+npm install --no-save playwright && npx playwright install chromium   # once
+node scripts/join-bots.cjs https://meet.nandeesh.dev/abc-defg-hij 20  # bots, then minutes (15) and how many show a camera (4)
+```
+
+Bots join with the microphone off; in a meeting where people ask to join, they wait to be let in. They leave by themselves after the given minutes, or on Ctrl+C. Each bot is a real participant, so on RealtimeKit it uses participant-minutes (20 bots for 15 minutes is 300). Run it from a computer with ordinary internet access: a sandbox that only lets HTTPS out through a proxy can't carry the meeting's media.
 
 ## Deploying
 

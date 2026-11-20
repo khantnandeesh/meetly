@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
+import { CalendarPlus, CircleAlert, CirclePause, DoorClosed, Download, Home, Hourglass, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { saveChat } from "@/lib/chatExport";
@@ -16,6 +16,7 @@ import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
 import { PreJoin, PreJoinSkeleton } from "./PreJoin";
 import { ScheduleDialog } from "./ScheduleDialog";
+import { ViewerPreJoin } from "./ViewerPreJoin";
 import { Logo } from "./ui/Logo";
 import { useToast } from "./ui/Toaster";
 
@@ -32,6 +33,8 @@ type Departure = {
   pinned: RtcChatMessage | null;
   /** The most people who were in the call at once while you were. */
   people: number;
+  /** What it was called: the screen names a webinar as one. */
+  noun: "meeting" | "webinar";
 };
 
 /** The status of a call that is not (yet) provided through context. */
@@ -55,7 +58,7 @@ export function Meeting({ code }: { code: string }) {
   /** The pre-join screen is still on top (it leaves once `ready`). */
   const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, host: false, chat: [], pinned: null, people: 1 });
+  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, host: false, chat: [], pinned: null, people: 1, noun: "meeting" });
   // The most people the call held while you were in it: a size for the rating, not a list of anyone.
   const mostPeople = useRef(1);
   const currentCall = session?.call;
@@ -71,17 +74,30 @@ export function Meeting({ code }: { code: string }) {
    * where the provider can't say). Asked each time the pre-join screen is up.
    */
   const [seen, setSeen] = useState<MeetingPeek | null>(null);
+  /**
+   * The first answer has come (or could not). Until then neither pre-join is drawn: a webinar's
+   * audience must never be asked for a camera, and which screen it is depends on the answer.
+   */
+  const [peeked, setPeeked] = useState(false);
 
   useEffect(() => {
     if (stage !== "prejoin") return;
     let current = true;
+    // A server that does not answer in time leaves the meeting's own screen, as before webinars.
+    const fallback = setTimeout(() => setPeeked(true), 4000);
     void peekMeeting(code).then((answer) => {
-      if (current && answer) setSeen(answer);
+      clearTimeout(fallback);
+      if (!current) return;
+      if (answer) setSeen(answer);
+      setPeeked(true);
     });
     return () => {
       current = false;
+      clearTimeout(fallback);
     };
   }, [code, stage]);
+  // A webinar's audience joins without devices (see ViewerPreJoin); its host as to any meeting.
+  const watching = seen?.mode === "webinar" && !seen.host;
 
   async function join(choices: JoinChoices) {
     // Still inside the click that joins: the only moment a browser lets audio be switched on.
@@ -138,6 +154,7 @@ export function Meeting({ code }: { code: string }) {
               chat: call.chatMessages(),
               pinned: call.pinnedMessage(),
               people: mostPeople.current,
+              noun: call.mode === "webinar" ? "webinar" : "meeting",
             });
             setStage("left");
           }}
@@ -146,7 +163,10 @@ export function Meeting({ code }: { code: string }) {
               tag: "call-error",
               title: "Something went wrong",
               // Only our own sentences are shown; anything else is the provider's, and not for reading.
-              body: e.name === NOTICE ? e.message : "If it keeps happening, leave and rejoin the meeting.",
+              body:
+                e.name === NOTICE
+                  ? e.message
+                  : `If it keeps happening, leave and rejoin the ${session.call.mode === "webinar" ? "webinar" : "meeting"}.`,
               tone: "danger",
               icon: <CircleAlert className="size-5" />,
               duration: 8000,
@@ -169,17 +189,32 @@ export function Meeting({ code }: { code: string }) {
               if (ready && event.target === event.currentTarget) setCovered(false);
             }}
           >
-            <PreJoin
-              code={code}
-              joining={joining || inCall}
-              waiting={waiting}
-              access={seen?.access ?? "open"}
-              isHost={seen?.host ?? false}
-              peopleHere={seen?.count ?? null}
-              error={error}
-              onJoin={join}
-              onCancel={backToPreJoin}
-            />
+            {!peeked ? (
+              <PreJoinSkeleton />
+            ) : watching ? (
+              <ViewerPreJoin
+                code={code}
+                joining={joining || inCall}
+                waiting={waiting}
+                access={seen.access}
+                error={error}
+                onJoin={join}
+                onCancel={backToPreJoin}
+              />
+            ) : (
+              <PreJoin
+                code={code}
+                joining={joining || inCall}
+                waiting={waiting}
+                access={seen?.access ?? "open"}
+                isHost={seen?.host ?? false}
+                peopleHere={seen?.count ?? null}
+                noun={seen?.mode === "webinar" ? "webinar" : "meeting"}
+                error={error}
+                onJoin={join}
+                onCancel={backToPreJoin}
+              />
+            )}
           </div>
         ) : (
           <PreJoinSkeleton />
@@ -188,21 +223,29 @@ export function Meeting({ code }: { code: string }) {
   );
 }
 
-const ENDINGS: Record<DisconnectReason, { icon: typeof LogOut; title: string; note: string }> = {
-  left: { icon: LogOut, title: "You left the meeting", note: "The meeting stays open for others until everyone has left." },
+/** What the screen says for each way the call ended. A webinar is named as one. */
+const endings = (noun: "meeting" | "webinar"): Record<DisconnectReason, { icon: typeof LogOut; title: string; note: string }> => ({
+  left: { icon: LogOut, title: `You left the ${noun}`, note: `The ${noun} stays open for others until everyone has left.` },
   dropped: {
     icon: Unplug,
     title: "You were disconnected",
-    note: "The meeting stays open for others until everyone has left.",
+    note: `The ${noun} stays open for others until everyone has left.`,
   },
-  removed: { icon: UserX, title: "The host removed you", note: "You can't rejoin this meeting from this browser." },
+  removed: { icon: UserX, title: "The host removed you", note: `You can't rejoin this ${noun} from this browser.` },
   denied: {
     icon: DoorClosed,
     title: "The host didn't let you in",
     note: "If that was a mistake, ask again or check with whoever sent you the link.",
   },
-  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link still works if people want to meet again." },
-};
+  ended: { icon: PhoneOff, title: `The host ended the ${noun}`, note: "The link still works if people want to meet again." },
+  // Ended by our server's watchdog, not by the host (see src/lib/costGuard.server.ts). Only ever a webinar.
+  limit: {
+    icon: Hourglass,
+    title: "This webinar reached its free time limit",
+    note: "Webinars are free for now, so each one has a time limit. This link can't be joined again.",
+  },
+  paused: { icon: CirclePause, title: "Webinars are paused right now", note: "The webinar was ended for everyone. Try again later." },
+});
 
 function LeftScreen({
   code,
@@ -213,15 +256,17 @@ function LeftScreen({
   departure: Departure;
   onRejoin: () => void;
 }) {
-  const { minutes, reason, byYou, host, chat, pinned, people } = departure;
+  const { minutes, reason, byYou, host, chat, pinned, people, noun } = departure;
   const said = chat.filter((message) => !message.deleted).length;
-  const { icon: Icon, title, note } = ENDINGS[reason];
+  const { icon: Icon, title, note } = endings(noun)[reason];
   const [planning, setPlanning] = useState(false);
   // Someone the host turned away is shown the way out first; coming back is the quieter option,
   // and for someone who was removed it is not an option at all. When the host ended the meeting
   // there is nobody to go back to, so the way out leads there too.
   const turnedAway = reason === "removed" || reason === "denied";
-  const homeFirst = turnedAway || (reason === "ended" && !byYou);
+  // A webinar our server ended: there is nothing to rejoin, and no follow-up on a closed link.
+  const closed = reason === "limit" || reason === "paused";
+  const homeFirst = turnedAway || closed || (reason === "ended" && !byYou);
   const home = (
     <Link href="/" className={`btn ${homeFirst ? "btn-primary" : "btn-secondary"}`}>
       <Home className="size-[1.125rem]" aria-hidden="true" />
@@ -242,17 +287,17 @@ function LeftScreen({
         </span>
         <div className="flex flex-col gap-2.5">
           <h1 className="font-display text-4xl leading-[1.05] font-semibold tracking-[-0.02em] sm:text-5xl">
-            {byYou ? "You ended the meeting" : title}
+            {byYou ? `You ended the ${noun}` : title}
           </h1>
           <p className="text-lg text-muted">
             <span className="font-mono text-[0.9em]">{code}</span>
             {minutes >= 1 && ` · ${minutes} min`}
           </p>
         </div>
-        {/* Exactly two ways on (one for someone who was removed): leaving, or coming back. */}
+        {/* Exactly two ways on (one for someone who was removed, or whose webinar our server ended): leaving, or coming back. */}
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:justify-center" data-leave-actions>
           {homeFirst && home}
-          {reason !== "removed" && (
+          {reason !== "removed" && !closed && (
             <button className={`btn ${homeFirst ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!homeFirst}>
               <RotateCcw className="size-[1.125rem]" aria-hidden="true" />
               {reason === "denied" ? "Ask again" : byYou ? "Start again" : "Rejoin"}
@@ -260,10 +305,10 @@ function LeftScreen({
           )}
           {!homeFirst && home}
         </div>
-        {(said > 0 || host) && (
+        {(said > 0 || (host && !closed)) && (
           // Keeping things is a different decision from where to go next, so it gets its own shape.
           <section
-            aria-label="Keep from this meeting"
+            aria-label={`Keep from this ${noun}`}
             className="w-full divide-y divide-border rounded-[1.25rem] bg-surface p-1.5 text-left shadow-[inset_0_0_0_1px_var(--border)]"
             data-keep
           >
@@ -280,7 +325,7 @@ function LeftScreen({
             )}
             {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
                 who sends it. It keeps this link, so the host stays the host. */}
-            {host && (
+            {host && !closed && (
               <KeepRow
                 icon={CalendarPlus}
                 title="Schedule a follow-up"
@@ -293,7 +338,7 @@ function LeftScreen({
           </section>
         )}
         {host && <ScheduleDialog code={code} mode="follow-up" open={planning} onOpenChange={setPlanning} />}
-        <p className="text-sm text-faint">{byYou ? "Everyone has left the meeting. The link still works." : note}</p>
+        <p className="text-sm text-faint">{byYou ? `Everyone has left the ${noun}. The link still works.` : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
         {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>

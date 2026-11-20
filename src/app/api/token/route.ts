@@ -4,6 +4,8 @@ import { decideJoin, liveKitPassSecret, mintJoinToken } from "@/lib/host.server"
 import { extendPass, passCookie, readPass } from "@/lib/pass.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
 import { issueRealtimeKitJoin, missingRealtimeKitEnv, realtimeKitPassSecret } from "@/lib/rtc/server/realtimekit";
+import { liveKitViewerCount } from "@/lib/webinar.server";
+import { webinarGate, type WebinarRefusal } from "@/lib/webinarGate.server";
 
 const REFUSALS = {
   removed: "The host removed you from this meeting.",
@@ -12,7 +14,9 @@ const REFUSALS = {
 
 const NOT_SET_UP = "Meetly can't start meetings right now. Try again later.";
 
-function refuse(reason: keyof typeof REFUSALS): Response {
+function refuse(reason: keyof typeof REFUSALS | WebinarRefusal): Response {
+  // A webinar's own refusals carry their sentence with them (see src/lib/webinarGate.server.ts).
+  if (typeof reason === "object") return Response.json({ error: reason.message, reason: reason.reason }, { status: 403 });
   return Response.json({ error: REFUSALS[reason], reason }, { status: 403 });
 }
 
@@ -52,7 +56,7 @@ export async function POST(request: Request) {
     try {
       const outcome = await issueRealtimeKitJoin(room, name, pass);
       if (outcome.refused) return refuse(outcome.refused);
-      // { authToken, session, participantId, meetingId, role, hostPreset, coHosts, access, canAsk }
+      // { authToken, session, participantId, meetingId, role, hostPreset, coHosts, access, canAsk, mode }
       return Response.json(outcome.join, {
         headers: { "Set-Cookie": passCookie(request, extendPass(pass, outcome.identity, outcome.key), secret) },
       });
@@ -71,11 +75,20 @@ export async function POST(request: Request) {
   if (decision.refused) return refuse(decision.refused);
   // Someone who has to ask is given a token for the lobby, not for the meeting.
   const asking = decision.role === "guest" && decision.access === "ask";
+  // Webinars: everyone but the host joins the audience, with a token that cannot publish, and
+  // only once every rule for webinars says yes (see src/lib/webinarGate.server.ts).
+  const webinar = decision.mode === "webinar";
+  const viewer = webinar && decision.role === "guest";
+  if (webinar) {
+    const refused = await webinarGate({ host: !viewer, watching: () => liveKitViewerCount(room) });
+    if (refused) return refuse(refused);
+  }
   return Response.json(
     {
-      token: await mintJoinToken(room, identity, name, asking ? "asking" : "member"),
+      token: await mintJoinToken(room, identity, name, asking ? "asking" : viewer ? "viewer" : "member"),
       serverUrl: process.env.LIVEKIT_URL!,
       ...(asking ? { lobby: true } : {}),
+      ...(webinar ? { mode: "webinar" } : {}),
     },
     { headers: { "Set-Cookie": passCookie(request, extendPass(pass, identity, decision.key), secret) } },
   );

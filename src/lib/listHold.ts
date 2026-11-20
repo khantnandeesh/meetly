@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type RefObject } from "react";
 import { DUR, EASE, prefersReducedMotion } from "./motion";
 
 /**
@@ -15,17 +15,54 @@ export const HOLD_AFTER_TOUCH_MS = 1500;
 
 /**
  * `held` (the list as it was when the hold began) without whoever is no longer in `current`,
- * in its own order, and how many of `current` it leaves out.
+ * in its own order, and how many of `current` it leaves out. Anyone in `yours` (changed by you,
+ * see `noteOwnChange`) is shown at once even if they arrived since, after the held rows: the hold
+ * protects you from other people's changes, not from the result of your own.
  */
-export function holdList<T>(held: readonly T[], current: readonly T[], key: (item: T) => string): { shown: T[]; added: number } {
+export function holdList<T>(
+  held: readonly T[],
+  current: readonly T[],
+  key: (item: T) => string,
+  yours: ReadonlySet<string> = NONE,
+): { shown: T[]; added: number } {
   const now = new Map(current.map((item) => [key(item), item]));
   const shown: T[] = [];
+  const placed = new Set<string>();
   for (const item of held) {
     // The current object, so a renamed person shows their new name in their old place.
     const still = now.get(key(item));
-    if (still !== undefined) shown.push(still);
+    if (still !== undefined) {
+      shown.push(still);
+      placed.add(key(item));
+    }
   }
+  for (const item of current) if (yours.has(key(item)) && !placed.has(key(item))) shown.push(item);
   return { shown, added: current.length - shown.length };
+}
+
+const NONE: ReadonlySet<string> = new Set();
+
+/**
+ * People this browser just did something to (let in, invited on stage, sent back, made co-host),
+ * by identity. A held list shows them as they are now (see `holdList`).
+ */
+let own: ReadonlySet<string> = NONE;
+const ownListeners = new Set<() => void>();
+
+export function noteOwnChange(...identities: string[]): void {
+  own = new Set([...own, ...identities]);
+  ownListeners.forEach((listener) => listener());
+}
+
+export function useOwnChanges(): ReadonlySet<string> {
+  return useSyncExternalStore(
+    (listener) => {
+      ownListeners.add(listener);
+      return () => ownListeners.delete(listener);
+    },
+    () => own,
+    () => NONE,
+  );
 }
 
 /**

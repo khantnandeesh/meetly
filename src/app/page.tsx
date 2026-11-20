@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus } from "lucide-react";
+import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus, Presentation } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
@@ -8,8 +8,10 @@ import { JoinForm } from "@/components/JoinForm";
 import { ScheduleDialog } from "@/components/ScheduleDialog";
 import { Logo } from "@/components/ui/Logo";
 import { Dropdown } from "@/components/ui/Menu";
+import { useToast } from "@/components/ui/Toaster";
 import { generateCode } from "@/lib/code";
-import { createMeeting } from "@/lib/rtc/provider";
+import { createMeeting, createWebinar } from "@/lib/rtc/provider";
+import { useWebinarsOffered } from "@/lib/webinarSwitch";
 
 const FEATURES = [
   {
@@ -32,6 +34,8 @@ const FEATURES = [
 export default function Home() {
   const router = useRouter();
   const [starting, setStarting] = useState(false);
+  // The menu covers part of the illustration on a phone; its floating message steps aside.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // The server makes the meeting, with this browser as its host. If it cannot be asked, any new
   // code works as well: the first person into it becomes host instead.
@@ -42,6 +46,25 @@ export default function Home() {
 
   // A meeting for later is made the same way, so the person planning it is its host. Only the
   // link is shown; nobody is taken into the call.
+  // A webinar is made only here, and is one for good: the link cannot become a meeting later.
+  // Unlike a meeting, a made-up code will not do, so a failure is said rather than worked around.
+  const toast = useToast();
+  const webinarsOffered = useWebinarsOffered();
+  async function startWebinar() {
+    setStarting(true);
+    try {
+      router.push(`/${await createWebinar()}`);
+    } catch (error) {
+      setStarting(false);
+      toast.push({
+        tone: "danger",
+        icon: <CircleAlert className="size-5" />,
+        title: "Couldn't start the webinar",
+        body: error instanceof Error ? error.message : undefined,
+      });
+    }
+  }
+
   const [planned, setPlanned] = useState<{ code: string; mode: "link" | "schedule" } | null>(null);
   const [planning, setPlanning] = useState(false);
   const [preparing, setPreparing] = useState(false);
@@ -82,7 +105,7 @@ export default function Home() {
                   )}
                   New meeting
                 </button>
-                <Dropdown.Root>
+                <Dropdown.Root onOpenChange={setMenuOpen}>
                   <Dropdown.Trigger
                     className="btn btn-primary group w-11 rounded-l-md px-0"
                     aria-label="More ways to start a meeting"
@@ -104,6 +127,15 @@ export default function Home() {
                         <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
                         Schedule…
                       </Dropdown.Item>
+                      {webinarsOffered && (
+                        <>
+                          <div className="menu-sep" />
+                          <Dropdown.Item className="menu-item" onSelect={() => void startWebinar()}>
+                            <Presentation className="size-4 text-muted" aria-hidden="true" />
+                            New webinar
+                          </Dropdown.Item>
+                        </>
+                      )}
                     </Dropdown.Content>
                   </Dropdown.Portal>
                 </Dropdown.Root>
@@ -113,7 +145,7 @@ export default function Home() {
           </section>
 
           <div className="anim-rise px-3 [animation-delay:120ms] sm:px-8 lg:px-0 lg:pl-6">
-            <HeroArt />
+            <HeroArt quiet={menuOpen} />
           </div>
         </div>
 

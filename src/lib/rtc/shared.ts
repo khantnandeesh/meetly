@@ -59,13 +59,6 @@ export function bulkFailures(error: unknown): string[] {
   return Array.isArray(failed) ? failed.filter((id): id is string => typeof id === "string") : [];
 }
 
-/** A host action that neither adapter carries out yet. The message is fit to show. */
-export function notAvailableYet(action: "reactions" | "stage"): Error {
-  return new Error(
-    action === "reactions" ? "Turning reactions off isn't available yet." : "Inviting people on stage isn't available yet.",
-  );
-}
-
 /** LiveKit: topic of our server's message to someone in the lobby that carries their way in. */
 export const ADMIT_TOPIC = "meetly-admit";
 
