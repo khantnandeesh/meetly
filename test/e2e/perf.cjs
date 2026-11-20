@@ -134,20 +134,62 @@ module.exports = async function perf(browser) {
     shot: "perf-reactions-200",
   });
 
-  // On a phone, with the People sheet open, 200 hands go up in a 231-person meeting.
-  // A list being read holds still (src/lib/listHold.ts): scrolled or touched, nobody is added or
+  // The People list through a flood of hands in a 231-person meeting. A list being read holds
+  // still (src/lib/listHold.ts): scrolled, touched or (with a mouse) hovered, nobody is added or
   // moved, and an "N new" pill counts what arrived. Left alone at the top it is live, so the
-  // first hands push it down; that case is measured and printed, not budgeted.
+  // first hands push it down; rows that move glide (by transform), or snap with reduced motion.
+  // The live case is measured and printed, not budgeted.
   await peopleSheet(browser, "at the top, untouched");
+  await peopleSheet(browser, "at the top, untouched, reduced motion", { reducedMotion: "reduce" });
   await peopleSheet(browser, "scrolled");
   await peopleSheet(browser, "touched");
+  await peopleSheet(browser, "hovered", { viewport: H.DESKTOP });
 };
 
-/** The People sheet on a phone through a flood of hands, read in one of three ways. */
-async function peopleSheet(browser, how) {
-  const a = await host(browser, H.PHONE);
+/**
+ * Where the pill is against the rows: its box must not meet any button in the list, nor the
+ * row icons and buttons of the first two rows under it, and its left edge lines up with the names.
+ */
+const pillPlace = (page) =>
+  page.evaluate(() => {
+    const pill = document.querySelector("[data-new-pill]");
+    if (!pill) return { ok: false, why: "no pill" };
+    const box = (el) => el.getBoundingClientRect();
+    const p = box(pill);
+    const scroller = pill.closest(".scroll-quiet");
+    const s = box(scroller);
+    const meets = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const rows = [...scroller.querySelectorAll('[role="listitem"], section[aria-label="Raised hands"] li')]
+      .map((row) => ({ row, r: box(row) }))
+      .filter(({ r }) => r.bottom > s.top + 1 && r.top < s.bottom)
+      .sort((a, b) => a.r.top - b.r.top)
+      .slice(0, 2);
+    const controls = [
+      ...[...scroller.querySelectorAll("button")].filter((b) => b !== pill),
+      ...rows.flatMap(({ row }) => [...row.querySelectorAll("span.shrink-0.items-center > *")]),
+    ];
+    const hits = controls.filter((el) => meets(p, box(el))).map((el) => el.getAttribute("aria-label") || el.textContent.trim().slice(0, 20) || el.tagName);
+    const name = rows[0]?.row.querySelector("span.min-w-0 > span");
+    const nameLeft = name ? Math.round(box(name).left) : null;
+    return {
+      ok: hits.length === 0 && nameLeft !== null && Math.abs(p.left - nameLeft) <= 1 && Math.round(p.top - s.top) === 8,
+      hits,
+      pill: { left: Math.round(p.left), right: Math.round(p.right), top: Math.round(p.top - s.top) },
+      nameLeft,
+    };
+  });
+
+/** The People list through a flood of hands, read in one of five ways. */
+async function peopleSheet(browser, how, { viewport = H.PHONE, reducedMotion = "no-preference" } = {}) {
+  const phone = viewport === H.PHONE;
+  const person = await H.client(browser, { viewport, touch: phone, reducedMotion });
   try {
-    const { page } = a;
+    const { page } = person;
+    const url = await H.createMeeting(person);
+    await H.join(person, url, "Hana Host");
+    await H.sleep(2800);
+    await page.evaluate(install);
+    await page.evaluate(watch);
     await page.evaluate(() => window.__sim.join(230));
     await H.sleep(1500);
     await page.locator("#toggle-people").click();
@@ -155,39 +197,64 @@ async function peopleSheet(browser, how) {
     const list = page.locator('aside[aria-label="People"] [role="list"][aria-label="Participants"]').locator("..");
     await list.waitFor();
     await H.sleep(800);
+    // Counts the glides: animations started on an element that is measured for one.
+    await page.evaluate(() => {
+      window.__flips = 0;
+      const animate = Element.prototype.animate;
+      Element.prototype.animate = function (...args) {
+        if (this.hasAttribute("data-flip")) window.__flips++;
+        return animate.apply(this, args);
+      };
+    });
     if (how === "scrolled") await list.evaluate((el) => el.scrollBy({ top: 120 }));
     if (how === "touched") await list.dispatchEvent("pointerdown", { pointerType: "touch", isPrimary: true, bubbles: true });
+    if (how === "hovered") {
+      const r = await list.boundingBox();
+      await page.mouse.move(r.x + r.width / 2, r.y + r.height / 2);
+    }
     await H.sleep(300);
     await page.evaluate(() => window.__watch.reset());
-    // A finger rests on the list for 4 s, not 10.
-    await rate(page, "hands", 200, how === "touched" ? 4 : 10);
+    // A finger or a pointer rests on the list for 4 s, not 10.
+    const total = how === "hovered" ? 40 : 200;
+    await rate(page, "hands", total, how === "touched" || how === "hovered" ? 4 : 10);
     await H.sleep(1000);
     const seen = await page.evaluate(() => window.__watch.read());
-    const name = `200 hands, People sheet open on a phone, ${how}`;
+    const name = `${total} hands, People ${phone ? "sheet open on a phone" : "panel open on desktop"}, ${how}`;
     console.log(`      ${name}: ${summary(seen)}`);
     H.ok(`${name}: no main-thread task over ${BUDGET.longestTask} ms`, seen.longest <= BUDGET.longestTask, `longest ${seen.longest} ms`);
     const pill = page.locator("[data-new-pill]");
     const raised = page.locator('aside[aria-label="People"] section[aria-label="Raised hands"] li');
-    await H.shot(a, `perf-hands-people-sheet-phone-${how.replace(/\W+/g, "-")}`);
-    if (how === "at the top, untouched") {
+    const flips = () => page.evaluate(() => window.__flips);
+    await H.shot(person, `perf-hands-people-${phone ? "phone" : "desktop"}-${how.replace(/\W+/g, "-")}`);
+    if (how.startsWith("at the top, untouched")) {
       H.ok(`${name}: live, so no pill, and the first five hands are listed`, (await pill.count()) === 0 && (await raised.count()) === 5);
+      if (reducedMotion === "reduce") H.ok(`${name}: rows snap, nothing glides`, (await flips()) === 0, `${await flips()} glides`);
+      else H.ok(`${name}: the rows that move glide`, (await flips()) > 0, `${await flips()} glides`);
       return;
     }
     H.ok(`${name}: layout shift under ${BUDGET.cls}`, seen.cls < BUDGET.cls, `CLS ${seen.cls} ${JSON.stringify(seen.shifts.slice(0, 2))}`);
     const said = ((await pill.textContent().catch(() => "")) || "").trim();
     const hands = await page.evaluate(() => window.__meetly.call.participants().filter((p) => p.handRaised).length);
-    H.ok(`${name}: the pill counts the hands that went up meanwhile, and none moved in`, said === `${hands} new` && (await raised.count()) === 0, `"${said}" with ${hands} hands up`);
+    const label = `${hands > 99 ? "99+" : hands} new`;
+    H.ok(`${name}: the pill counts the hands that went up meanwhile ("99+" above 99), and none moved in`, said === label && (await raised.count()) === 0, `"${said}" with ${hands} hands up`);
+    const place = await pillPlace(page);
+    H.ok(`${name}: the pill lines up with the names, 8px down, clear of every row button`, place.ok, JSON.stringify(place));
     if (how === "scrolled") {
       await pill.tap();
       const shown = await H.until(async () => (await pill.count()) === 0 && (await raised.count()) === 5 && (await list.evaluate((el) => el.scrollTop)) === 0, 3000);
       H.ok(`${name}: one tap on the pill goes to the top and shows them`, shown);
-      await H.shot(a, "perf-hands-people-sheet-phone-after-pill");
-    } else {
+      await H.shot(person, "perf-hands-people-phone-after-pill");
+    } else if (how === "touched") {
       await page.evaluate(() => window.dispatchEvent(new PointerEvent("pointerup", { pointerType: "touch", isPrimary: true })));
       const caught = await H.until(async () => (await pill.count()) === 0 && (await raised.count()) === 5, 4000);
       H.ok(`${name}: lifting the finger lets the list catch up`, caught);
+    } else {
+      // Off the list, onto the stage.
+      await page.mouse.move(40, 40);
+      const caught = await H.until(async () => (await pill.count()) === 0 && (await raised.count()) === 5, 4000);
+      H.ok(`${name}: moving the pointer off the list lets it catch up`, caught);
     }
   } finally {
-    await a.ctx.close();
+    await person.ctx.close();
   }
 }
