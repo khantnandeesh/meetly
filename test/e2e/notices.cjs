@@ -548,9 +548,7 @@ async function placement(browser) {
     const label = await a.page.locator("#toggle-chat").getAttribute("aria-label");
     H.ok("C8: the chat button counts all 300, in full for screen readers", label === "Chat, 300 unread", label);
     const badge = (await a.page.locator("#toggle-chat > span").last().innerText()).trim();
-    // The "99+" cap is E3's C11 (ChatButton in ControlBar.tsx); until that is merged the badge reads "9+".
-    if (badge === "9+") console.log('NOTE  C8: the badge reads "9+"; "99+" arrives with C11 (E3)');
-    else H.ok("C8: the badge reads 99+", badge === "99+", badge);
+    H.ok("C8: the badge reads 99+", badge === "99+", badge);
     await a.ctx.close();
   }
   {
