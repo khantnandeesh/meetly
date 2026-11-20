@@ -311,11 +311,18 @@ and the host has not joined for thirty days.
 says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
 and a meeting's link cannot become a webinar. The browser that made it is the host. Everyone else
 joins the audience: they watch and listen, raise a hand, react and vote in polls, and have no
-microphone, camera, screen share or tile. Chat is read-only for them.
+microphone, camera, screen share or tile. Chat is read-only for them. Their pre-join screen asks
+for a name only ("Watch"), so the browser never asks them for a camera or microphone; their
+screen shows the stage, "Live · N watching", and Raise hand, React and Leave
+(`src/components/ViewerPreJoin.tsx`, `ViewerCall.tsx`, `ViewerControlBar.tsx`).
 
-The host (or a co-host, on LiveKit) brings someone on stage by inviting them. The invitation asks
-them first: nothing of theirs is sent until they say yes, and they or the host can send them back
-to the audience at any time, which stops whatever they were sending.
+The host (or a co-host, on LiveKit) brings someone on stage from People › Audience, where raised
+hands come first in the order they went up ("Invite to speak", one person at a time). The
+invitation asks them first: nothing of theirs is sent until they say yes, and "Join stage…" opens
+a check of their microphone and camera (`StageInvite.tsx`). They or the host can send them back to
+the audience at any time ("Back to audience"), which stops whatever they were sending. The
+audience's arrivals and departures make no notification or sound, and their reactions are shown
+without a name.
 
 How many may watch at once is `MEETLY_WEBINAR_VIEWER_CAP` (250 unless set). Past it, people are
 told "This webinar is full" and can try again; the host always gets in. Every check made before
@@ -342,7 +349,9 @@ The record is marked like this, for anything on the server that needs to know:
   minute) is never called. The audience limit is counted from the active session's
   `live_participants`, which includes the people on stage.
 
-Viewer names are shown to the host and co-hosts only, by the interface. On both providers the
+Viewer names are shown to the host and co-hosts only, by the interface: other people never see
+the audience list, the names of audience hands, or who voted for what in a named poll (they see
+the counts). On both providers the
 audience is in the same room as everyone else, so a modified client could still read them.
 
 ## How it fits together
