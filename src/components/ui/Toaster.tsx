@@ -343,7 +343,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
               onAnimationEnd={(event) => {
                 if (toast.leaving && event.target === event.currentTarget) remove(toast.id);
               }}
-              className="toast pointer-events-auto flex w-[min(24rem,100%)] items-center gap-3 rounded-2xl bg-surface-2 py-2 pr-2 pl-3.5 text-sm shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)]"
+              className="toast pointer-events-auto flex w-[min(24rem,100%)] flex-wrap items-center gap-x-3 rounded-2xl bg-surface-2 py-2 pr-2 pl-3.5 text-sm shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)]"
             >
               {toast.icon && (
                 <span className={`shrink-0 ${toast.tone === "danger" ? "text-danger-text" : "text-accent"}`} aria-hidden="true">
@@ -351,31 +351,35 @@ export function Toaster({ children }: { children: React.ReactNode }) {
                 </span>
               )}
               <p className="min-w-0 flex-1 py-1.5">
-                <span className="toast-title line-clamp-2 block break-words font-medium">{toast.title}</span>
+                <span className="toast-title block font-medium break-words hyphens-auto">{toast.title}</span>
                 {toast.body && <span className="toast-body mt-0.5 line-clamp-2 block break-words text-muted">{toast.body}</span>}
               </p>
-              {toast.secondary && (
-                <button
-                  className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-muted transition-colors hover:bg-surface-3 hover:text-text"
-                  onClick={() => {
-                    toast.secondary?.onClick();
-                    remove(toast.id);
-                  }}
-                >
-                  {toast.secondary.label}
-                </button>
-              )}
-              {toast.action && (
-                <button
-                  className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-accent transition-colors hover:bg-surface-3"
-                  onClick={() => {
-                    toast.action?.onClick();
-                    remove(toast.id);
-                  }}
-                >
-                  {toast.action.label}
-                </button>
-              )}
+              {/* Two answers ("Deny", "Admit") go on a line of their own under the text, so a long
+                  name wraps between words instead of being squeezed into a sliver beside them. */}
+              <div className={toast.secondary ? "toast-actions order-last -mt-1.5 flex basis-full justify-end gap-1" : "contents"}>
+                {toast.secondary && (
+                  <button
+                    className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-muted transition-colors hover:bg-surface-3 hover:text-text"
+                    onClick={() => {
+                      toast.secondary?.onClick();
+                      remove(toast.id);
+                    }}
+                  >
+                    {toast.secondary.label}
+                  </button>
+                )}
+                {toast.action && (
+                  <button
+                    className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-accent transition-colors hover:bg-surface-3"
+                    onClick={() => {
+                      toast.action?.onClick();
+                      remove(toast.id);
+                    }}
+                  >
+                    {toast.action.label}
+                  </button>
+                )}
+              </div>
               <button className="icon-btn size-9 hover:bg-surface-3" aria-label="Dismiss notification" onClick={() => leave(toast.id)}>
                 <X className="size-4" />
               </button>

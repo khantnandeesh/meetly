@@ -734,8 +734,16 @@ body {
   .toast-region[data-compact] .toast-body {
     display: none;
   }
+  .toast-region[data-compact] .toast-actions {
+    order: 0;
+    flex-basis: auto;
+    margin-top: 0;
+  }
   .toast-region[data-compact] .toast-title {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
     -webkit-line-clamp: 1;
+    overflow: hidden;
   }
 }
 @media (width >= 48rem) {
