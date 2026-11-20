@@ -131,8 +131,8 @@ export const SOUNDS: Record<SoundName, SoundSpec> = {
     notes: [note(FS5, 0, 0.3, 0.035)],
     length: 0.14,
     important: false,
-    minGapMs: 4000,
-    meaning: "A chat message arrived while chat is closed",
+    minGapMs: 1000,
+    meaning: "A chat message arrived while chat is closed (first after a quiet spell)",
   },
 
   // Your own microphone: the smallest sounds in the set, one grace note and one note.
@@ -250,6 +250,17 @@ function loadSettings(): SoundSettings {
 
 /* ------------------------------------------------------------------- engine */
 
+/** Why a sound did or did not play. */
+export type PlayOutcome =
+  | "played"
+  | "level-off"
+  | "level-important"
+  | "locked"
+  | "suspended"
+  | "throttled"
+  | "crowded"
+  | "error";
+
 type SinkContext = AudioContext & { setSinkId?: (id: string) => Promise<void> };
 
 /** No two sounds of any kind start closer together than this, so they never smear into noise. */
@@ -282,6 +293,50 @@ function createEngine() {
     context.setSinkId(sinkId === "default" ? "" : sinkId).catch(() => {});
   };
 
+  /** Decides whether `name` may play now, and plays it. The outcome names the reason when it may not. */
+  const attempt = (name: SoundName, preview: boolean): PlayOutcome => {
+    ensureSettings();
+    const spec = SOUNDS[name];
+    if (!preview) {
+      if (settings.level === "off") return "level-off";
+      if (settings.level === "important" && !spec.important) return "level-important";
+    }
+    if (!context || !master) return "locked";
+    if (context.state !== "running") {
+      // Suspended by the browser (for example after the device slept): try for next time.
+      context.resume().catch(() => {});
+      return "suspended";
+    }
+    const now = performance.now();
+    if (!preview) {
+      if (now - (lastPlayed.get(name) ?? -Infinity) < spec.minGapMs) return "throttled";
+      // Important sounds and your own microphone ticks are never held back by other sounds.
+      if (!spec.important && !isOwnTick(name) && now - lastAny < GLOBAL_GAP_MS) return "crowded";
+    }
+    lastPlayed.set(name, now);
+    if (!isOwnTick(name)) lastAny = now;
+    try {
+      scheduleSound(context, master, name, context.currentTime + 0.005);
+      return "played";
+    } catch {
+      return "error";
+    }
+  };
+  // With localStorage["meetly:debug"] = "1", every attempt is kept on window.__meetlySounds for tests.
+  let debug: { log: { name: string; outcome: string; at: number }[] } | null | undefined;
+  const record = (name: string, outcome: string) => {
+    if (debug === undefined) {
+      debug = null;
+      try {
+        if (typeof window !== "undefined" && localStorage.getItem("meetly:debug") === "1") {
+          debug = { log: [] };
+          (window as unknown as { __meetlySounds?: unknown }).__meetlySounds = debug;
+        }
+      } catch {}
+    }
+    debug?.log.push({ name, outcome, at: Math.round(performance.now()) });
+  };
+
   return {
     /**
      * Creates (or resumes) the audio context. Browsers only allow this from a user gesture, so
@@ -311,32 +366,9 @@ function createEngine() {
      * play now is dropped, because a late chime is worse than none.
      */
     play(name: SoundName, { preview = false }: { preview?: boolean } = {}): boolean {
-      ensureSettings();
-      const spec = SOUNDS[name];
-      if (!preview) {
-        if (settings.level === "off") return false;
-        if (settings.level === "important" && !spec.important) return false;
-      }
-      if (!context || !master) return false;
-      if (context.state !== "running") {
-        // Suspended by the browser (for example after the device slept): try for next time.
-        context.resume().catch(() => {});
-        return false;
-      }
-      const now = performance.now();
-      if (!preview) {
-        if (now - (lastPlayed.get(name) ?? -Infinity) < spec.minGapMs) return false;
-        // Important sounds and your own microphone ticks are never held back by other sounds.
-        if (!spec.important && !isOwnTick(name) && now - lastAny < GLOBAL_GAP_MS) return false;
-      }
-      lastPlayed.set(name, now);
-      if (!isOwnTick(name)) lastAny = now;
-      try {
-        scheduleSound(context, master, name, context.currentTime + 0.005);
-        return true;
-      } catch {
-        return false;
-      }
+      const outcome = attempt(name, preview);
+      record(name, outcome);
+      return outcome === "played";
     },
 
     /** Follows the speaker the user picked for the call. No-op where the browser cannot. */
@@ -370,6 +402,11 @@ function createEngine() {
       setTimeout(() => {
         if (target.state === "running") target.suspend().catch(() => {});
       }, afterMs);
+    },
+
+    /** Records a sound that was decided against before reaching `play` (debug log only). */
+    skipped(name: SoundName, reason: string): void {
+      record(name, reason);
     },
 
     /** For tests and debugging. */

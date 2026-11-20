@@ -1,28 +1,19 @@
 "use client";
 
-import {
-  VideoTrack,
-  isTrackReference,
-  useConnectionQualityIndicator,
-  useIsSpeaking,
-  useParticipantAttribute,
-  useParticipantInfo,
-  type TrackReferenceOrPlaceholder,
-} from "@livekit/components-react";
-import { ConnectionQuality, Track } from "livekit-client";
 import { Crown, Hand, MicOff, MonitorUp, Pin, PinOff, SignalLow } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { Rect } from "@/lib/motion";
-import { HAND, useMediaState } from "@/lib/participant";
+import { useParticipantState, useVideoTrack } from "@/lib/rtc/react";
+import type { RtcTile, RtcVideoTrack } from "@/lib/rtc/types";
 import { HostMenu, useHost } from "./HostTools";
 import { avatarColor, initials } from "./ui/Avatar";
 import { Tip } from "./ui/Tip";
 
 type TileProps = {
-  trackRef: TrackReferenceOrPlaceholder;
+  trackRef: RtcTile;
   pinned?: boolean;
   /** Must be referentially stable; tiles are memoised so large grids don't re-render on every event. */
-  onTogglePin?: (ref: TrackReferenceOrPlaceholder) => void;
+  onTogglePin?: (ref: RtcTile) => void;
   className?: string;
   /** On the stage: where the tile sits. Applied as a transform, so moving a tile never costs layout. */
   rect?: Rect;
@@ -33,27 +24,22 @@ type TileProps = {
 export const Tile = memo(TileView, (a, b) =>
   a.trackRef.participant === b.trackRef.participant &&
   a.trackRef.source === b.trackRef.source &&
-  a.trackRef.publication === b.trackRef.publication &&
+  a.trackRef.track === b.trackRef.track &&
   a.pinned === b.pinned &&
   a.onTogglePin === b.onTogglePin &&
   a.className === b.className &&
   a.children === b.children &&
   a.slot === b.slot &&
-  a.rect?.x === b.rect?.x &&
-  a.rect?.y === b.rect?.y &&
-  a.rect?.w === b.rect?.w &&
-  a.rect?.h === b.rect?.h,
+  // A tile that only moved or changed size is not re-rendered: the stage writes its new place
+  // straight onto the element (see placeTiles in Stage.tsx). Re-rendering every tile on every
+  // reflow was the largest single cost of answering a click. Only "placed or not" matters here.
+  !a.rect === !b.rect,
 );
 
 function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect, slot, children }: TileProps) {
   const { participant, source } = trackRef;
-  const { name: rawName } = useParticipantInfo({ participant });
+  const { name: rawName, speaking, micOn, camOn, handRaised, weakConnection: weak } = useParticipantState(participant);
   const name = rawName || "Guest";
-  const speaking = useIsSpeaking(participant);
-  const { micOn, camOn } = useMediaState(participant);
-  const handRaised = useParticipantAttribute(HAND, { participant }) === "1";
-  const { quality } = useConnectionQualityIndicator({ participant });
-  const weak = quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost;
 
   // Touch has no hover: a tap on the tile reveals its actions for a few seconds.
   const [revealed, setRevealed] = useState(false);
@@ -66,7 +52,7 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
   }
 
   const { hostId, isHost } = useHost();
-  const isScreen = source === Track.Source.ScreenShare;
+  const isScreen = source === "screen_share";
   const isLocal = participant.isLocal;
   const showVideo = isScreen || camOn;
   const color = avatarColor(participant.identity);
@@ -121,7 +107,14 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
           </span>
         </div>
       )}
-      {isTrackReference(trackRef) && showVideo && <FadeInVideo trackRef={trackRef} />}
+      {trackRef.track && showVideo && <FadeInVideo track={trackRef.track} />}
+      {/* After the video in the document (so a plain sibling selector can hide it), behind it on screen. */}
+      {isScreen && (
+        <p className="share-wait absolute inset-0 -z-1 flex flex-col items-center justify-center gap-3 px-6 text-center text-muted">
+          <MonitorUp className="size-8 text-accent" aria-hidden="true" />
+          <span>{isLocal ? "Starting your screen share…" : `${name} is starting to share…`}</span>
+        </p>
+      )}
       </div>
 
       {(onTogglePin || (isHost && !isLocal && !isScreen)) && (
@@ -179,8 +172,9 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
  * The flag is set straight on the element: a page of sixteen videos becoming ready should not
  * mean sixteen React renders.
  */
-function FadeInVideo({ trackRef }: { trackRef: Extract<TrackReferenceOrPlaceholder, { publication: object }> }) {
+function FadeInVideo({ track }: { track: RtcVideoTrack }) {
   const ref = useRef<HTMLVideoElement>(null);
+  useVideoTrack(track, ref);
   useEffect(() => {
     const video = ref.current;
     if (!video) return;
@@ -195,5 +189,5 @@ function FadeInVideo({ trackRef }: { trackRef: Extract<TrackReferenceOrPlacehold
       clearTimeout(timer);
     };
   }, []);
-  return <VideoTrack ref={ref} trackRef={trackRef} />;
+  return <video ref={ref} autoPlay playsInline muted />;
 }

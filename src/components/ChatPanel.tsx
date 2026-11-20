@@ -1,18 +1,18 @@
 "use client";
 
-import type { ReceivedChatMessage } from "@livekit/components-react";
 import { ArrowDown, LoaderCircle, MessagesSquare, SendHorizontal } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
+import type { RtcChatMessage } from "@/lib/rtc/types";
 import { useChatStore } from "./ChatStore";
 import { Avatar } from "./ui/Avatar";
 
 const GROUP_WINDOW_MS = 5 * 60_000;
 const URL_PATTERN = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]!?])/g;
 
-type Group = { key: string; own: boolean; name: string; seed: string; time: number; messages: ReceivedChatMessage[] };
+type Group = { key: string; own: boolean; name: string; seed: string; time: number; messages: RtcChatMessage[] };
 
 /** Consecutive messages from one person within a few minutes share a single header. */
-function groupMessages(messages: ReceivedChatMessage[]): Group[] {
+function groupMessages(messages: RtcChatMessage[]): Group[] {
   const groups: Group[] = [];
   for (const message of messages) {
     const seed = message.from?.identity ?? "unknown";

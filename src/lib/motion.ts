@@ -47,15 +47,21 @@ const STEPS = 10;
  * The tile's box is scaled exactly onto its old box, so the first frame matches what was on
  * screen. A box that changes shape would stretch what is inside it, so the picture layer is
  * counter-scaled to keep covering the box at its true proportions, and the name label
- * is counter-scaled to stay its natural size, as a real resize would look. (Rounded corners are
- * not corrected: animating a radius repaints every frame, and measured slower than it was worth.)
+ * is counter-scaled to stay its natural size, as a real resize would look. Rounded corners are
+ * not corrected (animating a radius repaints every frame), which is why the stage does not glide
+ * a tile that shrinks a great deal: see SHRINK_LIMIT in Stage.tsx.
  * Returns the tile's own animation; the inner ones follow it.
  */
 export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): Animation {
   const sx = from.w / to.w;
   const sy = from.h / to.h;
+  // A tile that keeps its size only slides. Leaving scale out matters: an animated scale, even
+  // of 1, makes the browser re-rasterise the tile's layer before the first frame.
+  const sameSize = Math.abs(sx - 1) < 0.005 && Math.abs(sy - 1) < 0.005;
   const main = el.animate(
-    [{ transform: `${place(from)} scale(${sx}, ${sy})` }, { transform: `${place(to)} scale(1, 1)` }],
+    sameSize
+      ? [{ transform: place(from) }, { transform: place(to) }]
+      : [{ transform: `${place(from)} scale(${sx}, ${sy})` }, { transform: `${place(to)} scale(1, 1)` }],
     { duration, easing: EASE.move },
   );
   if (Math.abs(sx - 1) < 0.02 && Math.abs(sy - 1) < 0.02) return main;
@@ -88,8 +94,16 @@ export function glide(el: HTMLElement, from: Rect, to: Rect, duration: number): 
 }
 
 /** Fades an element in at `rect`, optionally growing slightly from its centre. */
-export function arrive(el: HTMLElement, rect: Rect, grow: boolean, duration: number = DUR.base): Animation {
-  if (!grow) return el.animate([{ opacity: 0 }, { opacity: 1 }], { duration, easing: "ease-out" });
+export function arrive(
+  el: HTMLElement,
+  rect: Rect,
+  grow: boolean,
+  duration: number = DUR.base,
+  delay = 0,
+): Animation {
+  // `backwards` keeps it hidden while it waits for its neighbours to make room.
+  const timing = { duration, delay, fill: "backwards" as const };
+  if (!grow) return el.animate([{ opacity: 0 }, { opacity: 1 }], { ...timing, easing: "ease-out" });
   const inset = (1 - SCALE_ENTER) / 2;
   return el.animate(
     [
@@ -99,7 +113,7 @@ export function arrive(el: HTMLElement, rect: Rect, grow: boolean, duration: num
       },
       { opacity: 1, transform: `${place(rect)} scale(1)` },
     ],
-    { duration, easing: EASE.enter },
+    { ...timing, easing: EASE.enter },
   );
 }
 
@@ -133,6 +147,7 @@ export function ghostOf(el: HTMLElement, rect: Rect): HTMLElement {
   for (const name of ["data-tile", "data-key", "role", "aria-label", "data-speaking", "id"]) ghost.removeAttribute(name);
   ghost.setAttribute("aria-hidden", "true");
   ghost.setAttribute("data-placed", "");
+  ghost.dataset.ghostOf = el.dataset.key ?? "";
   ghost.inert = true;
   ghost.classList.add("tile-ghost");
   ghost.style.cssText = `width:${rect.w}px;height:${rect.h}px;transform:${place(rect)};`;

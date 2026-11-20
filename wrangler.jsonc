@@ -19,11 +19,16 @@
 	// Workers custom domain: creates the DNS record and certificate for the hostname.
 	"routes": [{ "pattern": "meet.nandeesh.dev", "custom_domain": true }],
 	"observability": { "enabled": true },
-	"upload_source_maps": true
+	"upload_source_maps": true,
 
 	// Non-secret configuration goes in "vars"; secrets are set with `wrangler secret put <NAME>`
 	// (never in this file). Both are read as process.env.<NAME> in route handlers.
-	// "vars": { "EXAMPLE_PUBLIC_SETTING": "value" },
+	"vars": {
+		"CLOUDFLARE_ACCOUNT_ID": "439a27349e5028092af2cfd5a45bdac1",
+		"REALTIMEKIT_APP_ID": "e9e7398f-10dd-4c0d-88f3-b38198239422",
+		"REALTIMEKIT_HOST_PRESET": "meetly-host",
+		"REALTIMEKIT_GUEST_PRESET": "meetly-guest"
+	}
 
 	// KV namespace (create with `wrangler kv namespace create <name>`, paste the id here), read via
 	// getCloudflareContext().env.<BINDING> from "@opennextjs/cloudflare".

@@ -62,3 +62,20 @@ export function usePresence(present: boolean) {
   };
   return { mounted, leaving, onAnimationEnd };
 }
+
+/**
+ * For a copy button that confirms in place: `copy` runs the copy, and `copied` is true for a
+ * moment afterwards if it worked.
+ */
+export function useCopied(run: () => Promise<boolean>, holdMs = 1500) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = setTimeout(() => setCopied(false), holdMs);
+    return () => clearTimeout(timer);
+  }, [copied, holdMs]);
+  const copy = useCallback(() => {
+    void run().then((ok) => ok && setCopied(true));
+  }, [run]);
+  return { copied, copy };
+}

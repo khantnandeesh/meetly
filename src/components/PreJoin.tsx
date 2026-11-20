@@ -1,7 +1,5 @@
 "use client";
 
-import { usePersistentUserChoices, useTrackVolume, type LocalUserChoices } from "@livekit/components-react";
-import type { LocalAudioTrack, LocalVideoTrack } from "livekit-client";
 import {
   ArrowRight,
   Check,
@@ -17,7 +15,15 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { copyText } from "@/lib/hooks";
-import { useDeviceList, usePreviewMedia, type MediaProblem, type MediaSlot } from "@/lib/usePreviewMedia";
+import type { JoinChoices } from "@/lib/rtc/types";
+import {
+  useDeviceList,
+  usePreviewMedia,
+  useSavedChoices,
+  useTrackVolume,
+  type MediaProblem,
+  type MediaSlot,
+} from "@/lib/usePreviewMedia";
 import { Avatar } from "./ui/Avatar";
 import { Logo } from "./ui/Logo";
 import { DeviceRadioGroup, Dropdown, deviceLabel } from "./ui/Menu";
@@ -33,11 +39,11 @@ export function PreJoin({
   code: string;
   joining: boolean;
   error: string | null;
-  onJoin: (choices: LocalUserChoices) => void;
+  onJoin: (choices: JoinChoices) => void;
 }) {
-  const saved = usePersistentUserChoices({ defaults: { videoEnabled: true, audioEnabled: true } });
-  const { audio, video, setEnabled, setDevice, retry } = usePreviewMedia(saved.userChoices);
-  const [name, setName] = useState(saved.userChoices.username);
+  const [saved, save] = useSavedChoices();
+  const { audio, video, setEnabled, setDevice, retry } = usePreviewMedia(saved);
+  const [name, setName] = useState(saved.username);
   const [nameError, setNameError] = useState(false);
   const [copied, setCopied] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -51,14 +57,12 @@ export function PreJoin({
   function toggle(kind: "audio" | "video") {
     const next = !(kind === "audio" ? audio.enabled : video.enabled);
     setEnabled(kind, next);
-    if (kind === "audio") saved.saveAudioInputEnabled(next);
-    else saved.saveVideoInputEnabled(next);
+    save(kind === "audio" ? { audioEnabled: next } : { videoEnabled: next });
   }
 
   function chooseDevice(kind: "audio" | "video", deviceId: string) {
     setDevice(kind, deviceId);
-    if (kind === "audio") saved.saveAudioInputDeviceId(deviceId);
-    else saved.saveVideoInputDeviceId(deviceId);
+    save(kind === "audio" ? { audioDeviceId: deviceId } : { videoDeviceId: deviceId });
   }
 
   function submit(event: React.FormEvent) {
@@ -69,7 +73,7 @@ export function PreJoin({
       nameRef.current?.focus();
       return;
     }
-    saved.saveUsername(username);
+    save({ username });
     onJoin({
       username,
       audioEnabled: audio.enabled && !!audio.track,
@@ -238,8 +242,8 @@ function Preview({
   onRetry,
 }: {
   name: string;
-  audio: MediaSlot<LocalAudioTrack>;
-  video: MediaSlot<LocalVideoTrack>;
+  audio: MediaSlot;
+  video: MediaSlot;
   onToggle: (kind: "audio" | "video") => void;
   onRetry: () => void;
 }) {
@@ -249,9 +253,10 @@ function Preview({
   useEffect(() => {
     const element = videoRef.current;
     if (!element || !track) return;
-    track.attach(element);
+    element.srcObject = new MediaStream([track]);
+    element.play().catch(() => {});
     return () => {
-      track.detach(element);
+      element.srcObject = null;
     };
   }, [track]);
 
@@ -268,6 +273,7 @@ function Preview({
     <div className="relative isolate aspect-[4/3] overflow-hidden rounded-[1.75rem] bg-surface shadow-[inset_0_0_0_1px_var(--border)] sm:aspect-video">
       <video
         ref={videoRef}
+        autoPlay
         muted
         playsInline
         className={`absolute inset-0 size-full -scale-x-100 object-cover transition-opacity duration-(--dur-base) ${camOn ? "opacity-100" : "opacity-0"}`}
@@ -383,7 +389,7 @@ function PreviewToggle({
 }
 
 /** Three bars that follow the live microphone level. */
-function MicMeter({ track }: { track?: LocalAudioTrack }) {
+function MicMeter({ track }: { track?: MediaStreamTrack }) {
   const volume = useTrackVolume(track);
   const level = Math.min(1, volume * 2.2);
   return (

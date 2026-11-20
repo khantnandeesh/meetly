@@ -1,24 +1,20 @@
 "use client";
 
-import {
-  Room,
-  Track,
-  VideoPresets,
-  createLocalTracks,
-  type LocalAudioTrack,
-  type LocalVideoTrack,
-} from "livekit-client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { JoinChoices } from "./rtc/types";
+
+// The preview is plain browser media: no provider SDK is on the page until Join is pressed.
+// Whichever provider the call then uses acquires its own tracks from the chosen devices.
 
 export type MediaProblem = "denied" | "missing" | "busy" | "unknown";
 type Kind = "audio" | "video";
 
-export type MediaSlot<T> = {
+export type MediaSlot = {
   /** What the user asked for. A slot can be enabled and still have no track (see `problem`). */
   enabled: boolean;
   pending: boolean;
   deviceId: string;
-  track?: T;
+  track?: MediaStreamTrack;
   problem?: MediaProblem;
 };
 
@@ -40,18 +36,18 @@ export function usePreviewMedia(initial: {
   audioDeviceId: string;
   videoDeviceId: string;
 }) {
-  const [audio, setAudio] = useState<MediaSlot<LocalAudioTrack>>({
+  const [audio, setAudio] = useState<MediaSlot>({
     enabled: initial.audioEnabled,
     pending: initial.audioEnabled,
     deviceId: initial.audioDeviceId,
   });
-  const [video, setVideo] = useState<MediaSlot<LocalVideoTrack>>({
+  const [video, setVideo] = useState<MediaSlot>({
     enabled: initial.videoEnabled,
     pending: initial.videoEnabled,
     deviceId: initial.videoDeviceId,
   });
 
-  const live = useRef<{ audio?: LocalAudioTrack; video?: LocalVideoTrack }>({});
+  const live = useRef<{ audio?: MediaStreamTrack; video?: MediaStreamTrack }>({});
   const ids = useRef({ audio: initial.audioDeviceId, video: initial.videoDeviceId });
   const alive = useRef(true);
   const chain = useRef<Promise<void>>(Promise.resolve());
@@ -65,38 +61,39 @@ export function usePreviewMedia(initial: {
   const open = useCallback(async (wantAudio: boolean, wantVideo: boolean): Promise<void> => {
     if (!alive.current || (!wantAudio && !wantVideo)) return;
     try {
-      const tracks = await createLocalTracks({
+      const stream = await navigator.mediaDevices.getUserMedia({
         audio: wantAudio ? { deviceId: ids.current.audio || undefined } : false,
         video: wantVideo
-          ? { deviceId: ids.current.video || undefined, resolution: VideoPresets.h720.resolution }
+          ? { deviceId: ids.current.video || undefined, width: { ideal: 1280 }, height: { ideal: 720 } }
           : false,
       });
+      const tracks = stream.getTracks();
       if (!alive.current) {
         tracks.forEach((track) => track.stop());
         return;
       }
       for (const track of tracks) {
-        const deviceId = (await track.getDeviceId(false)) ?? "";
-        if (track.kind === Track.Kind.Audio) {
+        const deviceId = track.getSettings().deviceId ?? "";
+        if (track.kind === "audio") {
           live.current.audio?.stop();
-          live.current.audio = track as LocalAudioTrack;
+          live.current.audio = track;
           if (deviceId) ids.current.audio = deviceId;
           setAudio((slot) => ({
             ...slot,
             pending: false,
             problem: undefined,
-            track: track as LocalAudioTrack,
+            track,
             deviceId: deviceId || slot.deviceId,
           }));
         } else {
           live.current.video?.stop();
-          live.current.video = track as LocalVideoTrack;
+          live.current.video = track;
           if (deviceId) ids.current.video = deviceId;
           setVideo((slot) => ({
             ...slot,
             pending: false,
             problem: undefined,
-            track: track as LocalVideoTrack,
+            track,
             deviceId: deviceId || slot.deviceId,
           }));
         }
@@ -152,8 +149,22 @@ export function usePreviewMedia(initial: {
       const set = (kind === "audio" ? setAudio : setVideo) as typeof setAudio;
       set((slot) => ({ ...slot, deviceId }));
       enqueue(async () => {
+        // Only a device that is running is restarted; one that is off just remembers the choice.
+        if (!live.current[kind]) return;
         try {
-          await live.current[kind]?.setDeviceId(deviceId);
+          const stream = await navigator.mediaDevices.getUserMedia(
+            kind === "audio"
+              ? { audio: { deviceId } }
+              : { video: { deviceId, width: { ideal: 1280 }, height: { ideal: 720 } } },
+          );
+          const [track] = stream.getTracks();
+          if (!alive.current || !live.current[kind]) {
+            track.stop();
+            return;
+          }
+          live.current[kind]?.stop();
+          live.current[kind] = track;
+          set((slot) => ({ ...slot, track, problem: undefined }));
         } catch (error) {
           if (alive.current) set((slot) => ({ ...slot, problem: classify(error) }));
         }
@@ -180,10 +191,11 @@ export function useDeviceList(kind: MediaDeviceKind, refreshKey: unknown): Media
     if (!navigator.mediaDevices) return;
     let cancelled = false;
     const load = () =>
-      Room.getLocalDevices(kind, false)
+      navigator.mediaDevices
+        .enumerateDevices()
         .then((list) => {
           // Before permission is granted browsers return unlabeled stubs; hide those.
-          if (!cancelled) setDevices(list.filter((device) => device.deviceId && device.label));
+          if (!cancelled) setDevices(list.filter((device) => device.kind === kind && device.deviceId && device.label));
         })
         .catch(() => {});
     load();
@@ -194,4 +206,65 @@ export function useDeviceList(kind: MediaDeviceKind, refreshKey: unknown): Media
     };
   }, [kind, refreshKey]);
   return devices;
+}
+
+/** How loud a live microphone track is right now, 0 to 1. For the pre-join level meter. */
+export function useTrackVolume(track: MediaStreamTrack | undefined): number {
+  const [volume, setVolume] = useState(0);
+  useEffect(() => {
+    if (!track) return;
+    const context = new AudioContext();
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 32;
+    analyser.smoothingTimeConstant = 0;
+    analyser.minDecibels = -100;
+    analyser.maxDecibels = -80;
+    context.createMediaStreamSource(new MediaStream([track])).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    const interval = setInterval(() => {
+      analyser.getByteFrequencyData(data);
+      let sum = 0;
+      for (const value of data) sum += value * value;
+      setVolume(Math.sqrt(sum / data.length) / 255);
+    }, 1000 / 30);
+    return () => {
+      clearInterval(interval);
+      context.close().catch(() => {});
+    };
+  }, [track]);
+  return track ? volume : 0;
+}
+
+const CHOICES_KEY = "lk-user-choices"; // kept from the LiveKit-only days so nobody loses their name
+const DEFAULT_CHOICES: JoinChoices = {
+  username: "",
+  audioEnabled: true,
+  videoEnabled: true,
+  audioDeviceId: "default",
+  videoDeviceId: "default",
+};
+
+function loadChoices(): JoinChoices {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CHOICES_KEY) ?? "null");
+    return { ...DEFAULT_CHOICES, ...(saved && typeof saved === "object" ? saved : {}) };
+  } catch {
+    return DEFAULT_CHOICES;
+  }
+}
+
+/** Name, devices and on/off choices from the last visit, saved in this browser as they change. */
+export function useSavedChoices(): [JoinChoices, (patch: Partial<JoinChoices>) => void] {
+  const [choices, setChoices] = useState(loadChoices);
+  useEffect(() => {
+    try {
+      // Empty values are left out, so a cleared field falls back to its default next time.
+      const kept = Object.fromEntries(Object.entries(choices).filter(([, value]) => value !== ""));
+      localStorage.setItem(CHOICES_KEY, JSON.stringify(kept));
+    } catch {
+      // Private mode or a full disk: choices simply are not remembered.
+    }
+  }, [choices]);
+  const update = useCallback((patch: Partial<JoinChoices>) => setChoices((previous) => ({ ...previous, ...patch })), []);
+  return [choices, update];
 }

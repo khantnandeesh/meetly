@@ -15,6 +15,8 @@ const eslintConfig = defineConfig([
     // Cloudflare build output:
     ".open-next/**",
     ".wrangler/**",
+    // Other agents' checkouts (each with its own build output) are not this project's source.
+    ".claude/**",
   ]),
 ]);
 

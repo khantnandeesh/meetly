@@ -1,15 +1,14 @@
 "use client";
 
-import { useMediaDeviceSelect, useRoomContext, useTrackToggle } from "@livekit/components-react";
-import { Track } from "livekit-client";
 import {
+  Bell,
+  Check,
   ChevronUp,
   CircleAlert,
   Ellipsis,
   Hand,
   Keyboard,
   LayoutGrid,
-  Link2,
   LoaderCircle,
   MessageSquare,
   Mic,
@@ -23,11 +22,16 @@ import {
   Volume2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useCopied } from "@/lib/hooks";
+import { useActiveDevice, useCall, useLocalToggle } from "@/lib/rtc/react";
 import { useDeviceList } from "@/lib/usePreviewMedia";
+import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
+import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
 import { useUnread } from "./ChatStore";
 import { LayoutMenuItems } from "./LayoutMenu";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
+import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
 import { useToast } from "./ui/Toaster";
 
@@ -56,13 +60,14 @@ export function ControlBar({
   hands?: React.ReactNode;
   onToggleHand: () => void;
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
-  onCopyLink: () => void;
+  onCopyLink: () => Promise<boolean>;
   onShowShortcuts: () => void;
   settings: CallSettings;
   onSettings: (patch: Partial<CallSettings>) => void;
 }) {
-  const room = useRoomContext();
+  const call = useCall();
   const toast = useToast();
+  const copyState = useCopied(onCopyLink);
 
   const deviceError = (what: string) => () =>
     toast.push({
@@ -72,12 +77,10 @@ export function ControlBar({
       icon: <CircleAlert className="size-5" />,
       duration: 7000,
     });
-  const mic = useTrackToggle({ source: Track.Source.Microphone, onDeviceError: deviceError("microphone") });
-  const cam = useTrackToggle({ source: Track.Source.Camera, onDeviceError: deviceError("camera") });
-  const share = useTrackToggle({
-    source: Track.Source.ScreenShare,
-    captureOptions: { audio: true, selfBrowserSurface: "include" },
-  });
+  const mic = useLocalToggle("microphone", deviceError("microphone"));
+  const cam = useLocalToggle("camera", deviceError("camera"));
+  // Dismissing the browser's screen picker is not an error worth a message.
+  const share = useLocalToggle("screen_share");
 
   const micLabel = mic.enabled ? "Mute microphone" : "Unmute microphone";
   const camLabel = cam.enabled ? "Turn off camera" : "Turn on camera";
@@ -85,7 +88,12 @@ export function ControlBar({
 
   const micButton = (
     <Tip label={micLabel} shortcut={phone ? undefined : "M"}>
-      <button className="ctrl" data-ctl={mic.enabled ? "on" : "off"} aria-label={micLabel} onClick={() => mic.toggle()}>
+      <button className="ctrl" data-ctl={mic.enabled ? "on" : "off"} aria-label={micLabel}
+        onClick={() => {
+          noteOwnMicToggle();
+          mic.toggle();
+        }}
+      >
         {mic.enabled ? <Mic className="size-5" /> : <MicOff className="size-5" />}
       </button>
     </Tip>
@@ -113,7 +121,7 @@ export function ControlBar({
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
     <Tip label="Leave call">
-      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => room.disconnect()}>
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => call.disconnect().catch(() => {})}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
@@ -134,9 +142,18 @@ export function ControlBar({
           collisionPadding={12}
           className={phone ? "menu menu-tall w-80" : "menu"}
         >
-          <Dropdown.Item className="menu-item" onSelect={onCopyLink}>
-            <Link2 className="size-4 text-muted" aria-hidden="true" />
-            Copy meeting link
+          <Dropdown.Item
+            className="menu-item"
+            onSelect={(event) => {
+              // Stay open for a moment so the confirmation is seen where the tap landed.
+              event.preventDefault();
+              copyState.copy();
+            }}
+          >
+            <span className="text-muted">
+              <CopyIcon copied={copyState.copied} />
+            </span>
+            <span role="status">{copyState.copied ? "Link copied" : "Copy meeting link"}</span>
           </Dropdown.Item>
           {phone ? (
             <>
@@ -179,12 +196,18 @@ export function ControlBar({
         <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" aria-hidden="true" />
         <Tip label="Copy meeting link">
           <button
-            onClick={onCopyLink}
+            onClick={copyState.copy}
             aria-label={`Copy meeting link, code ${code}`}
             className="-ml-2 inline-flex h-10 min-w-0 cursor-pointer items-center gap-2 rounded-xl px-2 font-mono text-[0.8125rem] transition-colors hover:bg-surface-2 hover:text-text"
           >
-            <span className="truncate">{code}</span>
-            <Link2 className="size-4 shrink-0" aria-hidden="true" />
+            {/* Both labels share one cell, so the confirmation does not change the button's width. */}
+            <span className="grid min-w-0">
+              <span className={`col-start-1 row-start-1 truncate ${copyState.copied ? "invisible" : ""}`}>{code}</span>
+              <span className={`col-start-1 row-start-1 text-text ${copyState.copied ? "" : "invisible"}`} role="status">
+                {copyState.copied ? "Copied" : ""}
+              </span>
+            </span>
+            <CopyIcon copied={copyState.copied} />
           </button>
         </Tip>
       </div>
@@ -268,8 +291,8 @@ function ChatButton({
       >
         <MessageSquare className="size-5" />
         {unread > 0 && (
+          // Pops in for the first unread message only; after that the number just changes.
           <span
-            key={unread}
             className="anim-pop absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
             aria-hidden="true"
           >
@@ -308,14 +331,70 @@ function DeviceMenu({ label, kinds, off }: { label: string; kinds: MediaDeviceKi
 
 /** Mounted only while a menu is open, so device lists are always fresh. */
 function DeviceGroups({ kinds }: { kinds: MediaDeviceKind[] }) {
-  return kinds.map((kind, index) => <DeviceGroup key={kind} kind={kind} separated={index > 0} />);
+  return (
+    <>
+      {kinds.map((kind, index) => (
+        <DeviceGroup key={kind} kind={kind} separated={index > 0} />
+      ))}
+      {kinds.includes("audiooutput") && <SoundGroup />}
+    </>
+  );
+}
+
+const SOUND_LEVELS: { value: SoundLevel; label: string; hint: string; preview: SoundName }[] = [
+  { value: "all", label: "All sounds", hint: "People joining, hands, chat, your mic", preview: "joined" },
+  { value: "important", label: "Important only", hint: "Connection, call ended, muted by host", preview: "connected" },
+  { value: "off", label: "Off", hint: "No interface sounds", preview: "micOff" },
+];
+
+/** How much the interface itself is heard. Choosing a level plays an example of it. */
+function SoundGroup() {
+  const [settings, update] = useSoundSettings();
+  return (
+    <>
+      <div className="menu-sep" />
+      <Dropdown.Label className="menu-label">
+        <Bell className="size-3.5" aria-hidden="true" />
+        Sounds
+      </Dropdown.Label>
+      <Dropdown.RadioGroup
+        value={settings.level}
+        onValueChange={(value) => {
+          const level = SOUND_LEVELS.find((entry) => entry.value === value);
+          if (!level) return;
+          update({ level: level.value });
+          // An example of what this level lets through; "Off" answers with silence.
+          if (level.value !== "off") sounds.play(level.preview, { preview: true });
+        }}
+      >
+        {SOUND_LEVELS.map((level) => (
+          <Dropdown.RadioItem
+            key={level.value}
+            value={level.value}
+            // Stay open: the choice is heard, and can be changed again straight away.
+            onSelect={(event) => event.preventDefault()}
+            className="menu-item pr-10"
+          >
+            <span className="min-w-0">
+              <span className="block font-medium">{level.label}</span>
+              <span className="block text-xs text-muted">{level.hint}</span>
+            </span>
+            <Dropdown.ItemIndicator className="absolute right-3 text-accent">
+              <Check className="size-4" aria-hidden="true" />
+            </Dropdown.ItemIndicator>
+          </Dropdown.RadioItem>
+        ))}
+      </Dropdown.RadioGroup>
+    </>
+  );
 }
 
 function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: boolean }) {
   const meta = DEVICE_META[kind];
   const toast = useToast();
   const devices = useDeviceList(kind, null);
-  const { activeDeviceId, setActiveMediaDevice } = useMediaDeviceSelect({ kind, requestPermissions: false });
+  const call = useCall();
+  const activeDeviceId = useActiveDevice(kind);
   // Browsers that can't route audio output simply list no speakers; skip the group.
   if (kind === "audiooutput" && devices.length === 0) return null;
   return (
@@ -328,7 +407,7 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
         activeId={activeDeviceId}
         emptyText={meta.empty}
         onSelect={(id) =>
-          setActiveMediaDevice(id).catch(() =>
+          call.setDevice(kind, id).catch(() =>
             toast.push({
               title: `Couldn't switch ${meta.label.toLowerCase()}`,
               tone: "danger",

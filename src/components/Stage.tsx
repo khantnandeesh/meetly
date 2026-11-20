@@ -1,30 +1,43 @@
 "use client";
 
-import { useRoomContext, type TrackReferenceOrPlaceholder } from "@livekit/components-react";
-import { Track } from "livekit-client";
 import { ChevronLeft, ChevronRight, MonitorUp } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
-import { DIST, DUR, EASE, arrive, ghostOf, glide, prefersReducedMotion, sameRect, type Rect } from "@/lib/motion";
+import {
+  DIST,
+  DUR,
+  EASE,
+  arrive,
+  ghostOf,
+  glide,
+  prefersReducedMotion,
+  sameRect,
+  type Rect,
+} from "@/lib/motion";
+import { useCall } from "@/lib/rtc/react";
+import type { RtcTile } from "@/lib/rtc/types";
+import { useVideoDemand } from "@/lib/videoDemand";
 import { Tile } from "./Tile";
 import { avatarColor, initials } from "./ui/Avatar";
 import { Tip } from "./ui/Tip";
 
 const MAX_RATIO = 16 / 9;
 const STRIP_GAP = 12;
-/** Past this many tiles moving at once, gliding them is noise (and work): they snap instead. */
+/** With more tiles than this on screen, gliding them is noise (and work): they snap instead. */
 const MAX_GLIDING = 24;
-/** New or leaving tiles get their own entrance/exit only in ones and twos; a crowd just fades. */
-const MAX_INDIVIDUAL = 4;
+/** Up to this many tiles on screen, arrivals grow in and departures fade out one by one; above it, arrivals just fade. */
+const MAX_INDIVIDUAL = 8;
 /** Height of the gallery page bar (h-11) and the gap above it (gap-2), in px. */
 const PAGE_BAR = 44;
 const PAGE_BAR_GAP = 8;
 /** How long a hand-over waits for the incoming video's first frame before fading in regardless. */
 const READY_WAIT_MS = 400;
+/** A tile that would have to shrink by more than this factor cross-fades instead of gliding. */
+const SHRINK_LIMIT = 2.2;
 /** Phones, screen share on top: how many cells (people, plus "+N more") sit underneath it. */
 const STACK_LIMIT = 6;
 
-export function refKey(ref: TrackReferenceOrPlaceholder): string {
+export function refKey(ref: RtcTile): string {
   return `${ref.participant.identity}:${ref.source}`;
 }
 
@@ -51,7 +64,7 @@ export function useBox<T extends HTMLElement>() {
 
 type Slot = {
   key: string;
-  ref: TrackReferenceOrPlaceholder;
+  ref: RtcTile;
   rect: Rect;
   role: "main" | "strip" | "grid";
 };
@@ -90,8 +103,8 @@ function gridRects(count: number, w: number, h: number, gap: number, minRatio: n
 }
 
 /** Height that fits a landscape screen share exactly at this width; 0 if it is not landscape. */
-function shareHeight(ref: TrackReferenceOrPlaceholder, width: number): number {
-  const size = ref.publication?.dimensions;
+function shareHeight(ref: RtcTile, width: number): number {
+  const size = ref.track?.dimensions;
   const ratio = size && size.width > 0 && size.height > 0 ? size.width / size.height : 16 / 9;
   return ratio > 1.2 ? Math.round(width / Math.min(ratio, 2.4)) : 0;
 }
@@ -99,7 +112,7 @@ function shareHeight(ref: TrackReferenceOrPlaceholder, width: number): number {
 type StageProps = {
   view: "tiled" | "sidebar" | "spotlight";
   /** Tiled: the tiles on the current page only. */
-  tiles: TrackReferenceOrPlaceholder[];
+  tiles: RtcTile[];
   /** Tiled: tiles across all pages. */
   total: number;
   /** Tiled: index of this page's first tile within the full list. */
@@ -108,11 +121,11 @@ type StageProps = {
   pageCount: number;
   onPage: (page: number) => void;
   /** Speaker-led views: the large tile and everyone else. */
-  main?: TrackReferenceOrPlaceholder;
-  others: TrackReferenceOrPlaceholder[];
+  main?: RtcTile;
+  others: RtcTile[];
   phone: boolean;
   pinned: boolean;
-  onTogglePin: (ref: TrackReferenceOrPlaceholder) => void;
+  onTogglePin: (ref: RtcTile) => void;
   onShowEveryone: () => void;
 };
 
@@ -123,8 +136,12 @@ type Snapshot = {
   pinned: boolean;
   box: { w: number; h: number };
   boxChangedAt: number;
+  /** Which whole-stage arrangement this was ("share" on a phone with a screen share, else "people"). */
+  swap: string;
   rects: Map<string, Rect>;
   elements: Map<string, HTMLElement>;
+  /** A speaker hand-over whose incoming picture is still awaited, and the still it shows meanwhile. */
+  pending?: { key: string; copy: HTMLElement };
 };
 
 /**
@@ -151,7 +168,7 @@ export function Stage({
   onTogglePin,
   onShowEveryone,
 }: StageProps) {
-  const room = useRoomContext();
+  const call = useCall();
   // The whole stage is measured, and the page bar's height taken off in arithmetic. Measuring the
   // tile area itself would mean a second layout pass every time the bar appears or disappears.
   const [outerRef, outer] = useBox<HTMLDivElement>();
@@ -167,14 +184,14 @@ export function Stage({
 
   /* -------------------------------------------------------------- placement */
   const slots: Slot[] = [];
-  let more: { rect: Rect; hidden: TrackReferenceOrPlaceholder[] } | null = null;
+  let more: { rect: Rect; hidden: RtcTile[] } | null = null;
   if (ready && focused && main) {
     const showStrip = view === "sidebar" && others.length > 0;
     // Strip tiles are 224×126 in a column on large screens, 104×96 in a row on phones.
     const cell = phone ? { w: 104, h: 96 } : { w: 224, h: 126 };
     // A landscape screen share on an upright phone would be a thin band in a tall black box.
     // It gets a box of its own shape instead, and the people take the room that frees up.
-    const shareH = phone && showStrip && main.source === Track.Source.ScreenShare ? shareHeight(main, box.w) : 0;
+    const shareH = phone && showStrip && main.source === "screen_share" ? shareHeight(main, box.w) : 0;
     const stacked = shareH > 0 && box.h - shareH - STRIP_GAP >= cell.h * 2;
     const mainRect: Rect = !showStrip
       ? { x: 0, y: 0, w: box.w, h: box.h }
@@ -240,9 +257,14 @@ export function Stage({
       if (rects[index]) slots.push({ key: refKey(ref), ref, rect: rects[index], role: "grid" });
     });
   }
+  // Only what has a place on the stage needs to be streamed (see src/lib/videoDemand.ts).
+  useVideoDemand(
+    call,
+    slots.map((slot) => slot.ref),
+  );
   const mainSlot = slots[0]?.role === "main" ? slots[0] : null;
   const sharingOwnScreen =
-    !!mainSlot && mainSlot.ref.participant.isLocal && mainSlot.ref.source === Track.Source.ScreenShare;
+    !!mainSlot && mainSlot.ref.participant.isLocal && mainSlot.ref.source === "screen_share";
   const layout = focused ? (view === "sidebar" ? "focus" : "spotlight") : "grid";
 
   /* ------------------------------------------------------------------ motion */
@@ -251,14 +273,27 @@ export function Stage({
   const signature = slots.map((s) => `${s.key}@${s.rect.x},${s.rect.y},${s.rect.w},${s.rect.h}`).join("|");
 
   useLayoutEffect(() => {
-    if (layerRef.current)
-      animateStage(layerRef.current, last, flights, {
-        slots,
-        layout,
-        page,
-        pinned,
-        box,
-      });
+    const layer = layerRef.current;
+    if (!layer) return;
+    const state = {
+      slots,
+      layout,
+      page,
+      pinned,
+      box,
+      // On a phone a screen share rearranges everything at once; that swap is a cross-fade.
+      swap: phone && !!mainSlot && mainSlot.ref.source === "screen_share" ? "share" : "people",
+      phone,
+    };
+    // Moving the tiles and starting their animations waits for the end of this commit (a
+    // microtask: still before the browser paints). Other components measure the page while
+    // React commits (menus and tooltips read computed styles, video attaches read sizes); done
+    // in the middle of that, every one of those reads had to re-resolve the whole stage.
+    queueMicrotask(() => {
+      if (!layer.isConnected) return;
+      placeTiles(layer, state.slots);
+      animateStage(layer, last, flights, state);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `signature` stands for the slots
   }, [signature, layout, page, pinned, box]);
 
@@ -378,7 +413,7 @@ export function Stage({
               You&apos;re sharing your screen
               <button
                 className="h-9 cursor-pointer rounded-xl bg-danger px-3 font-semibold text-white transition-colors hover:bg-(--danger-hover)"
-                onClick={() => room.localParticipant.setScreenShareEnabled(false).catch(() => {})}
+                onClick={() => call.setEnabled("screen_share", false).catch(() => {})}
               >
                 Stop
               </button>
@@ -388,7 +423,7 @@ export function Stage({
       </div>
 
       {paged && (
-        <nav className="flex h-11 shrink-0 items-center justify-center gap-1 text-sm text-muted" aria-label="Gallery pages">
+        <nav className="anim-fade flex h-11 shrink-0 items-center justify-center gap-1 text-sm text-muted" aria-label="Gallery pages">
           <Tip label="Previous page" shortcut="←">
             <button
               className="icon-btn disabled:pointer-events-none disabled:opacity-35 pointer-coarse:size-11"
@@ -424,6 +459,34 @@ export function Stage({
   );
 }
 
+let lastWindowResize = -Infinity;
+let watchingWindow = false;
+/** When the browser window last changed size. */
+function windowResizedAt(): number {
+  if (!watchingWindow && typeof window !== "undefined") {
+    watchingWindow = true;
+    window.addEventListener("resize", () => (lastWindowResize = performance.now()), { passive: true });
+  }
+  return lastWindowResize;
+}
+
+/**
+ * Writes each tile's place onto its element. Tiles are memoised and deliberately not re-rendered
+ * when only their rect changes, so this is what moves them. React still writes the same values
+ * whenever a tile does render, so the two never disagree.
+ */
+function placeTiles(layer: HTMLElement, slots: Slot[]) {
+  const rects = new Map(slots.map((slot) => [slot.key, slot.rect]));
+  layer.querySelectorAll<HTMLElement>(":scope > [data-key]").forEach((el) => {
+    const rect = rects.get(el.dataset.key!);
+    if (!rect) return;
+    const transform = `translate(${rect.x}px, ${rect.y}px)`;
+    if (el.style.transform !== transform) el.style.transform = transform;
+    if (el.style.width !== `${rect.w}px`) el.style.width = `${rect.w}px`;
+    if (el.style.height !== `${rect.h}px`) el.style.height = `${rect.h}px`;
+  });
+}
+
 /**
  * Runs after every change to the stage, before the browser paints it: works out what moved,
  * arrived or left since the last commit and starts the matching animations.
@@ -438,12 +501,16 @@ function animateStage(
     page,
     pinned,
     box,
+    swap,
+    phone,
   }: {
     slots: Slot[];
     layout: string;
     page: number;
     pinned: boolean;
     box: { w: number; h: number };
+    swap: string;
+    phone: boolean;
   },
 ) {
   const mainSlot = slots[0]?.role === "main" ? slots[0] : null;
@@ -461,6 +528,7 @@ function animateStage(
     pinned,
     box,
     boxChangedAt: boxChanged ? now : (prev?.boxChangedAt ?? 0),
+    swap,
     rects,
     elements,
   };
@@ -478,15 +546,19 @@ function animateStage(
   const reduced = prefersReducedMotion();
   const track = (el: HTMLElement, animation: Animation) => {
     flights.set(el, animation);
+    // A cancel event arrives late, after the next glide may have taken over this tile: only the
+    // tile's current animation may clear its state.
     animation.onfinish = animation.oncancel = () => {
-      if (flights.get(el) === animation) flights.delete(el);
+      if (flights.get(el) !== animation) return;
+      flights.delete(el);
       el.style.zIndex = "";
     };
   };
   const land = (el: HTMLElement) => flights.get(el)?.cancel();
 
   // A window being dragged fires a resize every frame: follow it directly, as native apps do.
-  if (boxChanged && now - prev.boxChangedAt < 150) {
+  // (Only the window: a panel opening and the page bar appearing a moment apart both glide.)
+  if (boxChanged && now - windowResizedAt() < 150 && now - prev.boxChangedAt < 150) {
     elements.forEach(land);
     return;
   }
@@ -505,6 +577,27 @@ function animateStage(
     return;
   }
 
+  // A phone going into or out of the screen-share arrangement: nearly every tile would have to
+  // cross the others to get to its new place. The two arrangements cross-fade instead.
+  if (phone && prev.swap !== swap) {
+    elements.forEach(land);
+    const ms = reduced ? 120 : DUR.base;
+    for (const [key, el] of prev.elements) {
+      const rect = prev.rects.get(key);
+      if (!rect) continue;
+      const copy = ghostOf(el, rect);
+      layer.prepend(copy);
+      const out = copy.animate([{ opacity: 1 }, { opacity: 0 }], { duration: ms, easing: "ease-in", fill: "forwards" });
+      out.onfinish = out.oncancel = () => copy.remove();
+      setTimeout(() => copy.remove(), 1000);
+    }
+    for (const slot of slots) {
+      const el = elements.get(slot.key);
+      if (el) track(el, arrive(el, slot.rect, false, ms));
+    }
+    return;
+  }
+
   const sameView = prev.view === layout;
   // The stage changed hands by itself (somebody else started talking): cross-fade, don't zoom.
   const handover =
@@ -516,34 +609,35 @@ function animateStage(
     return before && !sameRect(before, s.rect);
   });
 
-  // 1. Read: where is everything right now (only tiles already mid-flight need measuring).
-  const origin = layer.getBoundingClientRect();
+  // 1. Read: where is everything right now. Only tiles already mid-flight need measuring, and
+  // measuring forces the browser to lay out the new arrangement on the spot, so it is skipped
+  // entirely when nothing is in flight (the usual case).
   const starts = new Map<string, Rect>();
+  let origin: DOMRect | null = null;
   for (const slot of moving) {
     const el = elements.get(slot.key);
     const before = prev.rects.get(slot.key)!;
     if (el && flights.has(el)) {
+      origin ??= layer.getBoundingClientRect();
       const r = el.getBoundingClientRect();
-      starts.set(slot.key, {
-        x: r.left - origin.left,
-        y: r.top - origin.top,
-        w: r.width,
-        h: r.height,
-      });
+      starts.set(slot.key, { x: r.left - origin.left, y: r.top - origin.top, w: r.width, h: r.height });
     } else {
       starts.set(slot.key, before);
     }
   }
 
   // 2. Write.
-  const ghost = (key: string): HTMLElement | undefined => {
+  const ghost = (key: string, maxMs = 1000): HTMLElement | undefined => {
     const el = prev.elements.get(key);
     const rect = prev.rects.get(key);
     if (!el || !rect) return undefined;
     const copy = ghostOf(el, rect);
     layer.prepend(copy);
     // Whatever happens to the animation that owns it, a ghost never outlives a second.
-    setTimeout(() => copy.remove(), 1000);
+    setTimeout(() => {
+      // A still handed on to a later hand-over is that one's to remove.
+      if (lastRef.current?.pending?.copy !== copy) copy.remove();
+    }, maxMs);
     return copy;
   };
   const fadeAway = (copy: HTMLElement | undefined) => {
@@ -560,21 +654,31 @@ function animateStage(
   if (handover && prev.mainKey) {
     // The outgoing speaker's last frame stays underneath until the incoming picture is ready,
     // then the new one fades in over it: one cross-fade, never a flash of avatar in between.
-    const copy = ghost(prev.mainKey);
+    // If the previous hand-over is still waiting (its speaker never became visible), the still
+    // already on screen stays for this one: two hand-overs in a row must not flash a third face.
+    const waiting = prev.pending && prev.pending.key === prev.mainKey && prev.pending.copy.isConnected;
+    const copy = waiting ? prev.pending!.copy : ghost(prev.mainKey, READY_WAIT_MS + fadeMs + 300);
+    if (copy) next.pending = { key: next.mainKey!, copy };
+    const mine = next.pending;
+    const drop = () => {
+      // Only the hand-over that still owns the still may take it away.
+      if (!copy || (lastRef.current?.pending && lastRef.current.pending !== mine && lastRef.current.pending.copy === copy)) return;
+      copy.remove();
+    };
     const incoming = elements.get(next.mainKey!);
     if (incoming) {
       land(incoming);
       const hold = incoming.animate([{ opacity: 0 }, { opacity: 0 }], { duration: READY_WAIT_MS + 100 });
       track(incoming, hold);
       whenPictureReady(incoming, READY_WAIT_MS, () => {
-        if (flights.get(incoming) !== hold) return copy?.remove();
+        if (flights.get(incoming) !== hold) return drop();
         hold.cancel();
         const fade = arrive(incoming, mainSlot!.rect, false, fadeMs);
         track(incoming, fade);
-        fade.finished.then(() => copy?.remove()).catch(() => copy?.remove());
+        fade.finished.then(drop).catch(drop);
       });
     } else {
-      copy?.remove();
+      drop();
     }
     const outgoing = elements.get(prev.mainKey);
     if (outgoing) {
@@ -584,7 +688,7 @@ function animateStage(
   }
 
   const glideMs = sameView ? DUR.move : DUR.slow;
-  const gliding = reduced || moving.length > MAX_GLIDING ? [] : moving;
+  const gliding = reduced || slots.length > MAX_GLIDING ? [] : moving;
   for (const slot of moving) {
     const el = elements.get(slot.key);
     if (!el) continue;
@@ -593,17 +697,32 @@ function animateStage(
     if (!gliding.includes(slot)) continue;
     const from = starts.get(slot.key)!;
     if (from.w <= 0 || from.h <= 0 || slot.rect.w <= 0 || slot.rect.h <= 0) continue;
+    if (Math.max(from.w / slot.rect.w, from.h / slot.rect.h) > SHRINK_LIMIT) {
+      // A tile shrinking this much (the main tile going back to the filmstrip) would start out
+      // hugely scaled up, corners and all. It dissolves where it was and appears where it is going.
+      fadeAway(ghost(slot.key));
+      track(el, arrive(el, slot.rect, true, fadeMs));
+      continue;
+    }
     // Tiles that shrink travel above tiles that grow, so nothing is hidden on the way.
     if (from.w * from.h > slot.rect.w * slot.rect.h) el.style.zIndex = "2";
     track(el, glide(el, from, slot.rect, glideMs));
   }
 
   for (const slot of arriving) {
+    // Somebody who left and is already back must not be on screen twice.
+    layer.querySelectorAll<HTMLElement>(":scope > .tile-ghost").forEach((copy) => {
+      if (copy.dataset.ghostOf === slot.key) copy.remove();
+    });
     const el = elements.get(slot.key);
     if (!el || (handover && slot.key === next.mainKey)) continue;
-    track(el, arrive(el, slot.rect, !reduced && arriving.length <= MAX_INDIVIDUAL, fadeMs));
+    // In a small call a newcomer grows in, and waits for the neighbours to make room first:
+    // they glide, and it appears over the last third of their move instead of on top of them.
+    const individual = !reduced && slots.length <= MAX_INDIVIDUAL && arriving.length <= 2;
+    const wait = individual && sameView && gliding.length > 0 ? Math.round((glideMs * 2) / 3) : 0;
+    track(el, arrive(el, slot.rect, individual, fadeMs, wait));
   }
-  if (sameView && leaving.length <= MAX_INDIVIDUAL) {
+  if (sameView && leaving.length <= 4) {
     for (const key of leaving) if (!(handover && key === prev.mainKey)) fadeAway(ghost(key));
   }
 }
