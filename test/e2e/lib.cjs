@@ -90,7 +90,7 @@ async function press(person, url, name, button = /^(Join now|Ask to join)$/) {
 }
 
 // The call is drawn underneath the pre-join screen while joining or asking; "in the call" means uncovered.
-const leaveButton = (person) => person.page.locator("[data-in-call]:not([inert])").getByRole("button", { name: "Leave call" });
+const leaveButton = (person) => person.page.locator("[data-in-call]:not([inert])").getByRole("button", { name: "Leave meeting" });
 const inCall = (person, timeout = 20000) => leaveButton(person).waitFor({ timeout });
 const isInCall = async (person) => (await leaveButton(person).count()) === 1;
 
@@ -159,6 +159,7 @@ module.exports = {
   createMeeting,
   randomCode,
   press,
+  leaveButton,
   inCall,
   isInCall,
   join,

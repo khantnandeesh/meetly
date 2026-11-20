@@ -23,7 +23,7 @@ async function plan(person, { title, date, time, minutes }) {
     link: await form.locator("[data-meeting-link]").getAttribute("data-meeting-link"),
     google: await href("Google Calendar"),
     outlook: await href("Outlook.com"),
-    work: await href("Outlook (work or school)"),
+    work: await href("Microsoft 365"),
   };
 }
 
@@ -104,8 +104,8 @@ module.exports = async function schedule(browser) {
   /* --------------------------------------------------------- the home page */
   await openMenu(ada);
   H.ok(
-    "New meeting's arrow offers Start now, Get a link for later and Schedule…",
-    (await ada.page.getByRole("menuitem").allInnerTexts()).map((text) => text.trim()).join("|") === "Start now|Get a link for later|Schedule…",
+    "New meeting's arrow offers Get a link for later and Schedule… (the button itself starts now)",
+    (await ada.page.getByRole("menuitem").allInnerTexts()).map((text) => text.trim()).join("|") === "Get a link for later|Schedule…",
     (await ada.page.getByRole("menuitem").allInnerTexts()).join("|"),
   );
   await H.shot(ada, "schedule-menu-desktop");
@@ -121,7 +121,7 @@ module.exports = async function schedule(browser) {
   H.ok("…and Copy link confirms in place", await H.until(async () => (await dialog(ada).locator("[data-meeting-link]").innerText()).includes("Copied"), 3000));
   H.ok(
     "the calendar form is one step away",
-    (await dialog(ada).getByLabel("Date").count()) === 0 && (await dialog(ada).getByRole("button", { name: "Add it to a calendar…" }).count()) === 1,
+    (await dialog(ada).getByLabel("Date").count()) === 0 && (await dialog(ada).getByRole("button", { name: "Add to calendar…" }).count()) === 1,
   );
   await ada.page.keyboard.press("Escape");
   await dialog(ada).waitFor({ state: "detached" });
@@ -131,7 +131,7 @@ module.exports = async function schedule(browser) {
   await ada.page.getByLabel("Your name").waitFor();
   H.ok(
     "the browser that made the link is the meeting's host",
-    await H.until(async () => (await ada.page.getByText("You're the host of this meeting").count()) === 1, 8000),
+    await H.until(async () => (await ada.page.getByText("You're the host when you join from this browser").count()) === 1, 8000),
   );
 
   /* ------------------------------------------------------------- Schedule… */
@@ -176,7 +176,7 @@ module.exports = async function schedule(browser) {
 
   for (const [name, href, host] of [
     ["Outlook.com", out.outlook, "outlook.live.com"],
-    ["Outlook (work or school)", out.work, "outlook.office.com"],
+    ["Microsoft 365", out.work, "outlook.office.com"],
   ]) {
     const url = new URL(href);
     H.ok(
@@ -237,7 +237,7 @@ module.exports = async function schedule(browser) {
   await dialog(ada).getByLabel("Date").fill("2020-01-01");
   const alert = dialog(ada).getByRole("alert");
   await alert.waitFor({ timeout: 3000 }).catch(() => {});
-  H.ok("a past date is refused inline", (await alert.innerText().catch(() => "")).includes("already passed"));
+  H.ok("a past date is refused inline", (await alert.innerText().catch(() => "")).includes("has passed"));
   H.ok(
     "…and nothing can be added to a calendar until it is fixed",
     (await dialog(ada).locator('a[aria-disabled="true"]').count()) === 3 &&
@@ -258,19 +258,48 @@ module.exports = async function schedule(browser) {
   await checkZone(browser, { timeZone: "Europe/London", date: "2027-10-31", time: "00:30", minutes: 120, startUtc: "20271030T233000Z", endUtc: "20271031T013000Z", note: "clocks go back during it" });
   await checkZone(browser, { timeZone: "Europe/London", date: "2027-10-31", time: "09:00", minutes: 60, startUtc: "20271031T090000Z", endUtc: "20271031T100000Z", note: "first morning of winter time" });
 
-  /* ------------------------------------------------------------ in the call */
+  /* ------------------------------------------------- in the call, and after it */
+  // While the meeting runs, the people a calendar entry would be sent to are in it: More has no
+  // calendar item. The host is offered a follow-up on the screen after leaving, on the same link.
   const url = await H.createMeeting(ada);
   await H.join(ada, url, "Ada Lovelace");
   await ada.page.getByRole("button", { name: "More options" }).click();
-  await ada.page.getByRole("menuitem", { name: "Add to calendar…" }).click();
+  await ada.page.getByRole("menu").waitFor();
+  H.ok("in a call, More has no calendar item and no second copy of the link", (await ada.page.getByRole("menuitem", { name: /calendar|Copy meeting link/i }).count()) === 0);
+  await ada.page.keyboard.press("Escape");
+  await H.leaveButton(ada).click();
+  await ada.page.getByText("You left the meeting").waitFor();
+  await ada.page.getByRole("button", { name: "Schedule a follow-up" }).click();
   await dialog(ada).waitFor();
   H.ok(
-    "in a call, More has Add to calendar…, for this meeting's link",
-    (await dialog(ada).locator("[data-meeting-link]").getAttribute("data-meeting-link")) === url && (await dialog(ada).getByLabel("Date").count()) === 1,
+    "after the meeting, the host can schedule a follow-up on the same link",
+    (await dialog(ada).getByRole("heading", { name: "Schedule a follow-up" }).count()) === 1 &&
+      (await dialog(ada).locator("[data-meeting-link]").getAttribute("data-meeting-link")) === url &&
+      (await dialog(ada).getByLabel("Date").count()) === 1,
   );
-  await H.shot(ada, "schedule-in-call-desktop");
+  const weekOn = await ada.page.evaluate(() => {
+    const d = new Date(Date.now() + 5 * 60_000);
+    d.setMinutes(Math.ceil(d.getMinutes() / 30) * 30, 0, 0);
+    d.setDate(d.getDate() + 7);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  });
+  H.ok("a follow-up starts a week on", (await dialog(ada).getByLabel("Date").inputValue()) === weekOn, `${await dialog(ada).getByLabel("Date").inputValue()} vs ${weekOn}`);
+  await H.shot(ada, "schedule-follow-up-desktop");
   await ada.page.keyboard.press("Escape");
   await ada.ctx.close();
+  // A guest is not offered it: the link, and the role of sending it, are the host's.
+  {
+    const host = await H.client(browser);
+    const guest = await H.client(browser);
+    const meeting = await H.createMeeting(host);
+    await H.join(host, meeting, "Hal Host");
+    await H.join(guest, meeting, "Gus Guest");
+    await H.leaveButton(guest).click();
+    await guest.page.getByText("You left the meeting").waitFor();
+    H.ok("a guest's leave screen does not offer a follow-up", (await guest.page.getByRole("button", { name: "Schedule a follow-up" }).count()) === 0);
+    await host.ctx.close();
+    await guest.ctx.close();
+  }
 
   /* ------------------------------------------------------------------ phone */
   const mo = await H.client(browser, { viewport: H.PHONE, scale: 2, touch: true });
@@ -291,10 +320,10 @@ module.exports = async function schedule(browser) {
   await mo.page.keyboard.press("Escape");
   const phoneUrl = await H.createMeeting(mo);
   await H.join(mo, phoneUrl, "Mo Phone");
-  await mo.page.getByRole("button", { name: "More options" }).click();
-  await mo.page.getByRole("menuitem", { name: "Add to calendar…" }).click();
+  await H.leaveButton(mo).click();
+  await mo.page.getByRole("button", { name: "Schedule a follow-up" }).click();
   await dialog(mo).waitFor();
-  H.ok("phone: Add to calendar… is in More during a call, and fits", (await H.noOverflow(mo)) && (await dialog(mo).getByLabel("Date").count()) === 1);
-  await H.shot(mo, "schedule-in-call-phone");
+  H.ok("phone: the follow-up dialog fits", (await H.noOverflow(mo)) && (await dialog(mo).getByLabel("Date").count()) === 1);
+  await H.shot(mo, "schedule-follow-up-phone");
   await mo.ctx.close();
 };

@@ -40,6 +40,7 @@ import {
   tally,
   type StoredPoll,
   type SignedChat,
+  notice,
 } from "./shared";
 import {
   SAVER_FPS,
@@ -747,7 +748,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         throw error;
       }
       this.setFx({ background: "none", backgroundState: "off" });
-      throw new Error("Background blur couldn't start, so your camera was left off. Turn it on to be seen without blur.");
+      throw notice("Background blur couldn't start, so your camera was left off. Turn it on to be seen without blur.");
     }
   }
 
@@ -893,7 +894,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     } catch {
       this.blur = null;
       this.setFx({ background: "none", backgroundState: "off" });
-      throw new Error("Couldn't start background blur. Your camera is unchanged.");
+      throw new Error("Your camera is unchanged.");
     }
   }
 
@@ -985,7 +986,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   }
 
   async sendChat(text: string): Promise<void> {
-    if (this.native.state !== ConnectionState.Connected) throw new Error("Not connected.");
+    if (this.native.state !== ConnectionState.Connected) throw new Error("You're not connected right now. Try again in a moment.");
     this.sending++;
     this.emit("chat");
     try {
@@ -1212,12 +1213,12 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   async createPoll(poll: NewPoll): Promise<void> {
     const checked = checkNewPoll(poll);
     if (typeof checked === "string") throw new Error(checked);
-    if (this.native.state !== ConnectionState.Connected) throw new Error("Not connected.");
+    if (this.native.state !== ConnectionState.Connected) throw new Error("You're not connected right now. Try again in a moment.");
     await postPoll({ token: this.token, action: "create", ...checked });
   }
 
   async votePoll(pollId: string, option: number): Promise<void> {
-    if (this.native.state !== ConnectionState.Connected) throw new Error("Not connected.");
+    if (this.native.state !== ConnectionState.Connected) throw new Error("You're not connected right now. Try again in a moment.");
     const data = await postPoll({ token: this.token, action: "vote", pollId, option });
     this.myVotes.set(pollId, { option, key: typeof data.key === "string" ? data.key : this.native.localParticipant.identity });
     this.readPolls();

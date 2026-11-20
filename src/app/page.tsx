@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus, Video } from "lucide-react";
+import { CalendarPlus, ChevronDown, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
@@ -13,19 +13,19 @@ import { createMeeting } from "@/lib/rtc/provider";
 
 const FEATURES = [
   {
-    icon: Link2,
-    title: "One link, no sign-up",
-    body: "Every meeting is a short link. Anyone who has it joins straight from their browser.",
+    icon: CalendarPlus,
+    title: "Plan ahead",
+    body: "Get a link now for a meeting later, and add it to your calendar.",
   },
   {
     icon: MonitorUp,
     title: "Share your screen",
-    body: "Present a tab, a window or everything. The layout refocuses around what you share.",
+    body: "On a computer, share a tab, a window or your whole screen.",
   },
   {
     icon: MessagesSquare,
-    title: "Chat and raise hands",
-    body: "Side messages and a visible hand queue keep bigger calls orderly.",
+    title: "Chat and raise a hand",
+    body: "Message everyone in the meeting, or raise a hand when you want to speak.",
   },
 ];
 
@@ -57,10 +57,6 @@ export default function Home() {
     <div className="backdrop-glow flex flex-1 flex-col">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
         <Logo />
-        <span className="hidden items-center gap-2 text-sm text-muted sm:flex">
-          <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
-          Free, and nothing to install
-        </span>
       </header>
 
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col justify-center gap-16 px-5 pt-8 pb-16 sm:px-8 lg:gap-20">
@@ -71,13 +67,12 @@ export default function Home() {
                 Video meetings, <span className="text-accent">one link</span> away
               </h1>
               <p className="max-w-[34rem] text-lg leading-relaxed text-pretty text-muted">
-                Start a meeting and send the link. Nobody needs an account or an app — they open it and
-                they&apos;re in.
+                Start a meeting and send the link. People join from their browser, with no account and no app.
               </p>
             </div>
 
             <div className="flex max-w-[34rem] flex-col gap-3 sm:flex-row sm:items-start">
-              {/* One tap still starts a meeting now; the arrow holds the ways to have one later. */}
+              {/* One tap starts a meeting now; the arrow holds only the ways to have one later. */}
               <div className="flex shrink-0 gap-px">
                 <button className="btn btn-primary flex-1 rounded-r-md" onClick={start} disabled={starting || preparing}>
                   {starting ? (
@@ -101,10 +96,6 @@ export default function Home() {
                   </Dropdown.Trigger>
                   <Dropdown.Portal>
                     <Dropdown.Content align="start" sideOffset={8} collisionPadding={12} className="menu min-w-60">
-                      <Dropdown.Item className="menu-item" onSelect={start}>
-                        <Video className="size-4 text-muted" aria-hidden="true" />
-                        Start now
-                      </Dropdown.Item>
                       <Dropdown.Item className="menu-item" onSelect={() => void plan("link")}>
                         <Link2 className="size-4 text-muted" aria-hidden="true" />
                         Get a link for later
@@ -140,10 +131,6 @@ export default function Home() {
           ))}
         </ul>
       </main>
-
-      <footer className="mx-auto w-full max-w-6xl px-5 pb-8 text-sm text-faint sm:px-8">
-        Your camera and microphone stay off until you allow them.
-      </footer>
 
       <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />
     </div>

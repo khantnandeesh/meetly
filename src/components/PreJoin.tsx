@@ -186,7 +186,7 @@ export function PreJoin({
             {isHost && !waiting && (
               <p className="flex items-center gap-2 text-sm text-muted">
                 <Crown className="size-4 shrink-0 text-accent" aria-hidden="true" />
-                You&apos;re the host of this meeting, from this browser.
+                You&apos;re the host when you join from this browser.
               </p>
             )}
           </div>
@@ -196,7 +196,7 @@ export function PreJoin({
               <p role="status" className="flex items-center gap-3.5 rounded-2xl bg-surface-2 p-4 shadow-[inset_0_0_0_1px_var(--border)]">
                 <LoaderCircle className="anim-spin size-5 shrink-0 text-accent" aria-hidden="true" />
                 <span className="min-w-0">
-                  <span className="block font-medium">Someone in the call will let you in</span>
+                  <span className="block font-medium">Someone in the meeting will let you in</span>
                   <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
                 </span>
               </p>
@@ -218,7 +218,7 @@ export function PreJoin({
                   setName(e.target.value);
                   setNameError(false);
                 }}
-                placeholder="Shown to everyone in the call"
+                placeholder="Shown to everyone in the meeting"
                 autoComplete="name"
                 maxLength={40}
                 aria-invalid={nameError ? true : undefined}
@@ -235,7 +235,7 @@ export function PreJoin({
             {locked && !error && (
               <p className="flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-3 text-sm text-muted">
                 <Lock className="mt-px size-4 shrink-0" aria-hidden="true" />
-                This meeting is locked. Nobody new can join until that changes.
+                This meeting is locked. Nobody new can join until the host unlocks it.
               </p>
             )}
 
@@ -266,7 +266,7 @@ export function PreJoin({
             {blocked
               ? "You can still join and listen. Allow access any time to be seen and heard."
               : `You'll join with your camera ${camOn ? "on" : "off"}${camOn && background !== "none" ? " (background blurred)" : ""} and microphone ${micOn ? "on" : "off"}.`}
-            {mustAsk && !waiting && " People ask to join this meeting, so somebody will have to let you in."}
+            {mustAsk && !waiting && " Someone in the meeting has to let you in."}
           </p>
         </section>
       </main>
@@ -397,7 +397,7 @@ function Preview({
             <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
             <span>{audioIssue.title}</span>
             <button type="button" className="cursor-pointer rounded font-semibold text-text underline underline-offset-2" onClick={onRetry}>
-              Retry
+              Try again
             </button>
           </span>
         )}

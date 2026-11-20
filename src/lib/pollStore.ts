@@ -69,7 +69,7 @@ export function castStoredVote(
       return { status: 409, error: "You've already voted in this poll." };
     }
   }
-  if (Object.keys(poll.v).length >= MAX_VOTERS) return { status: 409, error: "This poll has all the votes it can take." };
+  if (Object.keys(poll.v).length >= MAX_VOTERS) return { status: 409, error: "This poll can't take any more votes." };
   const voted: StoredPoll = { ...poll, v: { ...poll.v, [key]: option } };
   return { status: 200, polls: polls.map((entry) => (entry === poll ? voted : entry)), key };
 }

@@ -14,6 +14,7 @@ import {
   isReaction,
   postHost,
   type HostApi,
+  notice,
 } from "./shared";
 import { POLL_LIMITS } from "./types";
 import type {
@@ -444,7 +445,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         // cannot start, the camera goes off rather than out as it is.
         await this.queued(() => this.syncBackground()).catch(async () => {
           await Promise.resolve(meeting.self.disableVideo()).catch(() => {});
-          this.fail(new Error("Background blur couldn't start, so your camera was left off. Turn it on to be seen without blur."));
+          this.fail(notice("Background blur couldn't start, so your camera was left off. Turn it on to be seen without blur."));
         });
         if (!current()) return void (await meeting.leave().catch(() => {}));
       }
@@ -725,7 +726,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    */
   async moderate(action: HostAction): Promise<void> {
     const meeting = this.meeting;
-    if (!meeting || !this.joined) throw new Error("Not connected.");
+    if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     // Sent first: afterwards there is nobody left to tell.
     if (action.action === "end") await this.tell(ENDING_MESSAGE);
     await this.api({ session: this.grant.session, ...action });
@@ -1016,14 +1017,14 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   async setEnabled(source: LocalSource, enabled: boolean): Promise<void> {
     const me = this.meeting?.self;
-    if (!me || !this.joined) throw new Error("Not connected.");
+    if (!me || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     if (source === "microphone") await (enabled ? me.enableAudio() : me.disableAudio());
     else if (source === "camera") await (enabled ? me.enableVideo() : me.disableVideo());
     else await (enabled ? me.enableScreenShare() : me.disableScreenShare());
     // The SDK reports a refused permission as an event, not a rejection: check what happened.
     const now = this.readMedia();
     const actual = source === "microphone" ? now.microphone : source === "camera" ? now.camera : now.screenShare;
-    if (actual !== enabled) throw new Error(`Could not ${enabled ? "start" : "stop"} your ${source.replace("_", " ")}.`);
+    if (actual !== enabled) throw new Error(`Couldn't ${enabled ? "start" : "stop"} ${source === "screen_share" ? "sharing your screen" : `your ${source}`}.`);
   }
 
   activeDevice(kind: DeviceKind): string | undefined {
@@ -1037,7 +1038,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   async setDevice(kind: DeviceKind, deviceId: string): Promise<void> {
     const me = this.meeting?.self;
-    if (!me) throw new Error("Not connected.");
+    if (!me) throw new Error("You're not connected right now. Try again in a moment.");
     if (kind === "audiooutput") {
       // Sound comes out of our own elements, so they are what has to be re-routed.
       this.outputDevice = deviceId;
@@ -1046,7 +1047,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       return;
     }
     const device = await me.getDeviceById(deviceId, SDK_KIND[kind]);
-    if (!device) throw new Error("That device is no longer available.");
+    if (!device) throw new Error("That device is no longer available. Choose another one.");
     await me.setDevice(device);
     this.emit("device", kind);
   }
@@ -1130,7 +1131,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   async setBackground(mode: BackgroundMode): Promise<void> {
     if (mode !== "none" && this.fx.backgroundUnavailable) throw new Error(this.fx.backgroundUnavailable);
-    if (!this.meeting) throw new Error("Not connected.");
+    if (!this.meeting) throw new Error("You're not connected right now. Try again in a moment.");
     this.setFx({ background: mode });
     await this.queued(() => this.syncBackground());
   }
@@ -1173,7 +1174,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       this.setFx({ backgroundState: "on" });
     } catch {
       this.setFx({ background: "none", backgroundState: "off" });
-      throw new Error("Couldn't start background blur. Your camera is unchanged.");
+      throw new Error("Your camera is unchanged.");
     }
   }
 
@@ -1242,7 +1243,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    */
   async deleteChatMessage(id: string): Promise<void> {
     const meeting = this.meeting;
-    if (!meeting || !this.joined) throw new Error("Not connected.");
+    if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     const message = this.messages.find((entry) => entry.id === id);
     if (!message?.from?.isLocal || message.deleted) throw new Error("You can only delete your own messages.");
     await meeting.chat.deleteMessage(id);
@@ -1258,7 +1259,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   async sendChat(text: string): Promise<void> {
     const meeting = this.meeting;
-    if (!meeting || !this.joined) throw new Error("Not connected.");
+    if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     this.sending = true;
     this.emit("chat");
     try {
@@ -1271,7 +1272,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   private sendHand(raised: boolean, to?: string[]): Promise<void> {
     const meeting = this.meeting;
-    if (!meeting || !this.joined) return Promise.reject(new Error("Not connected."));
+    if (!meeting || !this.joined) return Promise.reject(new Error("You're not connected right now. Try again in a moment."));
     const payload = { peerId: meeting.self.id, raised };
     return meeting.participants.broadcastMessage(HAND_MESSAGE, payload, to && { participantIds: to });
   }
@@ -1348,9 +1349,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const checked = checkNewPoll(poll);
     if (typeof checked === "string") throw new Error(checked);
     const meeting = this.meeting;
-    if (!meeting || !this.joined) throw new Error("Not connected.");
+    if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     // The SDK drops the request without a word if the preset does not allow it.
-    if (!meeting.self.permissions?.polls?.canCreate) throw new Error("Only the host can start a poll.");
+    if (!meeting.self.permissions?.polls?.canCreate) throw new Error("Only the host and co-hosts can start a poll.");
     if (this.pollList.filter((existing) => existing.open).length >= POLL_LIMITS.open) {
       throw new Error(`There are already ${POLL_LIMITS.open} polls open. End one first.`);
     }
@@ -1364,13 +1365,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    */
   async votePoll(pollId: string, option: number): Promise<void> {
     const meeting = this.meeting;
-    if (!meeting || !this.joined) throw new Error("Not connected.");
+    if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     const poll = this.pollList.find((entry) => entry.id === pollId);
     if (!poll) throw new Error("That poll is no longer there.");
     if (!poll.open) throw new Error("That poll has ended.");
     if (poll.voted) throw new Error("You've already voted in this poll.");
     if (!Number.isInteger(option) || option < 0 || option >= poll.options.length) throw new Error("That isn't one of the options.");
-    if (!meeting.self.permissions?.polls?.canVote) throw new Error("You can't vote in this call's polls.");
+    if (!meeting.self.permissions?.polls?.canVote) throw new Error("You can't vote in this meeting's polls.");
     const counted = new Promise<boolean>((resolve) => {
       const seen = () => !!this.pollList.find((entry) => entry.id === pollId)?.voted;
       const stop = this.on("polls", () => {

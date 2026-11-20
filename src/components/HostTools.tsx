@@ -108,10 +108,12 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
     async (action: HostAction, done: { icon: React.ReactNode; title: string } | null, failed: string) => {
       try {
         await call.moderate(action);
-        if (done) toast.push(done);
+        if (done) toast.push({ ...done, priority: "you" });
         return true;
       } catch (error) {
         toast.push({
+          // One at a time: "Admit all" that fails for fifty people is one notification, not fifty.
+          tag: "host-error",
           tone: "danger",
           icon: <CircleAlert className="size-5" />,
           title: failed,
@@ -137,13 +139,14 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       mute: (p) =>
         void run(
           { action: "mute", identity: p.identity },
-          { icon: <MicOff className="size-5" />, title: `You muted ${named(p)}` },
+          // Their microphone icon changing, on the row you pressed, is the confirmation.
+          null,
           `Couldn't mute ${named(p)}`,
         ),
       stopCamera: (p) =>
         void run(
           { action: "stopCamera", identity: p.identity },
-          { icon: <VideoOff className="size-5" />, title: `You turned off ${named(p)}'s camera` },
+          null,
           `Couldn't turn off ${named(p)}'s camera`,
         ),
       // The hand going down in front of you is the confirmation.
@@ -155,7 +158,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
             icon: on ? <ShieldCheck className="size-5" /> : <ShieldMinus className="size-5" />,
             title: on ? `${named(p)} is now a co-host` : `${named(p)} is no longer a co-host`,
           },
-          on ? `Couldn't make ${named(p)} a co-host` : `Couldn't change ${named(p)}'s role`,
+          on ? `Couldn't make ${named(p)} a co-host` : `Couldn't remove ${named(p)} as co-host`,
         ),
       askRemove: (participant, from) => {
         lastAsked.current = `${participant.identity}:${from ?? "row"}`;
@@ -164,13 +167,13 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       },
       muteAll: () =>
         void run({ action: "muteAll" }, { icon: <MicOff className="size-5" />, title: "You muted everyone" }, "Couldn't mute everyone"),
-      lowerAllHands: () => void run({ action: "lowerAllHands" }, null, "Couldn't lower the hands"),
+      lowerAllHands: () => void run({ action: "lowerAllHands" }, null, "Couldn't lower everyone's hands"),
       // The control showing the new choice is the confirmation.
       setAccess: (next) => void run({ action: "access", access: next }, null, "Couldn't change who can join"),
       // Their tile arriving, or their row going, is the confirmation.
-      admit: (person) => void run({ action: "admit", identity: person.id }, null, `Couldn't let ${waiter(person)} in`),
-      deny: (person) => void run({ action: "deny", identity: person.id }, null, `Couldn't turn ${waiter(person)} away`),
-      admitAll: () => waiting.forEach((person) => void run({ action: "admit", identity: person.id }, null, `Couldn't let ${waiter(person)} in`)),
+      admit: (person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`),
+      deny: (person) => void run({ action: "deny", identity: person.id }, null, `Couldn't deny ${waiter(person)}`),
+      admitAll: () => waiting.forEach((person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`)),
       askEnd: () => setEnding(true),
     };
   }, [hostId, coHosts, isHost, canModerate, access, waiting, supports, run]);
@@ -208,7 +211,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                 Remove {removing ? displayName(removing) : ""}?
               </Dialog.Title>
               <Dialog.Description className="text-[0.9375rem] leading-relaxed text-muted">
-                They&apos;ll be disconnected straight away, and that browser won&apos;t be let back in.
+                They leave the meeting now and can&apos;t rejoin from that browser.
               </Dialog.Description>
             </div>
             {access === "open" && supports.askToJoin && (
@@ -227,7 +230,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                 </span>
                 <span>
                   <span className="block font-medium">Make new people ask to join</span>
-                  <span className="block text-sm text-muted">Stops them coming back from another browser.</span>
+                  <span className="block text-sm text-muted">Stops them rejoining from another browser.</span>
                 </span>
               </label>
             )}
@@ -240,7 +243,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                   setRemoving(null);
                 }}
               >
-                Remove
+                Remove from meeting
               </button>
             </div>
           </Dialog.Content>
@@ -252,9 +255,9 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
           <Dialog.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/70" />
           <Dialog.Content className={dialogClass}>
             <div className="flex flex-col gap-2">
-              <Dialog.Title className="font-display text-xl font-semibold">End the call for everyone?</Dialog.Title>
+              <Dialog.Title className="font-display text-xl font-semibold">End the meeting for everyone?</Dialog.Title>
               <Dialog.Description className="text-[0.9375rem] leading-relaxed text-muted">
-                Everybody is disconnected, you included. The link keeps working if you want to start again.
+                Everyone leaves the meeting, including you. The link still works if you want to meet again.
               </Dialog.Description>
             </div>
             <div className="flex justify-end gap-2">
@@ -264,11 +267,11 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                 onClick={() => {
                   setEnding(false);
                   // The goodbye screen is the confirmation.
-                  void run({ action: "end" }, null, "Couldn't end the call");
+                  void run({ action: "end" }, null, "Couldn't end the meeting");
                 }}
               >
                 <PhoneOff className="size-[1.125rem]" aria-hidden="true" />
-                End call
+                End meeting
               </button>
             </div>
           </Dialog.Content>
@@ -322,7 +325,7 @@ export function HostMenu({
           {supports.stopCamera && (
             <Dropdown.Item className="menu-item" disabled={!camOn} onSelect={() => stopCamera(participant)}>
               <VideoOff className="size-4 text-muted" aria-hidden="true" />
-              {camOn ? "Turn off camera" : "Camera is off"}
+              {camOn ? "Turn off camera" : "Camera already off"}
             </Dropdown.Item>
           )}
           {handRaised && (
@@ -344,7 +347,7 @@ export function HostMenu({
           <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant, variant)}>
             <UserX className="size-4" aria-hidden="true" />
-            Remove from call
+            Remove from meeting
           </Dropdown.Item>
         </Dropdown.Content>
       </Dropdown.Portal>

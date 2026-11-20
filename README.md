@@ -13,7 +13,8 @@ Link-based video meetings built on Next.js, running on [LiveKit](https://livekit
 - A meeting for later: a link now, and a Google Calendar, Outlook or .ics entry to go with it
 - Layouts for large calls: Auto, Tiled (paginated gallery), Spotlight and Sidebar, with a debounced
   active speaker on the main tile; only on-screen cameras are streamed
-- People list with search (windowed, fine at 100+)
+- People list with search (windowed, fine at 100+); raised hands at the top, in the order they
+  went up
 - Whoever starts the meeting is its host, from that browser, across reloads. The host can mute one
   or all, stop a camera, lower hands, remove people, name co-hosts, end the call for everyone,
   and choose who can join: anyone with the link, people who ask, or nobody new
@@ -21,8 +22,10 @@ Link-based video meetings built on Next.js, running on [LiveKit](https://livekit
 - A mini window that keeps the call on top while you use other tabs or present (desktop Chrome
   and Edge)
 - Polls: the host and co-hosts ask, everyone gets one vote
-- A notice when your own connection is the weak one, a "call quality" view and a "use less data"
-  switch
+- A notice when your own connection is the weak one, a "connection quality" view and a "use less
+  data" switch
+- Notifications that stay calm from two people to thousands: at most two on screen, counted
+  rather than listed, and the ones that need you first
 
 ## Run locally
 
@@ -40,7 +43,7 @@ server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `s
 `node test/e2e/run.cjs` runs the browser tests: real Chromium clients with fake cameras, against
 a running LiveKit build (`MEETLY_URL`, default `http://localhost:3000`). Name suites to run only
 some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`, `polls`,
-`quality`, `mini`, `rating`); set
+`quality`, `mini`, `rating`, `notices`); set
 `MEETLY_SHOTS=<dir>` to keep screenshots.
 They need [Playwright](https://playwright.dev) where Node can find it (`npm i --no-save playwright`,
 or a global install on `NODE_PATH`). `node test/e2e/realtimekit-rest.cjs` checks a RealtimeKit
@@ -87,7 +90,7 @@ What differs in a RealtimeKit call:
 - Clients learn about co-hosts and the lock by asking our server when another client says they
   changed, since the server cannot push to them. Lowering hands and "the host ended the call"
   (as opposed to "removed you") are messages between clients, as raised hands are.
-- "Mute all" uses Cloudflare's mute-all call, which makes no exception for the host or co-hosts.
+- "Mute everyone" uses Cloudflare's mute-all call, which makes no exception for the host or co-hosts.
 - Chat is RealtimeKit's own, kept by Cloudflare, so history needs nothing from us. Which message
   is pinned is one more `meetly-…` record, written through `/api/host` like any host action;
   RealtimeKit's own "pin" is not used, because nothing limits who may call it. Deleting is
@@ -198,7 +201,34 @@ written through `/api/host`; honest clients stop offering it, but a modified cli
 send a vote and Cloudflare will count it. Whether Cloudflare refuses a second vote from the same
 participant is its rule and is not documented.
 
-## Call quality and using less data
+## Notifications
+
+One policy for every notification in a call, in `src/lib/notices.ts` (tested in
+`test/notices.test.ts` and, under floods, `test/e2e/notices.cjs`):
+
+| Kind | What | Stays |
+| --- | --- | --- |
+| action | Somebody asks to join (host and co-hosts) | Until answered |
+| you | The host muted you or turned your camera off; you became (or stopped being) a co-host; something you did failed; blur was switched off | A few seconds; waits up to 6 s for room |
+| info | A chat message (the first after a quiet spell), a pinned message, a new poll | A few seconds; dropped if there is no room |
+| presence | People joining or leaving who are not on screen, up to 24 people in the call | A few seconds; dropped if there is no room |
+
+- At most two on screen (one on a phone while a sheet is open). A higher kind takes the place of
+  the lowest one showing; news that finds no room is dropped (the chat badge and the people
+  count still carry it); anything else waits its turn.
+- Bursts are one notification that counts: "5 people joined", "30 people want to join". A count
+  changes at most once a second. A busy chat shows its first message and counts the rest on the
+  chat button.
+- On large screens they rise from the bottom-right corner of the stage, clear of the controls, an
+  open panel and the invite card; the most important one sits nearest the controls and does not
+  move when another arrives. On a phone they hang from the top bar; with a sheet open, only what
+  concerns you shows, as one line over the top bar, never over the sheet.
+- While a dialog is open, news is not shown. With the people list open, joins and requests to join are
+  not notified: the list shows them, with the same buttons.
+- Sounds follow the same lines: one knock per burst of requests, presence sounds only up to eight
+  people, and above 24 a raised hand is heard only by the host and co-hosts.
+
+## Connection quality and using less data
 
 When your own connection has been poor for ten seconds in a row, one chip appears at the top of
 the stage: "Your connection is weak", with "Use less data" and a way to dismiss it. It goes a few
@@ -206,8 +236,8 @@ seconds after things improve, is not repeated for two minutes after that, and no
 being dismissed (`src/lib/callHealth.ts`). No toast, no sound. "Poor" is the provider's judgement:
 LiveKit's connection quality for you, or RealtimeKit's media scores for what you send.
 
-More → "Call quality…" shows the same judgement in a word, what is being sent and received, the
-switch, and "Copy diagnostics". Everything in it is about this browser and stays there.
+More → "Connection quality…" shows the same judgement in a word, what is being sent and received, the
+switch, and "Copy connection details". Everything in it is about this browser and stays there.
 
 "Use less data" is never switched on for you. While it is on your camera is captured at 640 × 360
 and 15 frames a second (so the largest version anyone receives is 320 × 180) and, on LiveKit,
@@ -217,7 +247,7 @@ touched. A leaf in the bar (the top bar on a phone) shows it is on.
 
 ## Usage counts and the rating
 
-The screen you see after leaving asks "How was the call?" with two buttons, and a few features
+The screen you see after leaving asks "How were the sound and video?" with two buttons, and a few features
 report that they were used. All of it goes to `sendUsageEvent` in `src/lib/usage.ts`, which today
 does nothing: Meetly has no storage and no analytics service, so no request is made and nothing
 is kept. The event's shape is fixed there (a feature name or a rating, and coarse buckets for
@@ -226,10 +256,12 @@ to keep one counter per day and event, for example a Workers Analytics Engine da
 
 ## Meetings for later
 
-"New meeting" has an arrow with "Get a link for later" and "Schedule…"; in a call, More has "Add
-to calendar…". The link is made the way an instant meeting's is, so whoever makes it is its
+"New meeting" has an arrow with "Get a link for later" and "Schedule…". There is no calendar item
+in the call: while a meeting runs, the people an invitation would go to are in it. When it ends,
+the host's leave screen offers "Schedule a follow-up", on the same link (so they stay its host).
+The link is made the way an instant meeting's is, so whoever makes it is its
 host, and it never expires. Title and time go only into the calendar entry
-(`src/lib/calendar.ts`): a Google Calendar or Outlook link, or an .ics file with a ten-minute
+(`src/lib/calendar.ts`): a Google Calendar, Outlook.com or Microsoft 365 link, or an .ics file with a ten-minute
 reminder, all in UTC. Meetly stores none of it and sends no email.
 
 On LiveKit the host's record lasts a day in an unused room, so for a meeting further off the
@@ -267,7 +299,8 @@ and the host has not joined for thirty days.
 | Token minting (server only, holds the API secret) | `src/app/api/token/route.ts` |
 | Pre-join → in-call → left flow | `src/components/Meeting.tsx` |
 | Pre-join screen (preview, device pickers) | `src/components/PreJoin.tsx`, `src/lib/usePreviewMedia.ts` |
-| Stage, panels, toasts, shortcuts | `src/components/Conference.tsx` |
+| Stage, panels, shortcuts | `src/components/Conference.tsx` |
+| Notifications: the rules, and how they are shown | `src/lib/notices.ts`, `src/components/ui/Toaster.tsx` |
 | Tiles, grid and control bar | `src/components/Tile.tsx`, `TileGrid.tsx`, `ControlBar.tsx` |
 | Chat / people side panels | `src/components/ChatPanel.tsx`, `ChatStore.tsx`, `PeoplePanel.tsx` |
 | Chat on LiveKit (signing, history, delete), saving the chat | `src/lib/chat.server.ts`, `chatSignature.server.ts`, `src/app/api/chat/route.ts`, `src/lib/chatExport.ts` |
@@ -281,7 +314,7 @@ and the host has not joined for thirty days.
 | Reactions | `src/lib/reactions.ts`, `src/components/Reactions.tsx` |
 | Mini window | `src/lib/usePip.ts`, `src/lib/miniTile.ts`, `src/components/MiniWindow.tsx` |
 | Polls | `src/components/Polls.tsx`, `src/lib/pollStore.ts`, `src/lib/polls.server.ts`, `src/app/api/poll/route.ts` |
-| Call quality, the weak-connection notice, using less data | `src/lib/callHealth.ts`, `src/lib/useCallHealth.ts`, `src/components/CallQuality.tsx` |
+| Connection quality, the weak-connection notice, using less data | `src/lib/callHealth.ts`, `src/lib/useCallHealth.ts`, `src/components/CallQuality.tsx` |
 | Usage events and the leave-screen rating (sent nowhere) | `src/lib/usage.ts` |
 | Design tokens, motion, shared UI primitives | `src/app/globals.css`, `src/components/ui/` |
 | Meeting code format | `src/lib/code.ts` |

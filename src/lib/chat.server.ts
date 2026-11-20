@@ -44,7 +44,7 @@ function allowed(identity: string, now: number): boolean {
 
 export type ChatResult = { status: 200; data: Record<string, unknown> } | { status: 400 | 403 | 429 | 502; error: string };
 
-const NOT_IN_CALL = { status: 403, error: "You need to be in the call to use its chat." } as const;
+const NOT_IN_CALL = { status: 403, error: "Join the meeting to use chat." } as const;
 
 /**
  * Handles one /api/chat request. `token` is the LiveKit token we signed for the caller, and
@@ -67,7 +67,7 @@ export async function liveKitChat(
     switch (body.action) {
       case "send": {
         const text = typeof body.text === "string" ? body.text.trim() : "";
-        if (!text) return { status: 400, error: "There is nothing to send." };
+        if (!text) return { status: 400, error: "Type a message first." };
         if (text.length > CHAT_MAX_LENGTH) return { status: 400, error: "That message is too long." };
         const now = Date.now();
         if (!allowed(identity, now)) return { status: 429, error: "You're sending messages too quickly. Wait a moment." };

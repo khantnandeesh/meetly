@@ -1,4 +1,4 @@
-// Runs the browser tests: `node test/e2e/run.cjs` for all, or name some (host reactions host-tools access effects schedule chat fixes polls quality mini rating).
+// Runs the browser tests: `node test/e2e/run.cjs` for all, or name some (host reactions host-tools access effects schedule chat fixes polls quality mini rating notices).
 const H = require("./lib.cjs");
 
 const SUITES = {
@@ -14,6 +14,7 @@ const SUITES = {
   quality: "./quality.cjs",
   mini: "./mini.cjs",
   rating: "./rating.cjs",
+  notices: "./notices.cjs",
 };
 
 (async () => {

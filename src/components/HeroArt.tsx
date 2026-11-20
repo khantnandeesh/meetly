@@ -4,7 +4,7 @@ import { initials } from "./ui/Avatar";
 const PEOPLE = [
   { name: "Maya Okafor", color: "#9fe0c2", speaking: true, muted: false },
   { name: "Jonas Weber", color: "#f4b9a3", speaking: false, muted: true },
-  { name: "Priya Nair", color: "#a9d6f5", speaking: false, muted: false },
+  { name: "Priya Nair", color: "#a9d6f5", speaking: false, muted: false, hand: true },
   { name: "Tomás Leal", color: "#c9b8f7", speaking: false, muted: true },
 ];
 
@@ -31,6 +31,12 @@ export function HeroArt() {
                 >
                   {initials(person.name)}
                 </span>
+                {"hand" in person && (
+                  // A raised hand shows on the tile, as in a call; it is not a notification.
+                  <span className="absolute top-2 left-2 grid size-6 place-items-center rounded-lg bg-accent text-accent-ink">
+                    <Hand className="size-3.5" />
+                  </span>
+                )}
                 <span className="chip absolute bottom-2 left-2 h-6 px-1.5 text-[0.6875rem]">
                   {person.speaking ? (
                     <span className="bars text-accent">
@@ -62,14 +68,8 @@ export function HeroArt() {
         </div>
       </div>
 
-      <div className="anim-float absolute -top-4 -right-3 flex items-center gap-2 rounded-2xl bg-surface-2 py-2 pr-3.5 pl-2.5 text-sm font-medium shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)] sm:-right-6">
-        <span className="grid size-7 place-items-center rounded-lg bg-accent text-accent-ink">
-          <Hand className="size-4" />
-        </span>
-        Priya raised a hand
-      </div>
-
-      <div className="anim-float absolute -bottom-8 -left-10 flex max-w-44 max-sm:hidden items-start gap-2.5 rounded-2xl bg-surface-2 p-3 text-sm shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)] [animation-delay:-3s]">
+      {/* What a message looks like when it arrives: one notification, clear of the controls. */}
+      <div className="anim-float absolute -top-4 -right-3 flex max-w-48 items-start gap-2.5 rounded-2xl bg-surface-2 p-3 text-sm shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)] sm:-right-6">
         <MessageSquare className="mt-0.5 size-4 shrink-0 text-accent" />
         <span>
           <span className="block text-xs font-semibold text-muted">Jonas</span>

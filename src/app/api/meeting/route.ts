@@ -26,7 +26,7 @@ export async function POST(request: Request) {
 
   if (body.action === "peek") {
     const code = typeof body.code === "string" ? body.code : "";
-    if (!isValidCode(code)) return Response.json({ error: "Invalid meeting code." }, { status: 400 });
+    if (!isValidCode(code)) return Response.json({ error: "That isn't a valid meeting code." }, { status: 400 });
     const pass = readPass(request, code, passSecret());
     const seen = RTC_PROVIDER === "realtimekit" ? await peekRealtimeKitMeeting(code, pass) : await peekMeeting(code, pass);
     return Response.json(seen);

@@ -1,18 +1,20 @@
 "use client";
 
-import { CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
+import { CalendarPlus, CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { saveChat } from "@/lib/chatExport";
 import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
+import { NOTICE } from "@/lib/rtc/shared";
 import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { deviceClass, lengthBucket, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
 import { PreJoin, PreJoinSkeleton } from "./PreJoin";
+import { ScheduleDialog } from "./ScheduleDialog";
 import { Logo } from "./ui/Logo";
 import { useToast } from "./ui/Toaster";
 
@@ -22,6 +24,8 @@ type Departure = {
   minutes: number;
   reason: DisconnectReason;
   byYou: boolean;
+  /** You were the host: the one who can plan the next meeting on this link. */
+  host: boolean;
   /** The conversation as it stood when the call ended for you: the last chance to keep it. */
   chat: RtcChatMessage[];
   pinned: RtcChatMessage | null;
@@ -50,7 +54,7 @@ export function Meeting({ code }: { code: string }) {
   /** The pre-join screen is still on top (it leaves once `ready`). */
   const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, chat: [], pinned: null, people: 1 });
+  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, host: false, chat: [], pinned: null, people: 1 });
   // The most people the call held while you were in it: a size for the rating, not a list of anyone.
   const mostPeople = useRef(1);
   const currentCall = session?.call;
@@ -88,7 +92,7 @@ export function Meeting({ code }: { code: string }) {
       setCovered(true);
       setStage("joined");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not join the meeting.");
+      setError(e instanceof Error ? e.message : "Couldn't join the meeting. Check your connection and try again.");
     } finally {
       setJoining(false);
     }
@@ -126,6 +130,7 @@ export function Meeting({ code }: { code: string }) {
               minutes: reason === "denied" ? 0 : Math.round((Date.now() - session.joinedAt) / 60_000),
               reason,
               byYou: reason === "ended" && call.hostIdentity !== null && call.hostIdentity === call.local.identity,
+              host: call.hostIdentity !== null && call.hostIdentity === call.local.identity,
               chat: call.chatMessages(),
               pinned: call.pinnedMessage(),
               people: mostPeople.current,
@@ -135,7 +140,8 @@ export function Meeting({ code }: { code: string }) {
           onError={(e) =>
             toast.push({
               title: "Something went wrong",
-              body: e.message,
+              // Only our own sentences are shown; anything else is the provider's, and not for reading.
+              body: e.name === NOTICE ? e.message : "If it keeps happening, leave and rejoin the meeting.",
               tone: "danger",
               icon: <CircleAlert className="size-5" />,
               duration: 8000,
@@ -189,7 +195,7 @@ const ENDINGS: Record<DisconnectReason, { icon: typeof LogOut; title: string; no
     title: "The host didn't let you in",
     note: "If that was a mistake, ask again or check with whoever sent you the link.",
   },
-  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link works again if the host starts a new call." },
+  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link still works if people want to meet again." },
 };
 
 function LeftScreen({
@@ -201,14 +207,17 @@ function LeftScreen({
   departure: Departure;
   onRejoin: () => void;
 }) {
-  const { minutes, reason, byYou, chat, pinned, people } = departure;
+  const { minutes, reason, byYou, host, chat, pinned, people } = departure;
   const canSaveChat = chat.some((message) => !message.deleted);
   const { icon: Icon, title, note } = ENDINGS[reason];
+  const [planning, setPlanning] = useState(false);
   // Someone the host turned away is shown the way out first; coming back is the quieter option,
-  // and for someone who was removed it is not an option at all.
+  // and for someone who was removed it is not an option at all. When the host ended the meeting
+  // there is nobody to go back to, so the way out leads there too.
   const turnedAway = reason === "removed" || reason === "denied";
+  const homeFirst = turnedAway || (reason === "ended" && !byYou);
   const home = (
-    <Link href="/" className={`btn ${turnedAway ? "btn-primary" : "btn-secondary"}`}>
+    <Link href="/" className={`btn ${homeFirst ? "btn-primary" : "btn-secondary"}`}>
       <Home className="size-[1.125rem]" aria-hidden="true" />
       Back to home
     </Link>
@@ -227,20 +236,27 @@ function LeftScreen({
             {byYou ? "You ended the meeting" : title}
           </h1>
           <p className="text-lg text-muted">
-            {reason === "dropped" ? "The connection to the call was lost. " : ""}
             <span className="font-mono text-[0.9em]">{code}</span>
-            {minutes >= 1 && ` · ${minutes} min in the call`}
+            {minutes >= 1 && ` · ${minutes} min`}
           </p>
         </div>
-        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
-          {turnedAway && home}
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-center">
+          {homeFirst && home}
           {reason !== "removed" && (
-            <button className={`btn ${turnedAway ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!turnedAway}>
+            <button className={`btn ${homeFirst ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!homeFirst}>
               <RotateCcw className="size-[1.125rem]" aria-hidden="true" />
               {reason === "denied" ? "Ask again" : byYou ? "Start again" : "Rejoin"}
             </button>
           )}
-          {!turnedAway && home}
+          {!homeFirst && home}
+          {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
+              who sends it. It keeps this link, so the host stays the host. */}
+          {host && (
+            <button className="btn btn-quiet" onClick={() => setPlanning(true)}>
+              <CalendarPlus className="size-[1.125rem]" aria-hidden="true" />
+              Schedule a follow-up
+            </button>
+          )}
           {canSaveChat && (
             <button className="btn btn-quiet" onClick={() => saveChat(code, chat, pinned)}>
               <Download className="size-[1.125rem]" aria-hidden="true" />
@@ -248,7 +264,8 @@ function LeftScreen({
             </button>
           )}
         </div>
-        <p className="text-sm text-faint">{byYou ? "Everyone was disconnected. The link still works." : note}</p>
+        {host && <ScheduleDialog code={code} mode="follow-up" open={planning} onOpenChange={setPlanning} />}
+        <p className="text-sm text-faint">{byYou ? "Everyone has left the meeting. The link still works." : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
         {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>
@@ -278,7 +295,7 @@ function CallRating({ minutes, people }: { minutes: number; people: number }) {
         </p>
       ) : (
         <>
-          <p id={label}>How was the call?</p>
+          <p id={label}>How were the sound and video?</p>
           <div role="group" aria-labelledby={label} className="flex gap-2">
             <button className="btn btn-secondary h-11 rounded-xl px-4 text-sm" onClick={() => rate("good")}>
               <ThumbsUp className="size-4" aria-hidden="true" />

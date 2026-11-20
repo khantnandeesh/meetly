@@ -474,9 +474,11 @@ async function run(browser) {
   await mo.page.getByRole("button", { name: "Join now" }).click();
   await H.inCall(mo);
   await mo.page.getByRole("button", { name: "More options" }).click();
+  // On a phone the device settings are one level down in More.
+  await mo.page.getByRole("menuitem", { name: "Audio and video" }).click();
   const phoneSwitch = mo.page.getByRole("menuitemcheckbox", { name: /^Noise suppression/ });
   await phoneSwitch.scrollIntoViewIfNeeded();
-  H.ok("phone: More has the Noise suppression switch", (await phoneSwitch.count()) === 1 && (await phoneSwitch.getAttribute("aria-checked")) === "true");
+  H.ok("phone: More, Audio and video has the Noise suppression switch", (await phoneSwitch.count()) === 1 && (await phoneSwitch.getAttribute("aria-checked")) === "true");
   await H.shot(mo, "effects-noise-menu-phone");
   const phoneBlur = mo.page.getByRole("menuitemradio", { name: "Blur", exact: true });
   await phoneBlur.scrollIntoViewIfNeeded();

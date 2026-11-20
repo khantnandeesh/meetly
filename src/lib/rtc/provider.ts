@@ -15,13 +15,15 @@ export function loadProvider(): Promise<RtcProviderModule> {
 
 /** Asks our server for a way into the meeting. Throws with a message fit to show the user. */
 export async function requestJoin(code: string, name: string): Promise<JoinGrant> {
+  // Offline, or an answer that is not ours: said in words, not as the browser's own "Failed to fetch".
   const response = await fetch("/api/token", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ room: code, name }),
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error ?? "Could not join the meeting.");
+  }).catch(() => null);
+  const data = response ? await response.json().catch(() => null) : null;
+  if (!response || !data) throw new Error("Couldn't reach Meetly. Check your connection and try again.");
+  if (!response.ok) throw new Error(data.error ?? "Couldn't join the meeting. Try again.");
   return { ...data, provider: RTC_PROVIDER } as JoinGrant;
 }
 

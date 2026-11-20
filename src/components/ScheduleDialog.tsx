@@ -28,7 +28,9 @@ const durationLabel = (minutes: number) =>
  * time go only into the calendar entry, which the person's own calendar creates.
  *
  * `mode` "link" leads with the link and offers the calendar second; "schedule" opens straight
- * on the calendar form.
+ * on the calendar form; "follow-up" is the same form for the meeting that just ended, offered
+ * to its host on the screen after it (never during it: while the meeting runs, the people it
+ * would be sent to are in it).
  */
 export function ScheduleDialog({
   code,
@@ -38,7 +40,7 @@ export function ScheduleDialog({
 }: {
   /** The meeting to schedule. Null while there is none (the dialog is closed). */
   code: string | null;
-  mode?: "link" | "schedule";
+  mode?: Mode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -53,7 +55,7 @@ export function ScheduleDialog({
         >
           <div className="flex items-center justify-between py-3 pr-3 pl-6">
             <Dialog.Title className="font-display text-xl font-semibold">
-              {mode === "link" ? "Your link for later" : "Schedule a meeting"}
+              {mode === "link" ? "Your link for later" : mode === "follow-up" ? "Schedule a follow-up" : "Schedule a meeting"}
             </Dialog.Title>
             <Dialog.Close className="icon-btn" aria-label="Close">
               <X className="size-5" aria-hidden="true" />
@@ -67,15 +69,22 @@ export function ScheduleDialog({
   );
 }
 
-function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" }) {
+type Mode = "link" | "schedule" | "follow-up";
+
+function ScheduleForm({ code, mode }: { code: string; mode: Mode }) {
   const link = `${window.location.origin}/${code}`;
-  const [initial] = useState(() => toFieldValues(nextHalfHour()));
+  // A follow-up is most often the same meeting a week on, so that is where it starts.
+  const [initial] = useState(() => {
+    const start = nextHalfHour();
+    if (mode === "follow-up") start.setDate(start.getDate() + 7);
+    return toFieldValues(start);
+  });
   const [opened] = useState(() => Date.now());
   const [title, setTitle] = useState("");
   const [date, setDate] = useState(initial.date);
   const [time, setTime] = useState(initial.time);
   const [minutes, setMinutes] = useState<number>(30);
-  const [planning, setPlanning] = useState(mode === "schedule");
+  const [planning, setPlanning] = useState(mode !== "link");
   const titleId = useId();
   const dateId = useId();
   const timeId = useId();
@@ -85,14 +94,14 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
 
   const start = useMemo(() => localDateTime(date, time), [date, time]);
   // A minute's grace: "now" is a fair time to schedule for.
-  const problem = !start ? "Choose a date and a start time." : start.getTime() < opened - 60_000 ? "That time has already passed." : null;
+  const problem = !start ? "Choose a date and a start time." : start.getTime() < opened - 60_000 ? "That time has passed. Choose a later one." : null;
   const event: CalendarEvent | null = start && !problem ? { title: title.trim() || DEFAULT_TITLE, start, minutes, link } : null;
   const zone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
 
   const calendars: { name: string; href?: string }[] = [
     { name: "Google Calendar", href: event ? googleCalendarUrl(event) : undefined },
     { name: "Outlook.com", href: event ? outlookCalendarUrl(event, "personal") : undefined },
-    { name: "Outlook (work or school)", href: event ? outlookCalendarUrl(event, "work") : undefined },
+    { name: "Microsoft 365", href: event ? outlookCalendarUrl(event, "work") : undefined },
   ];
 
   return (
@@ -100,8 +109,10 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
       <div className="flex flex-col gap-2">
         <p className="text-sm leading-relaxed text-muted">
           {mode === "link"
-            ? "Send this to the people you want to meet. It works whenever you're ready and doesn't expire."
-            : "The link works whenever you're ready and doesn't expire."}
+            ? "Send this link to the people you want to meet. It doesn't expire."
+            : mode === "follow-up"
+              ? "Same link as the meeting you just left. It doesn't expire."
+              : "This link doesn't expire."}
         </p>
         <button
           type="button"
@@ -120,7 +131,7 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
       {!planning ? (
         <button type="button" className="btn btn-secondary" onClick={() => setPlanning(true)}>
           <CalendarPlus className="size-[1.125rem]" aria-hidden="true" />
-          Add it to a calendar…
+          Add to calendar…
         </button>
       ) : (
         <>
@@ -219,8 +230,8 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
             </button>
           </div>
           <p className="text-sm leading-relaxed text-faint">
-            The .ics file opens in Apple Calendar, desktop Outlook and most others. Meetly sends nothing and keeps nothing: the
-            invitation and the reminder come from your own calendar.
+            The .ics file opens in Apple Calendar, Outlook for desktop and most other calendar apps. Meetly doesn&apos;t send
+            invitations or reminders. Your calendar does.
           </p>
         </>
       )}

@@ -16,7 +16,7 @@ export function JoinForm({ autoFocus = false }: { autoFocus?: boolean }) {
     event.preventDefault();
     const code = parseCode(input);
     if (!code) {
-      setError("That doesn't look like a meeting code. Try abc-defg-hij or paste the full link.");
+      setError("Enter a meeting code like abc-defg-hij, or paste the whole link.");
       return;
     }
     router.push(`/${code}`);

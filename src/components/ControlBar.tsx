@@ -3,8 +3,9 @@
 import {
   AudioLines,
   Bell,
-  CalendarPlus,
   Check,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   CircleAlert,
   Ellipsis,
@@ -22,13 +23,14 @@ import {
   MonitorX,
   PhoneOff,
   PictureInPicture2,
+  Settings2,
   Sparkles,
   Users,
   Video,
   VideoOff,
   Volume2,
 } from "lucide-react";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
 import { useCopied } from "@/lib/hooks";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
@@ -64,7 +66,6 @@ export function ControlBar({
   onTogglePanel,
   onCopyLink,
   onShowShortcuts,
-  onShowSchedule,
   onShowQuality,
   settings,
   onSettings,
@@ -83,8 +84,6 @@ export function ControlBar({
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
   onCopyLink: () => Promise<boolean>;
   onShowShortcuts: () => void;
-  /** Opens "add this meeting to a calendar". */
-  onShowSchedule: () => void;
   /** Opens "call quality". */
   onShowQuality: () => void;
   settings: CallSettings;
@@ -158,8 +157,8 @@ export function ControlBar({
   );
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
-    <Tip label="Leave call">
-      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => call.disconnect().catch(() => {})}>
+    <Tip label="Leave meeting">
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave meeting" onClick={() => call.disconnect().catch(() => {})}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
@@ -180,58 +179,33 @@ export function ControlBar({
           collisionPadding={12}
           className={phone ? "menu menu-tall w-80" : "menu"}
         >
-          <Dropdown.Item
-            className="menu-item"
-            onSelect={(event) => {
-              // Stay open for a moment so the confirmation is seen where the tap landed.
-              event.preventDefault();
-              copyState.copy();
-            }}
-          >
-            <span className="text-muted">
-              <CopyIcon copied={copyState.copied} />
-            </span>
-            <span role="status">{copyState.copied ? "Link copied" : "Copy meeting link"}</span>
-          </Dropdown.Item>
-          <Dropdown.Item className="menu-item" onSelect={onShowSchedule}>
-            <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
-            Add to calendar…
-          </Dropdown.Item>
+          {/* The link is one tap away already: beside the clock (the top bar on a phone) and at the top
+              of People. Planning the next meeting belongs to the screen after this one. */}
           {mini.supported && !phone && (
-            <Dropdown.Item className="menu-item" onSelect={mini.toggle}>
-              <PictureInPicture2 className="size-4 text-muted" aria-hidden="true" />
-              {mini.open ? "Close mini window" : "Open mini window"}
-              <kbd className="kbd ml-auto">⇧P</kbd>
-            </Dropdown.Item>
-          )}
-          <div className="menu-sep" />
-          <DataSaverSwitch />
-          <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
-            <Gauge className="size-4 text-muted" aria-hidden="true" />
-            Call quality…
-          </Dropdown.Item>
-          {phone ? (
             <>
+              <Dropdown.Item className="menu-item" onSelect={mini.toggle}>
+                <PictureInPicture2 className="size-4 text-muted" aria-hidden="true" />
+                {mini.open ? "Close mini window" : "Open mini window"}
+                <kbd className="kbd ml-auto">⇧P</kbd>
+              </Dropdown.Item>
               <div className="menu-sep" />
-              <LayoutMenuItems settings={settings} onChange={onSettings} showTileLimit={false} />
-              <div className="menu-sep" />
-              <DeviceGroups kinds={["audioinput", "videoinput", "audiooutput"]} />
-              {isHost && (
-                <>
-                  <div className="menu-sep" />
-                  <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
-                    <PhoneOff className="size-4" aria-hidden="true" />
-                    End call for everyone
-                  </Dropdown.Item>
-                </>
-              )}
             </>
+          )}
+          {phone ? (
+            <PhoneMoreItems settings={settings} onSettings={onSettings} onShowQuality={onShowQuality} onEnd={isHost ? askEnd : undefined} />
           ) : (
-            <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
-              <Keyboard className="size-4 text-muted" aria-hidden="true" />
-              Keyboard shortcuts
-              <kbd className="kbd ml-auto">?</kbd>
-            </Dropdown.Item>
+            <>
+              <DataSaverSwitch />
+              <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
+                <Gauge className="size-4 text-muted" aria-hidden="true" />
+                Connection quality…
+              </Dropdown.Item>
+              <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
+                <Keyboard className="size-4 text-muted" aria-hidden="true" />
+                Keyboard shortcuts
+                <kbd className="kbd ml-auto">?</kbd>
+              </Dropdown.Item>
+            </>
           )}
         </Dropdown.Content>
       </Dropdown.Portal>
@@ -241,7 +215,7 @@ export function ControlBar({
   if (phone) {
     return (
       <footer className="px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Call controls">
+        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Meeting controls">
           {micButton}
           {camButton}
           {reactButton}
@@ -277,7 +251,7 @@ export function ControlBar({
         <DataSaverBadge onOpen={onShowQuality} />
       </div>
 
-      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Call controls">
+      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Meeting controls">
         <div className="ctrl-split">
           {micButton}
           <DeviceMenu label="Audio settings" kinds={["audioinput", "audiooutput"]} off={!mic.enabled} />
@@ -314,11 +288,11 @@ export function ControlBar({
                 <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu">
                   <Dropdown.Item className="menu-item" onSelect={() => call.disconnect().catch(() => {})}>
                     <LogOut className="size-4 text-muted" aria-hidden="true" />
-                    Leave call
+                    Leave meeting
                   </Dropdown.Item>
                   <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                     <PhoneOff className="size-4" aria-hidden="true" />
-                    End call for everyone
+                    End meeting for everyone
                   </Dropdown.Item>
                 </Dropdown.Content>
               </Dropdown.Portal>
@@ -348,11 +322,12 @@ export function ControlBar({
             id="toggle-people"
             className="ctrl px-3.5"
             aria-expanded={panel === "people"}
-            aria-label="Show everyone"
             onClick={() => onTogglePanel("people")}
           >
-            <Users className="size-5" />
+            <Users className="size-5" aria-hidden="true" />
+            <span className="sr-only">People, </span>
             <span className="text-sm font-semibold tabular-nums">{headcount}</span>
+            <span className="sr-only">{waiting.length > 0 ? " in the meeting, " : " in the meeting"}</span>
             {waiting.length > 0 && (
               // Stays for as long as somebody is waiting; the notification is what announces them.
               <span
@@ -368,6 +343,86 @@ export function ControlBar({
         {chatButton}
       </div>
     </footer>
+  );
+}
+
+/**
+ * More, on a phone. The first level is short; layout and devices are a level down, each with a
+ * way back, instead of thirty rows to scroll past on the way to "End meeting for everyone".
+ */
+function PhoneMoreItems({
+  settings,
+  onSettings,
+  onShowQuality,
+  onEnd,
+}: {
+  settings: CallSettings;
+  onSettings: (patch: Partial<CallSettings>) => void;
+  onShowQuality: () => void;
+  /** Present for the host only. */
+  onEnd?: () => void;
+}) {
+  const [view, setView] = useState<"main" | "layout" | "devices">("main");
+  const first = useRef<HTMLDivElement>(null);
+  const moved = useRef(false);
+  // Changing level keeps the menu open and puts focus at the top of the new level (not when the
+  // menu first opens, where the menu itself takes focus as any other does).
+  useEffect(() => {
+    if (moved.current) first.current?.focus();
+    moved.current = true;
+  }, [view]);
+  const open = (next: typeof view) => (event: Event) => {
+    event.preventDefault();
+    setView(next);
+  };
+  if (view !== "main") {
+    return (
+      <>
+        <Dropdown.Item ref={first} className="menu-item font-medium" onSelect={open("main")}>
+          <ChevronLeft className="size-4 text-muted" aria-hidden="true" />
+          Back
+        </Dropdown.Item>
+        <div className="menu-sep" />
+        {view === "layout" ? (
+          <LayoutMenuItems settings={settings} onChange={onSettings} showTileLimit={false} />
+        ) : (
+          <DeviceGroups kinds={["audioinput", "videoinput", "audiooutput"]} />
+        )}
+      </>
+    );
+  }
+  const layoutName = { auto: "Auto", tiled: "Tiled", spotlight: "Spotlight", sidebar: "Sidebar" }[settings.layout];
+  return (
+    <>
+      <DataSaverSwitch />
+      <Dropdown.Item ref={first} className="menu-item" onSelect={onShowQuality}>
+        <Gauge className="size-4 text-muted" aria-hidden="true" />
+        Connection quality…
+      </Dropdown.Item>
+      <div className="menu-sep" />
+      <Dropdown.Item className="menu-item" onSelect={open("layout")}>
+        <LayoutGrid className="size-4 text-muted" aria-hidden="true" />
+        Layout
+        <span className="ml-auto flex items-center gap-1 text-sm text-muted">
+          {layoutName}
+          <ChevronRight className="size-4" aria-hidden="true" />
+        </span>
+      </Dropdown.Item>
+      <Dropdown.Item className="menu-item" onSelect={open("devices")}>
+        <Settings2 className="size-4 text-muted" aria-hidden="true" />
+        Audio and video
+        <ChevronRight className="ml-auto size-4 text-muted" aria-hidden="true" />
+      </Dropdown.Item>
+      {onEnd && (
+        <>
+          <div className="menu-sep" />
+          <Dropdown.Item className="menu-item text-danger-text" onSelect={onEnd}>
+            <PhoneOff className="size-4" aria-hidden="true" />
+            End meeting for everyone
+          </Dropdown.Item>
+        </>
+      )}
+    </>
   );
 }
 
@@ -469,9 +524,7 @@ function NoiseSwitch() {
       <AudioLines className="size-4 shrink-0 text-muted" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span className="block font-medium">Noise suppression</span>
-        <span className="block text-xs text-muted">
-          {on ? "Removes background noise, on this device" : "Off: sent as it is, which suits music"}
-        </span>
+        <span className="block text-xs text-muted">Turn off when you play music</span>
       </span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
@@ -493,7 +546,7 @@ function DataSaverSwitch() {
       <Leaf className="size-4 shrink-0 text-muted" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span className="block font-medium">Use less data</span>
-        <span className="block text-xs text-muted">{on ? "Smaller camera, fewer pictures" : "For a weak or metered connection"}</span>
+        <span className="block text-xs text-muted">For a slow or limited connection</span>
       </span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
@@ -559,8 +612,8 @@ function BackgroundGroup() {
               </Dropdown.RadioItem>
             ))}
           </Dropdown.RadioGroup>
-          <p className="px-3 pt-0.5 pb-1.5 text-xs text-muted" role="status">
-            {backgroundState === "starting" ? "Starting…" : "Blurred on this device, before anything is sent."}
+          <p className="sr-only" role="status">
+            {backgroundState === "starting" ? "Starting blur…" : ""}
           </p>
         </>
       )}
@@ -569,9 +622,9 @@ function BackgroundGroup() {
 }
 
 const SOUND_LEVELS: { value: SoundLevel; label: string; hint: string; preview: SoundName }[] = [
-  { value: "all", label: "All sounds", hint: "People joining, hands, chat, your mic", preview: "joined" },
-  { value: "important", label: "Important only", hint: "Connection, call ended, muted by host", preview: "connected" },
-  { value: "off", label: "Off", hint: "No interface sounds", preview: "micOff" },
+  { value: "all", label: "All sounds", hint: "People joining, raised hands, chat, your microphone", preview: "joined" },
+  { value: "important", label: "Important only", hint: "Connection problems, meeting ended, muted by the host", preview: "connected" },
+  { value: "off", label: "Off", hint: "You still hear people", preview: "micOff" },
 ];
 
 /** How much the interface itself is heard. Choosing a level plays an example of it. */
