@@ -114,7 +114,7 @@ module.exports = async function access(browser) {
 
   /* lock */
   await setAccess(ada, "Locked");
-  const fay = await H.client(browser);
+  const fay = await H.client(browser, { scale: 2 });
   await fay.page.goto(url);
   await fay.page.getByText("This meeting is locked").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("locked: the pre-join screen says so", (await fay.page.getByText("This meeting is locked").count()) >= 1);

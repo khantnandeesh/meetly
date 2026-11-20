@@ -204,10 +204,22 @@ function addMarker(c: Config, meetingId: string, fact: string): Promise<ApiResul
   });
 }
 
-async function removeMarkers(c: Config, meetingId: string, record: MeetingRecord, matches: (fact: string) => boolean): Promise<void> {
+/** Deletes the matching statements. False if any of them is still standing afterwards. */
+async function removeMarkers(c: Config, meetingId: string, record: MeetingRecord, matches: (fact: string) => boolean): Promise<boolean> {
   const gone = record.markers.filter((m) => matches(m.custom_participant_id));
-  await Promise.all(gone.map((m) => api(c, "DELETE", `/meetings/${meetingId}/participants/${m.id}`).catch(() => {})));
+  const results = await Promise.all(
+    gone.map((m) =>
+      api(c, "DELETE", `/meetings/${meetingId}/participants/${m.id}`).then(
+        // Already gone is as good as deleted.
+        (result) => result.ok || result.status === 404,
+        () => false,
+      ),
+    ),
+  );
+  return results.every(Boolean);
 }
+
+const UNREACHABLE = { status: 502, error: "Could not reach the meeting service. Try again." } as const;
 
 const coHostIdentities = (record: MeetingRecord) =>
   record.people.filter((p) => record.coHostIds.has(p.id)).map((p) => p.custom_participant_id);
@@ -418,10 +430,11 @@ export async function realtimeKitHostAction(
         }
         case "remove": {
           if (!person) return GONE;
+          // Noted first, so that a browser that held this identity is refused from this moment.
+          const banned = await addMarker(c, session.meetingId, `${BAN}${person.custom_participant_id}`);
+          if (!banned.ok) return UNREACHABLE;
           const kicked = await api(c, "POST", `${session_}/kick`, { participant_ids: [person.id] });
-          // Whether or not they were connected: the record goes (which revokes their token), and
-          // a browser that held this identity is not let back in.
-          await addMarker(c, session.meetingId, `${BAN}${person.custom_participant_id}`);
+          // Whether or not they were connected, the record goes, which revokes their token.
           await api(c, "DELETE", `/meetings/${session.meetingId}/participants/${person.id}`).catch(() => {});
           await removeMarkers(c, session.meetingId, record, (fact) => fact === `${COHOST}${person.id}`);
           return kicked.ok ? { status: 200 } : GONE;
@@ -429,12 +442,12 @@ export async function realtimeKitHostAction(
         case "coHost": {
           if (!person) return GONE;
           if (!request.on) {
-            await removeMarkers(c, session.meetingId, record, (fact) => fact === `${COHOST}${person.id}`);
-            return { status: 200 };
+            const removed = await removeMarkers(c, session.meetingId, record, (fact) => fact === `${COHOST}${person.id}`);
+            return removed ? { status: 200 } : UNREACHABLE;
           }
           if (record.coHostIds.has(person.id)) return { status: 200 };
           const added = await addMarker(c, session.meetingId, `${COHOST}${person.id}`);
-          return added.ok ? { status: 200 } : { status: 502, error: "Could not reach the meeting service. Try again." };
+          return added.ok ? { status: 200 } : UNREACHABLE;
         }
       }
     }
@@ -457,10 +470,15 @@ export async function realtimeKitHostAction(
         // The new statement is written before the old one is removed: never open by accident.
         if (request.access !== "open" && record.access !== request.access) {
           const added = await addMarker(c, session.meetingId, `${ACCESS}${request.access}`);
-          if (!added.ok) return { status: 502, error: "Could not reach the meeting service. Try again." };
+          if (!added.ok) return UNREACHABLE;
         }
-        await removeMarkers(c, session.meetingId, record, (fact) => fact.startsWith(ACCESS) && fact !== `${ACCESS}${request.access}`);
-        return { status: 200 };
+        const cleared = await removeMarkers(
+          c,
+          session.meetingId,
+          record,
+          (fact) => fact.startsWith(ACCESS) && fact !== `${ACCESS}${request.access}`,
+        );
+        return cleared ? { status: 200 } : UNREACHABLE;
       }
     }
     return { status: 400, error: "Invalid request." };

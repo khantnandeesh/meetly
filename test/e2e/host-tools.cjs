@@ -11,8 +11,8 @@ const menuFor = async (person, name) => {
 module.exports = async function hostTools(browser) {
   console.log("\n— host tools —");
   const ada = await H.client(browser, { scale: 2 });
-  const ben = await H.client(browser);
-  const cy = await H.client(browser);
+  const ben = await H.client(browser, { scale: 2 });
+  const cy = await H.client(browser, { scale: 2 });
   const url = await H.createMeeting(ada);
   await H.join(ada, url, "Ada Lovelace");
   await H.join(ben, url, "Ben Okri");
