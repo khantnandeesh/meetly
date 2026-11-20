@@ -34,7 +34,7 @@ function MiniView({ tile, onBack }: { tile: RtcTile | undefined; onBack: () => v
       <div className="relative min-h-0 flex-1 overflow-hidden rounded-2xl bg-surface shadow-[inset_0_0_0_1px_var(--border)]">
         {tile ? <MiniTile key={`${tile.participant.identity}:${tile.source}`} tile={tile} /> : <p className="grid h-full place-items-center text-sm text-muted">Nobody else is here yet</p>}
       </div>
-      <div className="flex shrink-0 items-center justify-center gap-2" role="toolbar" aria-label="Call controls">
+      <div className="flex shrink-0 items-center justify-center gap-2" role="toolbar" aria-label="Meeting controls">
         <button
           className="ctrl"
           data-ctl={mic.enabled ? "on" : "off"}
@@ -59,10 +59,10 @@ function MiniView({ tile, onBack }: { tile: RtcTile | undefined; onBack: () => v
         >
           {cam.enabled ? <Video className="size-5" /> : <VideoOff className="size-5" />}
         </button>
-        <button className="ctrl" aria-label="Back to the call" title="Back to the call" onClick={onBack}>
+        <button className="ctrl" aria-label="Close mini window" title="Close mini window" onClick={onBack}>
           <Undo2 className="size-5" />
         </button>
-        <button className="ctrl ctrl-danger ml-1 w-14" aria-label="Leave call" title="Leave call" onClick={() => call.disconnect().catch(() => {})}>
+        <button className="ctrl ctrl-danger ml-1 w-14" aria-label="Leave meeting" title="Leave meeting" onClick={() => call.disconnect().catch(() => {})}>
           <PhoneOff className="size-5" />
         </button>
       </div>
@@ -153,12 +153,12 @@ export function MiniPlaceholder({
           <PictureInPicture2 className="size-6" aria-hidden="true" />
         </span>
         <div className="flex flex-col gap-1.5">
-          <h2 className="font-display text-2xl font-semibold">The call is in a mini window</h2>
-          <p className="leading-relaxed text-muted">It stays on top of your other tabs and windows. You are still in the call, and everyone can still hear you.</p>
+          <h2 className="font-display text-2xl font-semibold">The meeting is in a mini window</h2>
+          <p className="leading-relaxed text-muted">It stays on top of your other windows. You&apos;re still in the meeting.</p>
         </div>
         <button className="btn btn-primary" onClick={onBack} autoFocus>
           <Undo2 className="size-[1.125rem]" aria-hidden="true" />
-          Bring it back
+          Close mini window
         </button>
         <label className="flex cursor-pointer items-center gap-3 text-left text-sm text-muted">
           <input type="checkbox" role="switch" checked={onShare} onChange={(event) => onShareChange(event.target.checked)} className="peer sr-only" />
@@ -167,7 +167,7 @@ export function MiniPlaceholder({
             className="switch peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent"
             data-on={onShare}
           />
-          Open it whenever I start presenting
+          Open it when I share my screen
         </label>
       </div>
     </div>

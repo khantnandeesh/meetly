@@ -24,7 +24,7 @@ const pinnedBar = (person) => panel(person).locator("[data-pinned-message]");
 async function menuOf(person, text) {
   const row = bubble(person, text).locator("xpath=..");
   await row.hover();
-  await row.getByRole("button", { name: "More actions" }).click();
+  await row.getByRole("button", { name: "Message actions" }).click();
   await person.page.getByRole("menu").waitFor();
   return (await person.page.getByRole("menuitem").allInnerTexts()).map((item) => item.trim());
 }
@@ -163,7 +163,7 @@ module.exports = async function chat(browser) {
     "…and for a guest, who cannot take it down",
     (await H.until(async () => (await pinnedBar(ben).count()) === 1, 5000)) &&
       (await pinnedBar(ben).innerText()).includes("Ada Lovelace") &&
-      (await pinnedBar(ben).getByRole("button", { name: "Unpin message" }).count()) === 0,
+      (await pinnedBar(ben).getByRole("button", { name: "Unpin for everyone" }).count()) === 0,
   );
   const pinToast = cy.page.locator("[data-toast]").filter({ hasText: "A message was pinned in chat" });
   H.ok("someone with chat closed is told once", await H.until(async () => (await pinToast.count()) === 1, 5000));
@@ -194,7 +194,7 @@ module.exports = async function chat(browser) {
   // A co-host may pin; when they stop being one, they may not.
   const benId = await H.identity(ben);
   H.ok("the host makes Ben a co-host", (await H.hostApi(ada, { token: hostToken, action: "coHost", identity: benId, on: true })) === 200);
-  await H.until(async () => (await pinnedBar(ben).getByRole("button", { name: "Unpin message" }).count()) === 1, 5000);
+  await H.until(async () => (await pinnedBar(ben).getByRole("button", { name: "Unpin for everyone" }).count()) === 1, 5000);
   const coHostMenu = await menuOf(ben, "Notes are at");
   H.ok("a co-host's menu has Pin for everyone", coHostMenu.includes("Pin for everyone"), coHostMenu.join(", "));
   await choose(ben, "Pin for everyone");
@@ -203,7 +203,7 @@ module.exports = async function chat(browser) {
     await H.until(async () => (await pinnedBar(ada).innerText().catch(() => "")).includes("Notes are at"), 6000),
   );
   H.ok("only one message is pinned at a time", (await pinnedBar(ada).count()) === 1);
-  await pinnedBar(ada).getByRole("button", { name: "Unpin message" }).click();
+  await pinnedBar(ada).getByRole("button", { name: "Unpin for everyone" }).click();
   H.ok(
     "unpinning takes it down for everyone",
     await H.until(async () => (await pinnedBar(ada).count()) + (await pinnedBar(ben).count()) + (await pinnedBar(dee).count()) === 0, 6000),
@@ -356,7 +356,7 @@ module.exports = async function chat(browser) {
   H.ok("phone: Save chat is in the sheet's header, on screen", !!saveBox && saveBox.x >= 0 && saveBox.x + saveBox.width <= H.PHONE.width && saveBox.width >= 40);
   await H.shot(mo, "chat-history-phone");
 
-  await ada.page.getByRole("button", { name: "Leave call" }).click();
+  await ada.page.getByRole("button", { name: "Leave meeting" }).click();
   const leaveSave = ada.page.getByRole("button", { name: "Save chat" });
   await leaveSave.waitFor({ timeout: 8000 });
   await H.shot(ada, "chat-save-on-leaving-desktop");
@@ -368,7 +368,7 @@ module.exports = async function chat(browser) {
   await openChat(hal);
   H.ok("with nothing said, Save chat is not offered as something to press", (await panel(hal).getByRole("button", { name: "Save chat" }).getAttribute("aria-disabled")) === "true");
   await hal.page.getByRole("button", { name: "Close chat" }).click();
-  await hal.page.getByRole("button", { name: "Leave call" }).click();
+  await hal.page.getByRole("button", { name: "Leave meeting" }).click();
   await hal.page.getByRole("button", { name: "Rejoin" }).waitFor();
   H.ok("…and the goodbye screen has no Save chat", (await hal.page.getByRole("button", { name: "Save chat" }).count()) === 0);
   await hal.ctx.close();

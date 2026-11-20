@@ -58,7 +58,7 @@ export function PeoplePanel({
       }
     };
     section("Raised hands", hands, true);
-    section(needle ? "Matches" : "In this call", rest, false);
+    section(needle ? "Matches" : "In this meeting", rest, false);
     return { items: list, height: top, matches: found.length };
   }, [participants, query]);
 
@@ -80,7 +80,7 @@ export function PeoplePanel({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold" role="status">
-              {copyState.copied ? "Link copied" : "Copy invite link"}
+              {copyState.copied ? "Link copied" : "Copy meeting link"}
             </span>
             <span className="block truncate font-mono text-xs text-muted">{code}</span>
           </span>
@@ -258,7 +258,7 @@ function ModeratorBar({ anyHands }: { anyHands: boolean }) {
       </Dropdown.Root>
       <button className="btn btn-secondary h-11 flex-1 rounded-xl px-3 text-sm" onClick={muteAll}>
         <MicOff className="size-4" aria-hidden="true" />
-        Mute all
+        Mute everyone
       </button>
       <Dropdown.Root>
         <Dropdown.Trigger className="icon-btn size-11 bg-surface-2" aria-label="More actions for everyone">
@@ -275,7 +275,7 @@ function ModeratorBar({ anyHands }: { anyHands: boolean }) {
                 <div className="menu-sep" />
                 <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                   <PhoneOff className="size-4" aria-hidden="true" />
-                  End call for everyone
+                  End meeting for everyone
                 </Dropdown.Item>
               </>
             )}

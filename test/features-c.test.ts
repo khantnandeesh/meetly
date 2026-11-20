@@ -325,7 +325,7 @@ test("rtk polls: polls that were there before you joined are there when you join
 
 test("rtk polls: starting one checks our limits and the preset, then asks RealtimeKit", async () => {
   const guest = await connected();
-  await assert.rejects(guest.call.createPoll(lunch), /Only the host can start a poll/);
+  await assert.rejects(guest.call.createPoll(lunch), /Only the host and co-hosts can start a poll/);
   assert.equal(guest.meeting.polls.createCalls.length, 0, "the SDK would have dropped it without a word; it is not even asked");
 
   const { call, meeting, events } = await connected({ polls: { canCreate: true } });

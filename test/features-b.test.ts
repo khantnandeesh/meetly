@@ -388,12 +388,12 @@ test("rtk blur: chosen before joining but unable to start, the camera is turned 
 
 test("rtk blur: a failure in the call rejects with a message, leaves the camera alone and resets the setting", async () => {
   const { call, self } = await connected({ fx: fakeEffects({ blurFails: true }), before: (m) => m.self.setVideo(true) });
-  await assert.rejects(call.setBackground("blur"), /Couldn't start background blur/);
+  await assert.rejects(call.setBackground("blur"), /Your camera is unchanged/);
   assert.equal(self.videoEnabled, true);
   assert.deepEqual([call.localEffects().background, call.localEffects().backgroundState], ["none", "off"]);
   const refused = await connected();
   refused.self.refuseMiddleware = true;
-  await assert.rejects(refused.call.setBackground("blur"), /Couldn't start background blur/);
+  await assert.rejects(refused.call.setBackground("blur"), /Your camera is unchanged/);
   assert.equal(refused.call.localEffects().background, "none");
 });
 

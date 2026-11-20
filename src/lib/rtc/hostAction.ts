@@ -43,8 +43,8 @@ export function parseHostAction(body: Record<string, unknown>): HostAction | nul
 
 export type HostActionResult = { status: 200 } | { status: 400 | 403 | 404 | 502; error: string };
 
-export const DENIED = { status: 403, error: "Only the meeting host can do that." } as const satisfies HostActionResult;
-export const HOST_ONLY = { status: 403, error: "Only the host can do that, not a co-host." } as const satisfies HostActionResult;
+export const DENIED = { status: 403, error: "Only the host or a co-host can do that." } as const satisfies HostActionResult;
+export const HOST_ONLY = { status: 403, error: "Only the host can do that." } as const satisfies HostActionResult;
 export const NOT_THE_HOST = { status: 403, error: "A co-host can't do that to the host." } as const satisfies HostActionResult;
 export const OWN_CONTROLS = { status: 400, error: "Use your own controls for that." } as const satisfies HostActionResult;
 export const GONE = { status: 404, error: "That person may have already left." } as const satisfies HostActionResult;

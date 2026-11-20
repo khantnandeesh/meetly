@@ -70,13 +70,13 @@ export function DataSaverBadge({ onOpen, compact = false }: { onOpen: () => void
   const presence = usePresence(dataSaver);
   if (!presence.mounted) return null;
   return (
-    <Tip label="Using less data. Open call quality">
+    <Tip label="Using less data. Open connection quality">
       <button
         data-saver-badge
         data-leaving={presence.leaving}
         onAnimationEnd={presence.onAnimationEnd}
         onClick={onOpen}
-        aria-label="Using less data. Open call quality"
+        aria-label="Using less data. Open connection quality"
         className={`anim-pop inline-flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl text-[0.8125rem] font-medium text-accent transition-colors hover:bg-surface-2 ${
           compact ? "size-11 justify-center bg-surface-2 active:bg-surface-3" : "h-10 px-2"
         }`}
@@ -90,13 +90,13 @@ export function DataSaverBadge({ onOpen, compact = false }: { onOpen: () => void
 
 const HEALTH: Record<ConnectionHealth, { label: string; hint: string; tone: string }> = {
   good: { label: "Good", hint: "Other people should see and hear you clearly.", tone: "text-accent" },
-  fair: { label: "Fair", hint: "Mostly fine. Your picture may be turned down now and then.", tone: "text-text" },
+  fair: { label: "Fair", hint: "Mostly fine. Your video quality may drop at times.", tone: "text-text" },
   poor: {
     label: "Weak",
-    hint: "Other people may see you freeze or hear gaps. Moving closer to your router, or using less data, can help.",
+    hint: "Other people may see you freeze or hear gaps. Move closer to your Wi-Fi router, or turn on Use less data.",
     tone: "text-warn",
   },
-  unknown: { label: "Checking…", hint: "It takes a few seconds in the call before this can be judged.", tone: "text-muted" },
+  unknown: { label: "Checking…", hint: "This takes a few seconds after you join.", tone: "text-muted" },
 };
 
 const kbps = (value: number | null) => (value === null ? "—" : value >= 1000 ? `${(value / 1000).toFixed(1)} Mbps` : `${value} kbps`);
@@ -104,7 +104,7 @@ const kbps = (value: number | null) => (value === null ? "—" : value >= 1000 ?
 function diagnostics(provider: string, connection: ConnectionHealth, dataSaver: boolean, stats: CallStats | null): string {
   const video = stats?.sentVideo;
   return [
-    "Meetly call diagnostics",
+    "Meetly connection details",
     `Time: ${new Date().toISOString()}`,
     `Provider: ${provider}`,
     `Connection: ${connection}`,
@@ -149,9 +149,9 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
   const rows: [string, string][] = [
     ["Sending", kbps(stats?.sentKbps ?? null)],
     ["Receiving", kbps(stats?.receivedKbps ?? null)],
-    ["Your camera, as sent", video ? `${video.width} × ${video.height}${video.fps ? ` · ${Math.round(video.fps)} fps` : ""}` : "—"],
-    ["Round trip", stats?.roundTripMs == null ? "—" : `${stats.roundTripMs} ms`],
-    ["Lost on the way", stats?.lossPercent == null ? "—" : `${stats.lossPercent}%`],
+    ["Your camera resolution", video ? `${video.width} × ${video.height}${video.fps ? ` · ${Math.round(video.fps)} fps` : ""}` : "—"],
+    ["Delay", stats?.roundTripMs == null ? "—" : `${stats.roundTripMs} ms`],
+    ["Data lost", stats?.lossPercent == null ? "—" : `${stats.lossPercent}%`],
   ];
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -163,7 +163,7 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
           className="dialog fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[min(28rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-3xl bg-surface shadow-[inset_0_0_0_1px_var(--border-strong),0_30px_80px_-20px_rgb(0_0_0/0.8)]"
         >
           <div className="flex items-center justify-between py-3 pr-3 pl-6">
-            <Dialog.Title className="font-display text-xl font-semibold">Call quality</Dialog.Title>
+            <Dialog.Title className="font-display text-xl font-semibold">Connection quality</Dialog.Title>
             <Dialog.Close className="icon-btn" aria-label="Close">
               <X className="size-5" aria-hidden="true" />
             </Dialog.Close>
@@ -191,7 +191,7 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
               <span>
                 <span className="block text-[0.9375rem] font-medium">Use less data</span>
                 <span className="block text-sm text-muted">
-                  Sends your camera smaller and shows only the person talking. Sound and shared screens are not touched.
+                  Sends your camera at lower quality and shows video only for the person speaking. Sound and shared screens stay the same.
                 </span>
               </span>
               <input
@@ -209,7 +209,7 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
             <div className="flex flex-col gap-2 border-t border-border px-6 py-4">
               <button className="btn btn-secondary h-11 rounded-xl text-sm" onClick={copy.copy}>
                 {copy.copied ? <Check className="size-4 text-accent" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
-                <span role="status">{copy.copied ? "Copied" : "Copy diagnostics"}</span>
+                <span role="status">{copy.copied ? "Copied" : "Copy connection details"}</span>
               </button>
               <p className="text-center text-xs text-faint">These numbers stay in this browser unless you copy them.</p>
             </div>

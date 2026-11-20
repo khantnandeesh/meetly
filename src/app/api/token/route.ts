@@ -7,8 +7,10 @@ import { issueRealtimeKitJoin, missingRealtimeKitEnv, realtimeKitPassSecret } fr
 
 const REFUSALS = {
   removed: "The host removed you from this meeting.",
-  locked: "This meeting is locked. Nobody new can join right now.",
+  locked: "This meeting is locked. Ask the host to unlock it, then try again.",
 } as const;
+
+const NOT_SET_UP = "Meetly can't start meetings right now. Try again later.";
 
 function refuse(reason: keyof typeof REFUSALS): Response {
   return Response.json({ error: REFUSALS[reason], reason }, { status: 403 });
@@ -19,13 +21,13 @@ export async function POST(request: Request) {
   if (RTC_PROVIDER === "realtimekit") {
     const missing = missingRealtimeKitEnv();
     if (missing.length > 0) {
-      return Response.json({ error: `Server is missing ${missing.join(", ")}.` }, { status: 500 });
+      // The names are for whoever runs the site, not for the person trying to join.
+      console.error(`Server is missing ${missing.join(", ")}.`);
+      return Response.json({ error: NOT_SET_UP }, { status: 500 });
     }
   } else if (!process.env.LIVEKIT_API_KEY || !process.env.LIVEKIT_API_SECRET || !process.env.LIVEKIT_URL) {
-    return Response.json(
-      { error: "Server is missing LIVEKIT_URL, LIVEKIT_API_KEY or LIVEKIT_API_SECRET." },
-      { status: 500 },
-    );
+    console.error("Server is missing LIVEKIT_URL, LIVEKIT_API_KEY or LIVEKIT_API_SECRET.");
+    return Response.json({ error: NOT_SET_UP }, { status: 500 });
   }
 
   let body: { room?: unknown; name?: unknown };
@@ -38,10 +40,10 @@ export async function POST(request: Request) {
   const room = typeof body.room === "string" ? body.room : "";
   const name = typeof body.name === "string" ? body.name.trim().slice(0, 40) : "";
   if (!isValidCode(room)) {
-    return Response.json({ error: "Invalid meeting code." }, { status: 400 });
+    return Response.json({ error: "That isn't a valid meeting code." }, { status: 400 });
   }
   if (!name) {
-    return Response.json({ error: "A display name is required." }, { status: 400 });
+    return Response.json({ error: "Enter your name to join." }, { status: 400 });
   }
 
   if (RTC_PROVIDER === "realtimekit") {
@@ -56,7 +58,7 @@ export async function POST(request: Request) {
       });
     } catch (error) {
       console.error("Could not issue a RealtimeKit token", error);
-      return Response.json({ error: "Could not reach the meeting service. Try again." }, { status: 502 });
+      return Response.json({ error: "Couldn't connect to the meeting. Try again in a moment." }, { status: 502 });
     }
   }
 

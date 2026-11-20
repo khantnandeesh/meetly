@@ -31,7 +31,7 @@ import { POLL_ID, checkNewPoll } from "./rtc/shared";
 
 export type PollResult = { status: 200; data: Record<string, unknown> } | PollError | { status: 502; error: string };
 
-const NOT_IN_CALL = { status: 403, error: "You need to be in the call to use its polls." } as const;
+const NOT_IN_CALL = { status: 403, error: "Join the meeting to use polls." } as const;
 const HOSTS_ONLY = { status: 403, error: "Only the host and co-hosts can start a poll." } as const;
 
 export async function liveKitPoll(token: unknown, body: Record<string, unknown>, passFor: (room: string) => Pass): Promise<PollResult> {

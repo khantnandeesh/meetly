@@ -139,7 +139,7 @@ function MessageRow({ message, own, entering, actions }: { message: RtcChatMessa
       </p>
       <Dropdown.Root open={open} onOpenChange={setOpen}>
         <Dropdown.Trigger
-          aria-label="More actions"
+          aria-label="Message actions"
           className="icon-btn size-8 shrink-0 rounded-lg opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:pointer-events-none"
         >
           <Ellipsis className="size-4" aria-hidden="true" />
@@ -153,7 +153,7 @@ function MessageRow({ message, own, entering, actions }: { message: RtcChatMessa
             {actions.canPin && (
               <Dropdown.Item className="menu-item" onSelect={() => actions.onPin(pinned ? null : message.id)}>
                 {pinned ? <PinOff className="size-4 text-muted" aria-hidden="true" /> : <Pin className="size-4 text-muted" aria-hidden="true" />}
-                {pinned ? "Unpin" : "Pin for everyone"}
+                {pinned ? "Unpin for everyone" : "Pin for everyone"}
               </Dropdown.Item>
             )}
             {own && (
@@ -217,7 +217,7 @@ function PinnedMessage({ message, canUnpin, onUnpin }: { message: RtcChatMessage
       </div>
       {canUnpin && (
         <Tip label="Unpin for everyone" side="left">
-          <button className="icon-btn size-8 rounded-lg" aria-label="Unpin message" onClick={onUnpin}>
+          <button className="icon-btn size-8 rounded-lg" aria-label="Unpin for everyone" onClick={onUnpin}>
             <PinOff className="size-4" aria-hidden="true" />
           </button>
         </Tip>
@@ -376,7 +376,7 @@ export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
               </span>
               <p className="font-semibold">No messages yet</p>
               <p className="text-sm leading-relaxed text-muted">
-                Everyone in the call sees messages, including people who join later. They are gone when the call ends.
+                Everyone in the meeting sees messages, including people who join later. To keep them, save the chat before you leave.
               </p>
             </div>
           ) : (
@@ -395,7 +395,7 @@ export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
                     data-earlier-divider
                     className="flex shrink-0 items-center gap-3 text-xs font-medium text-faint before:h-px before:flex-1 before:bg-border after:h-px after:flex-1 after:bg-border"
                   >
-                    Earlier messages above · you joined here
+                    You joined here
                   </p>
                 )}
               </div>

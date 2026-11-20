@@ -85,7 +85,7 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
 
   const start = useMemo(() => localDateTime(date, time), [date, time]);
   // A minute's grace: "now" is a fair time to schedule for.
-  const problem = !start ? "Choose a date and a start time." : start.getTime() < opened - 60_000 ? "That time has already passed." : null;
+  const problem = !start ? "Choose a date and a start time." : start.getTime() < opened - 60_000 ? "That time has passed. Choose a later one." : null;
   const event: CalendarEvent | null = start && !problem ? { title: title.trim() || DEFAULT_TITLE, start, minutes, link } : null;
   const zone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
 
@@ -100,8 +100,8 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
       <div className="flex flex-col gap-2">
         <p className="text-sm leading-relaxed text-muted">
           {mode === "link"
-            ? "Send this to the people you want to meet. It works whenever you're ready and doesn't expire."
-            : "The link works whenever you're ready and doesn't expire."}
+            ? "Send this link to the people you want to meet. It doesn't expire."
+            : "This link doesn't expire."}
         </p>
         <button
           type="button"
@@ -120,7 +120,7 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
       {!planning ? (
         <button type="button" className="btn btn-secondary" onClick={() => setPlanning(true)}>
           <CalendarPlus className="size-[1.125rem]" aria-hidden="true" />
-          Add it to a calendar…
+          Add to calendar…
         </button>
       ) : (
         <>
@@ -219,8 +219,8 @@ function ScheduleForm({ code, mode }: { code: string; mode: "link" | "schedule" 
             </button>
           </div>
           <p className="text-sm leading-relaxed text-faint">
-            The .ics file opens in Apple Calendar, desktop Outlook and most others. Meetly sends nothing and keeps nothing: the
-            invitation and the reminder come from your own calendar.
+            The .ics file opens in Apple Calendar, Outlook for desktop and most other calendar apps. Meetly doesn&apos;t send
+            invitations or reminders. Your calendar does.
           </p>
         </>
       )}

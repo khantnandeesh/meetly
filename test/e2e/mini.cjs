@@ -60,7 +60,7 @@ module.exports = async function miniSuite(browser) {
   H.ok("it opens as a window of its own", ada.ctx.pages().length === 2 && (await ada.page.evaluate(() => !!window.documentPictureInPicture.window)));
   await H.sleep(500);
   const look = await mini.evaluate(() => {
-    const button = document.querySelector('[aria-label="Leave call"]');
+    const button = document.querySelector('[aria-label="Leave meeting"]');
     return {
       sheets: document.querySelectorAll('link[rel="stylesheet"], style').length,
       body: getComputedStyle(document.body).backgroundColor,
@@ -72,12 +72,12 @@ module.exports = async function miniSuite(browser) {
   });
   H.ok("it carries the app's styles: tokens, fonts, control sizes", look.sheets > 0 && look.body === "rgb(11, 11, 15)" && look.buttonHeight === 48 && look.buttonColour === "rgb(229, 72, 77)" && /Inter/.test(look.font), JSON.stringify(look));
   H.ok(`at ${MINI.width} × ${MINI.height} nothing overflows`, !look.overflow);
-  H.ok("it has microphone, camera, back and leave", (await mini.getByRole("toolbar").getByRole("button").count()) === 4 && (await mini.getByRole("button", { name: "Mute microphone" }).count()) === 1 && (await mini.getByRole("button", { name: "Turn off camera" }).count()) === 1 && (await mini.getByRole("button", { name: "Leave call" }).count()) === 1 && (await mini.getByRole("button", { name: "Back to the call" }).count()) === 1);
+  H.ok("it has microphone, camera, back and leave", (await mini.getByRole("toolbar").getByRole("button").count()) === 4 && (await mini.getByRole("button", { name: "Mute microphone" }).count()) === 1 && (await mini.getByRole("button", { name: "Turn off camera" }).count()) === 1 && (await mini.getByRole("button", { name: "Leave meeting" }).count()) === 1 && (await mini.getByRole("button", { name: "Close mini window" }).count()) === 1);
   H.ok("it shows the other person (the stage's main picture), not you", (await showing(mini)) === `${benId}:camera`, await showing(mini));
   H.ok("with their name", /Ben Okri/.test(await mini.locator("[data-mini-showing]").innerText()));
   H.ok("their picture is playing in it", await H.until(async () => (await playing(mini, "video")) === 1, 8000));
   const there = { count: await placeholder(ada).count(), text: await placeholder(ada).textContent().catch(() => ""), button: await placeholder(ada).locator("button").count() };
-  H.ok("the tab says where the call went, and offers the way back", there.count === 1 && /The call is in a mini window/.test(there.text) && /Bring it back/.test(there.text) && there.button === 1, JSON.stringify(there));
+  H.ok("the tab says where the call went, and offers the way back", there.count === 1 && /The meeting is in a mini window/.test(there.text) && /Close mini window/.test(there.text) && there.button === 1, JSON.stringify(there));
   H.ok("the tab is not drawing the same pictures a second time", (await ada.page.locator("[data-tile]").count()) === 0);
   await H.shot(ada, "mini-placeholder-desktop");
   await mini.screenshot({ path: process.env.MEETLY_SHOTS ? `${process.env.MEETLY_SHOTS}/mini-window.png` : undefined }).catch(() => {});
@@ -133,8 +133,8 @@ module.exports = async function miniSuite(browser) {
   H.ok("sound is still arriving from everyone", await ada.page.evaluate(() => Array.from(window.__meetly.room.remoteParticipants.values()).every((p) => Array.from(p.audioTrackPublications.values()).every((pub) => pub.isSubscribed && pub.track && pub.track.attachedElements.length > 0))));
 
   /* ------------------------------------------------------------------ closing it */
-  await mini.getByRole("button", { name: "Back to the call" }).click();
-  H.ok("\"Back to the call\" closes it", await closed(mini));
+  await mini.getByRole("button", { name: "Close mini window" }).click();
+  H.ok("\"Close mini window\" closes it", await closed(mini));
   H.ok("and the stage is back in the tab, pictures playing", (await H.until(async () => (await placeholder(ada).count()) === 0 && (await ada.page.locator("[data-tile]").count()) === 3, 5000)) && (await H.until(async () => (await playing(ada.page, "[data-tile] video")) >= 2, 8000)));
   H.ok("still in the call", (await status(ada)) === "connected");
 
@@ -147,8 +147,8 @@ module.exports = async function miniSuite(browser) {
   await ada.page.keyboard.press("Shift+P");
   H.ok("Shift+P closes it again", await closed(mini));
   mini = await openFromMore(ada);
-  await placeholder(ada).getByRole("button", { name: "Bring it back" }).click();
-  H.ok("\"Bring it back\" in the tab closes it", (await closed(mini)) && (await H.until(async () => (await placeholder(ada).count()) === 0, 3000)));
+  await placeholder(ada).getByRole("button", { name: "Close mini window" }).click();
+  H.ok("\"Close mini window\" in the tab closes it", (await closed(mini)) && (await H.until(async () => (await placeholder(ada).count()) === 0, 3000)));
 
   /* --------------------------------------------------------------- the main tile */
   await ben.page.getByRole("button", { name: "Share screen" }).click();
@@ -164,21 +164,21 @@ module.exports = async function miniSuite(browser) {
 
   /* ------------------------------------------------------- presenting yourself */
   await fakeScreen(ada);
-  await placeholder(ada).getByText("Open it whenever I start presenting").click();
+  await placeholder(ada).getByText("Open it when I share my screen").click();
   H.ok("the opt-in to open it when presenting is remembered", (await ada.page.evaluate(() => JSON.parse(localStorage.getItem("meetly:call-settings")).miniOnShare)) === true);
-  await placeholder(ada).getByRole("button", { name: "Bring it back" }).click();
+  await placeholder(ada).getByRole("button", { name: "Close mini window" }).click();
   await closed(mini);
   mini = await opening(ada, () => ada.page.getByRole("button", { name: "Share screen" }).click());
   H.ok("opted in, starting to present opens it (here: no picker to wait for, see the report)", (await media(ada)).screenShare === true);
   const own = await showing(mini);
   H.ok("your own shared screen is never what it shows you", !!own && own !== `${adaId}:screen_share` && !own.startsWith(adaId), own);
-  await mini.getByRole("button", { name: "Back to the call" }).click();
+  await mini.getByRole("button", { name: "Close mini window" }).click();
   await closed(mini);
   await ada.page.getByRole("button", { name: "Stop sharing" }).click();
 
   /* -------------------------------------------------------------------- leaving */
   mini = await openFromMore(ada);
-  await mini.getByRole("button", { name: "Leave call" }).click();
+  await mini.getByRole("button", { name: "Leave meeting" }).click();
   H.ok("its leave button leaves the call", await H.until(async () => (await ada.page.getByText("You left the meeting").count()) === 1, 8000));
   H.ok("and takes the mini window with it", await closed(mini));
   H.ok("the others stay in their call", (await status(ben)) === "connected" && (await H.until(async () => (await ben.page.evaluate(() => window.__meetly.room.remoteParticipants.size)) === 1, 8000)));

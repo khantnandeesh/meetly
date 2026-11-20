@@ -124,10 +124,10 @@ module.exports = async function quality(browser) {
 
   /* ---------------------------------------------------------- the quality dialog */
   await openMore(ada);
-  await ada.page.getByRole("menuitem", { name: "Call quality…" }).click();
+  await ada.page.getByRole("menuitem", { name: "Connection quality…" }).click();
   const dialog = ada.page.locator("[data-call-quality]");
   await dialog.waitFor();
-  H.ok("\"Call quality\" says how the connection is in a word", await H.until(async () => /^(Good|Fair)$/.test((await dialog.locator("[data-connection] span").nth(1).innerText()).trim()), 8000), await dialog.locator("[data-connection]").innerText());
+  H.ok("\"Connection quality\" says how the connection is in a word", await H.until(async () => /^(Good|Fair)$/.test((await dialog.locator("[data-connection] span").nth(1).innerText()).trim()), 8000), await dialog.locator("[data-connection]").innerText());
   H.ok("and shows what is being sent and received", await H.until(async () => /\d+ (kbps|Mbps)/.test(await dialog.innerText()) && /\d+ × \d+/.test(await dialog.innerText()), 8000), (await dialog.locator("dl").innerText()).replace(/\n+/g, " | "));
   await H.shot(ada, "quality-dialog-desktop");
   await dialog.getByRole("button", { name: "Close" }).click();
@@ -179,8 +179,8 @@ module.exports = async function quality(browser) {
   H.ok("the phone's top bar shows it is on", (await phone.page.locator("header [data-saver-badge]").count()) === 1 && (await H.noOverflow(phone)));
   await hold(phone, EXCELLENT);
   await openMore(phone);
-  H.ok("More on a phone has the switch and call quality", (await saverItem(phone).count()) === 1 && (await phone.page.getByRole("menuitem", { name: "Call quality…" }).count()) === 1);
-  await phone.page.getByRole("menuitem", { name: "Call quality…" }).tap();
+  H.ok("More on a phone has the switch and connection quality", (await saverItem(phone).count()) === 1 && (await phone.page.getByRole("menuitem", { name: "Connection quality…" }).count()) === 1);
+  await phone.page.getByRole("menuitem", { name: "Connection quality…" }).tap();
   await phone.page.locator("[data-call-quality]").waitFor();
   H.ok("the call quality dialog fits a 390 px phone", await H.noOverflow(phone));
   await H.shot(phone, "quality-dialog-phone");
