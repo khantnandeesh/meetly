@@ -61,7 +61,7 @@ and rebuild. Only the chosen provider's SDK is downloaded, and only once Join is
 | Provider | Variables |
 | --- | --- |
 | `livekit` | `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET` |
-| `realtimekit` | `CLOUDFLARE_ACCOUNT_ID`, `REALTIMEKIT_APP_ID`, `REALTIMEKIT_HOST_PRESET`, `REALTIMEKIT_GUEST_PRESET`, `CLOUDFLARE_API_TOKEN`, `MEETLY_SESSION_SECRET`, and optionally `REALTIMEKIT_KNOCK_PRESET` |
+| `realtimekit` | `CLOUDFLARE_ACCOUNT_ID`, `REALTIMEKIT_APP_ID`, `REALTIMEKIT_HOST_PRESET`, `REALTIMEKIT_GUEST_PRESET`, `CLOUDFLARE_API_TOKEN`, `MEETLY_SESSION_SECRET`, and optionally `REALTIMEKIT_KNOCK_PRESET`, `REALTIMEKIT_WEBINAR_HOST_PRESET`, `REALTIMEKIT_WEBINAR_VIEWER_PRESET` and `REALTIMEKIT_WEBINAR_COHOST_PRESET` (see [Webinars](#webinars)) |
 
 For RealtimeKit, create an app and two presets in it: a host preset that may mute and remove
 participants, and a guest preset that may not. Both need to publish audio, video and screen
@@ -304,6 +304,83 @@ that the code is new again. People who have to ask wait in a second room (`<code
 token that can do nothing, so nothing of the meeting reaches them; being let in sends them a
 token for the meeting itself. On RealtimeKit the host's record lapses once the meeting is empty
 and the host has not joined for thirty days.
+
+## Webinars
+
+**Words.** A **webinar** is a call where a few people present and everyone else watches. The
+**speakers** are the people on stage (the host, and anyone the host brings up); the **audience**
+is everyone watching. In a webinar the interface says "webinar" wherever a meeting would be named
+("Leave webinar", "End webinar for everyone", "You left the webinar").
+
+"New webinar" (under the arrow next to New meeting on the home page) makes a link whose record
+says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
+and a meeting's link cannot become a webinar. The browser that made it is the host. Everyone else
+joins the audience: they watch and listen, raise a hand, react and vote in polls, and have no
+microphone, camera, screen share or tile. Chat is read-only for them ("Only speakers and hosts can
+send messages"). Their pre-join screen asks for a name only ("Watch"), so the browser never asks
+them for a camera or microphone. Their bar holds "● Live · N watching" and the link on the left,
+Raise hand, React and Leave in the middle, and Chat on the right, whose badge counts new messages
+and polls waiting for a vote (`ViewerPreJoin.tsx`, `ViewerCall.tsx`, `ViewerControlBar.tsx`).
+
+The host and co-hosts bring someone on stage from People › Audience, where raised hands come first
+in the order they went up ("Invite to speak", one person at a time). The invitation is a dialog
+that asks first, with the person's camera preview and microphone and camera switches in it from
+the start: nothing of theirs is sent until they choose "Join stage" ("Not now", or Esc, turns it
+down; `StageInvite.tsx`). On stage they get the meeting's screen, with "● Live · On stage" where the
+clock is (in the top bar on a phone), which holds "Back to audience". The host can send them back
+too, from their menu. Going back stops whatever they were sending.
+
+A speaker can chat, the audience cannot, and nobody is ever one without the other: the stage and
+the chat permission change together or not at all. People › Speakers lists who is on stage;
+"Left the webinar" lists speakers and co-hosts who left, never the audience, whose comings and
+goings show only in the Audience count, with no notification or sound. Audience reactions are
+shown without a name.
+
+**Co-hosts** moderate from the audience: People with the Audience, hands, the waiting list and
+the host's controls (Invite to speak, Back to audience, mute), and the chat. They are on stage
+only if invited, and cannot end the webinar or appoint co-hosts. Someone made co-host (or no
+longer one) reconnects with a fresh token for the same person, which shows "Switching to co-host…"
+for a second or two, the same on both providers.
+
+How many may watch at once is `MEETLY_WEBINAR_VIEWER_CAP` (250 unless set). Past it, people are
+told "This webinar is full" and can try again; the host always gets in. Every check made before
+someone joins a webinar is in `src/lib/webinarGate.server.ts`.
+
+The record is marked like this, for anything on the server that needs to know:
+
+- **LiveKit:** `mode: "webinar"` in the room's metadata (`parseRoomMeta(...).mode` in
+  `src/lib/host.server.ts`). The audience's tokens cannot publish, so LiveKit itself refuses
+  their media. Inviting someone is `RoomService.updateParticipant`: our server gives them the
+  right to publish together with a `stage: "invited"` attribute, and they count as audience until
+  their own client clears it by saying yes. Sending them back takes the right away again. Chat
+  goes through our server, which takes messages from whoever may publish, the host and co-hosts.
+  `src/lib/webinar.server.ts` holds those rules; anyone may send themselves back.
+- **RealtimeKit:** one more `meetly-…` record, `meetly-mode:webinar` (`readRecord(...).mode` in
+  `src/lib/rtc/server/realtimekit.ts`). Three presets, all `view_type` WEBINAR:
+  - `REALTIMEKIT_WEBINAR_HOST_PRESET` (`meetly-webinar-host`): the host, who goes straight on stage;
+  - `REALTIMEKIT_WEBINAR_VIEWER_PRESET` (`meetly-webinar-viewer`): the audience, whose media is
+    "can request" and who cannot send chat;
+  - `REALTIMEKIT_WEBINAR_COHOST_PRESET` (`meetly-webinar-cohost`): co-hosts, also "can request",
+    with the moderation the host's controls need. A new co-host's record is switched to it and
+    given a fresh token (`realtimeKitWebinarRejoin`); this is the one place to change if
+    RealtimeKit applies a preset change to someone already connected, which has not been tried.
+
+  The stage is RealtimeKit's own (`meeting.stage`): inviting is `grantAccess`, which puts them in
+  `ACCEPTED_TO_JOIN_STAGE`; saying yes is their `stage.join()`; sending back is `kick` (on stage)
+  or `denyAccess` (invited, not answered). Our server checks the caller is the host or a co-host
+  first. Their chat is turned on and off with the SDK's `participants.updatePermissions` (the REST
+  API has no call for a live participant's permissions), which needs
+  `can_change_participant_permissions` on the inviter's preset; whoever cannot do both is not
+  offered "Invite to speak". Who is on stage is read from the participants the SDK already
+  announced and their `stageStatusUpdate` events; `getAllJoinedPeers()` (10 calls a minute) is
+  never called. The audience limit is counted from the active session's `live_participants`,
+  which includes the people on stage. `test/e2e/realtimekit-webinar-rest.cjs` checks the presets
+  and the co-host token against the real REST API (it is not part of the browser suite).
+
+Viewer names are shown to the host and co-hosts only, by the interface: other people never see
+the audience list, the names of audience hands, or who voted for what in a named poll (they see
+the counts). On both providers the audience is in the same room as everyone else, so a modified
+client could still read them.
 
 ## How it fits together
 

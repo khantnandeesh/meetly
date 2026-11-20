@@ -44,6 +44,8 @@ export type MeetingPeek = {
   host: boolean;
   /** How many people are in it right now, or null where the provider cannot say cheaply. */
   count: number | null;
+  /** A meeting or a webinar, as its record says. Absent means "meeting". */
+  mode?: CallMode;
 };
 
 /**
@@ -115,14 +117,15 @@ export interface RtcParticipant {
    * event, not by `subscribe`.
    */
   readonly role: ParticipantRole;
+  /**
+   * Webinars: the host has invited them on stage and they have not answered yet (they are still a
+   * "viewer"). Always false in a meeting. Read live; a change is announced by the `stage` event.
+   */
+  readonly stageInvite: boolean;
 }
 
-/** You, as `RtcCall.local` has you: one more thing that only you are told. */
+/** You, as `RtcCall.local` has you. Your own `stageInvite` is also announced by `subscribe`. */
 export interface RtcLocalParticipant extends RtcParticipant {
-  /**
-   * Webinars: the host has invited you on stage and you have not answered yet. Always false in a
-   * meeting. A change is announced by `subscribe` and by the `stage` event.
-   */
   readonly stageInvite: boolean;
 }
 
@@ -297,6 +300,12 @@ export interface RtcCall {
   readonly native: unknown;
   /** A meeting or a webinar. It never changes during the call. */
   readonly mode: CallMode;
+  /**
+   * Webinars: you were just made co-host ("cohost"), or are no longer one ("audience"), and the
+   * call is reconnecting you with what that role needs. Null otherwise. A change is announced by
+   * the `status` event; the call stays the same object throughout.
+   */
+  readonly switching: "cohost" | "audience" | null;
 
   /* connection */
   readonly status: ConnectionStatus;
@@ -328,9 +337,10 @@ export interface RtcCall {
   /**
    * What depends on how the provider is set up. Everything else is always available. `polls`:
    * this call has polls at all; `createPolls`: the provider would let you start one (our server
-   * still decides whether you may).
+   * still decides whether you may). `stage`: this is a webinar and the provider would let you
+   * invite people on stage or send them back (our server still decides whether you may).
    */
-  readonly supports: { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean };
+  readonly supports: { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean; stage: boolean };
 
   /* pictures */
   /** Never includes a viewer. A new array whenever `tiles` fires. */
@@ -449,6 +459,8 @@ export type JoinGrant =
       reactions?: boolean;
       /** Absent means "meeting". */
       mode?: CallMode;
+      /** Webinars: the audience's preset and a co-host's, so the client knows which one it holds. */
+      webinarPresets?: { viewer: string; cohost: string };
     };
 
 export type RtcProviderModule = {

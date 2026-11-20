@@ -2,7 +2,7 @@ import { generateCode, isValidCode } from "@/lib/code";
 import { createMeetingRecord, liveKitPassSecret, peekMeeting } from "@/lib/host.server";
 import { passCookie, readPass } from "@/lib/pass.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
-import { createRealtimeKitMeeting, peekRealtimeKitMeeting, realtimeKitPassSecret } from "@/lib/rtc/server/realtimekit";
+import { createRealtimeKitMeeting, missingWebinarEnv, peekRealtimeKitMeeting, realtimeKitPassSecret } from "@/lib/rtc/server/realtimekit";
 
 const passSecret = () => (RTC_PROVIDER === "realtimekit" ? realtimeKitPassSecret() : liveKitPassSecret());
 
@@ -10,11 +10,14 @@ const passSecret = () => (RTC_PROVIDER === "realtimekit" ? realtimeKitPassSecret
  * The meeting itself, before anyone is in it.
  *
  * { action: "create" }       → { code }                  a new meeting; this browser is its host
+ * { action: "create",        → { code }                  a new webinar, the same way
+ *   mode: "webinar" }
  * { action: "peek", code }   → { access, host, count }   what the pre-join screen may know
  *                                                        (`MeetingPeek` in src/lib/rtc/types.ts)
  *
- * Creating never fails outright: if the provider cannot be reached the code is still returned,
- * and the first person into it becomes host instead.
+ * Creating a meeting never fails outright: if the provider cannot be reached the code is still
+ * returned, and the first person into it becomes host instead. Creating a webinar can fail: a
+ * code without its record would be a meeting, so no code is given out unless the record was made.
  */
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -34,14 +37,24 @@ export async function POST(request: Request) {
   }
 
   if (body.action !== "create") return Response.json({ error: "Invalid request." }, { status: 400 });
+  const webinar = body.mode === "webinar";
+  if (webinar && RTC_PROVIDER === "realtimekit" && missingWebinarEnv().length > 0) {
+    // The names are for whoever runs the site, not for the person trying to start one.
+    console.error(`Server is missing ${missingWebinarEnv().join(", ")}, which webinars need.`);
+    return Response.json({ error: "Webinars aren't set up on this server yet." }, { status: 500 });
+  }
   const code = generateCode();
   const headers = new Headers();
+  let made = false;
   if (RTC_PROVIDER === "realtimekit") {
-    const made = await createRealtimeKitMeeting(code);
-    if (made) headers.append("Set-Cookie", passCookie(request, { code, key: made.key, ids: [made.identity] }, passSecret()));
+    const host = await createRealtimeKitMeeting(code, webinar ? "webinar" : "meeting");
+    if (host) headers.append("Set-Cookie", passCookie(request, { code, key: host.key, ids: [host.identity] }, passSecret()));
+    made = !!host;
   } else {
-    const key = await createMeetingRecord(code);
+    const key = await createMeetingRecord(code, webinar ? "webinar" : "meeting");
     if (key) headers.append("Set-Cookie", passCookie(request, { code, key, ids: [] }, passSecret()));
+    made = !!key;
   }
+  if (webinar && !made) return Response.json({ error: "Couldn't start the webinar. Try again in a moment." }, { status: 502 });
   return Response.json({ code }, { headers });
 }

@@ -20,7 +20,7 @@ import { miniTile } from "@/lib/miniTile";
 import { handQueue } from "@/lib/handQueue";
 import { crowdSentence } from "@/lib/notices";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
+import { useCall, useCallQuality, useConnectionStatus, useTiles, useWaiting } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
@@ -28,6 +28,7 @@ import { useCallSettings } from "@/lib/useCallSettings";
 import { useMiniWindow } from "@/lib/usePip";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
+import { useCallNoun, useHandsShown, useStageParticipants, useWatching } from "@/lib/useWebinar";
 import { CallQualityDialog, DataSaverBadge } from "./CallQuality";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
@@ -39,6 +40,8 @@ import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { OnStageChip, Switching } from "./StageInvite";
+import { ViewerCall } from "./ViewerCall";
 import { StatusLane } from "./StatusLane";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -57,7 +60,7 @@ type OpenPanel = Exclude<Panel, null>;
 export function Conference(props: { code: string }) {
   return (
     <ChatStore>
-      <Call {...props} />
+      <CallOrAudience {...props} />
     </ChatStore>
   );
 }
@@ -120,12 +123,15 @@ function Call({ code }: { code: string }) {
   /* ------------------------------------------------------------ participants */
   // Speaking and mute changes are handled by the tiles and rows themselves, so the whole call
   // does not re-render every time somebody talks.
-  const participants = useParticipants();
+  // Webinars: the stage, People and the layout are about who is on stage; the audience has its
+  // own section in People (see AudienceSection.tsx). In a meeting this is everyone.
+  const participants = useStageParticipants();
+  const noun = useCallNoun();
   const localParticipant = call.local;
   // A hand going up or down is a roster change, so this is current on every render.
   const handRaised = localParticipant.handRaised;
-  // In the order they went up: the hands button names whoever asked first.
-  const raisedHands = handQueue(participants);
+  // In the order they went up (the audience's too, for the host): the hands button names whoever asked first.
+  const raisedHands = handQueue(useHandsShown());
 
   /* ------------------------------------------------------------------ layout */
   const tracks = useTiles();
@@ -297,6 +303,8 @@ function Call({ code }: { code: string }) {
       return {
         announce(p: RtcParticipant) {
           if (call.remoteIds().length + 1 > ROSTER_TOAST_LIMIT || peopleOpen.current) return;
+          // A webinar's audience comes and goes unannounced: the Audience count is enough.
+          if (p.role === "viewer") return;
           // A lull starts a new count; until then the notification on screen keeps counting.
           if (Date.now() - lastAt > 5000) names = [];
           lastAt = Date.now();
@@ -392,7 +400,7 @@ function Call({ code }: { code: string }) {
   // The invite card steps aside while somebody is asking to join (only hosts are told of them).
   const knocking = useWaiting().length;
   const cornerLift =
-    participants.length === 1 && knocking === 0
+    call.participants().length === 1 && knocking === 0
       ? 9.25 // the invite card
       : view === "tiled" && pageCount > 1
         ? floatSelf
@@ -496,7 +504,8 @@ function Call({ code }: { code: string }) {
 
   /* ------------------------------------------------------------------ render */
   const connecting = connection === "connecting";
-  const alone = participants.length === 1 && !connecting;
+  // Webinars: the audience counts here. A host with people watching is not alone.
+  const alone = call.participants().length === 1 && !connecting;
   const leaving = panel === null && shown !== null;
   const panelTitle = shown === "chat" ? "Chat" : "People";
 
@@ -509,19 +518,21 @@ function Call({ code }: { code: string }) {
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
           <button
             onClick={headerCopy.copy}
-            aria-label={`Copy meeting link, code ${code}`}
+            aria-label={`Copy ${noun} link, code ${code}`}
             className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
           >
             <LogoMark className="size-7 shrink-0" />
             <span className="truncate">{headerCopy.copied ? "Copied" : code}</span>
             <CopyIcon copied={headerCopy.copied} />
             <span className="sr-only" role="status">
-              {headerCopy.copied ? "Meeting link copied" : ""}
+              {headerCopy.copied ? `Link copied` : ""}
             </span>
           </button>
           <div className="flex shrink-0 items-center gap-2">
             <DataSaverBadge onOpen={showQuality} compact />
             <RaisedHands hands={raisedHands} onShow={showPeople} compact />
+            {/* On a webinar's stage: "Live · On stage", with the way back to the audience. */}
+            <OnStageChip compact />
             <button
               id="toggle-people"
               onClick={() => togglePanel("people")}
@@ -534,7 +545,9 @@ function Call({ code }: { code: string }) {
               <span aria-hidden="true" data-headcount>
                 {shortCount(participants.length)}
               </span>
-              <span className="sr-only">{fullCount(participants.length)} in the meeting</span>
+              <span className="sr-only">
+                {fullCount(participants.length)} {noun === "webinar" ? "on stage" : "in the meeting"}
+              </span>
               <WaitingCount />
             </button>
           </div>
@@ -587,7 +600,7 @@ function Call({ code }: { code: string }) {
 
           <InviteCard show={alone} code={code} onCopy={copyLink} />
 
-          <Connecting show={connecting} />
+          <Connecting show={connecting} noun={noun} />
 
           <StatusLane phone={phone} sheetOpen={sheetOpen} />
         </main>
@@ -624,7 +637,7 @@ function Call({ code }: { code: string }) {
                   {shown === "people" && (
                     <span className="font-sans text-sm font-medium text-muted tabular-nums">
                       {participants.length}
-                      <span className="sr-only"> in the meeting</span>
+                      <span className="sr-only">{noun === "webinar" ? " on stage" : " in the meeting"}</span>
                     </span>
                   )}
                 </h2>
@@ -673,6 +686,7 @@ function Call({ code }: { code: string }) {
       <CallQualityDialog open={qualityOpen} onOpenChange={setQualityOpen} />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
       <PollToasts open={panel === "chat"} onShow={openChat} />
+      <Switching />
       </MiniProvider>
     </HostProvider>
   );
@@ -852,7 +866,7 @@ function WaitingCount() {
 }
 
 /** Covers the stage until the room is connected, then fades away to reveal it. */
-function Connecting({ show }: { show: boolean }) {
+function Connecting({ show, noun }: { show: boolean; noun: "meeting" | "webinar" }) {
   const presence = usePresence(show);
   if (!presence.mounted) return null;
   return (
@@ -864,7 +878,7 @@ function Connecting({ show }: { show: boolean }) {
     >
       <div className="flex flex-col items-center gap-3 text-muted">
         <LoaderCircle className="anim-spin size-8" aria-hidden="true" />
-        <p>Joining the meeting…</p>
+        <p>Joining the {noun}…</p>
       </div>
     </div>
   );
@@ -907,4 +921,14 @@ function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCop
       </button>
     </div>
   );
+}
+
+/* ---------------------------------------------------------------- webinars */
+
+/**
+ * A webinar's audience has a screen of its own (ViewerCall.tsx): no microphone, camera or tile.
+ * Everyone else, and anyone the host brings on stage, has the meeting's.
+ */
+function CallOrAudience(props: { code: string }) {
+  return useWatching() ? <ViewerCall {...props} /> : <Call {...props} />;
 }

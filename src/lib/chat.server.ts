@@ -3,6 +3,7 @@ import { DataPacket_Kind } from "livekit-server-sdk";
 import { signChat, verifyChat } from "./chatSignature.server";
 import { isValidCode } from "./code";
 import { clearPinIfIs, liveKitCaller, roomService } from "./host.server";
+import { liveKitChatReadOnly } from "./webinar.server";
 import type { Pass } from "./pass.server";
 import { CHAT_HISTORY_LIMIT, CHAT_MAX_LENGTH, CHAT_TOPIC } from "./rtc/shared";
 
@@ -71,6 +72,11 @@ export async function liveKitChat(
         if (text.length > CHAT_MAX_LENGTH) return { status: 400, error: "That message is too long." };
         const now = Date.now();
         if (!allowed(identity, now)) return { status: 429, error: "You're sending messages too quickly. Wait a moment." };
+        // A webinar's audience reads the chat but does not write in it. Only someone who cannot
+        // publish costs the extra look at the record, so a meeting's chat is untouched.
+        if (await liveKitChatReadOnly(room, identity, caller.canPublish)) {
+          return { status: 403, error: "Only speakers and hosts can send messages." };
+        }
         const message = signChat({ id: randomUUID(), room, identity, name, ts: now, text }, secret);
         await service.sendData(room, new TextEncoder().encode(JSON.stringify({ type: "message", message })), DataPacket_Kind.RELIABLE, {
           topic: CHAT_TOPIC,

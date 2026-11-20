@@ -42,7 +42,7 @@ export function parseHostAction(body: Record<string, unknown>): HostAction | nul
     // The same person twice is answered once.
     return { action: action as (typeof ON_MANY)[number], identities: Array.from(new Set(given)) };
   }
-  if (action === "coHost") {
+  if (action === "coHost" || action === "stage") {
     return identity && typeof body.on === "boolean" ? { action, identity, on: body.on } : null;
   }
   if (action === "pin") {

@@ -38,7 +38,9 @@ export function ReactionFeed() {
       if (!participant.isLocal && callSettings().reactionsHidden) return;
       const onTile =
         document.querySelector(`[data-tile][data-key="${CSS.escape(`${participant.identity}:camera`)}"]`) !== null;
-      const name = participant.isLocal ? "You" : displayName(participant).split(/\s+/)[0];
+      // A webinar's audience reacts anonymously: nobody is shown who is watching but the host.
+      const audience = call.mode === "webinar" && participant.role === "viewer";
+      const name = participant.isLocal ? "You" : audience ? "Someone" : displayName(participant).split(/\s+/)[0];
       rules();
       reactions.add(participant.identity, name, emoji, onTile);
     });

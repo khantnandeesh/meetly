@@ -13,7 +13,7 @@ import {
 } from "./rtc/hostAction";
 import { closeStoredPoll } from "./pollStore";
 import { ADMIT_TOPIC, readStoredPolls, type StoredPoll } from "./rtc/shared";
-import type { HostAction, JoinAccess, MeetingPeek } from "./rtc/types";
+import type { CallMode, HostAction, JoinAccess, MeetingPeek } from "./rtc/types";
 
 /**
  * The meeting's record and its rules on LiveKit, enforced here on the server.
@@ -58,6 +58,8 @@ export type RoomMeta = {
   pin?: { id: string; identity: string; name: string; ts: number; text: string };
   /** Polls and their votes (see ./polls.server.ts). */
   polls?: StoredPoll[];
+  /** Set when "New webinar" made the record. It never changes for the life of the record (see ./webinar.server.ts). */
+  mode?: "webinar";
   /**
    * The host or a co-host turned reactions off. Absent means they are allowed, which is how every
    * meeting starts. Each browser keeps to it; nothing here can stop a modified client sending one.
@@ -121,6 +123,7 @@ export function parseRoomMeta(metadata: string | undefined): RoomMeta {
           }
         : {}),
       ...(Array.isArray(value.polls) && value.polls.length > 0 ? { polls: readStoredPolls(value.polls) } : {}),
+      ...(value.mode === "webinar" ? { mode: "webinar" as const } : {}),
       ...(value.reactions === false ? { reactions: false as const } : {}),
     };
   } catch {
@@ -171,7 +174,7 @@ export function updateMeta(service: RoomServiceClient, room: string, change: (me
  * asked. Null if the code is already in use or LiveKit could not be reached: the meeting still
  * works, by the first-person-in rule.
  */
-export async function createMeetingRecord(room: string): Promise<string | null> {
+export async function createMeetingRecord(room: string, mode: CallMode = "meeting"): Promise<string | null> {
   const service = roomService();
   if (!service) return null;
   try {
@@ -179,7 +182,7 @@ export async function createMeetingRecord(room: string): Promise<string | null> 
       const [existing] = await service.listRooms([room]);
       if (existing) return null;
       const kid = randomUUID();
-      await createRoom(service, room, { kid, access: "open" });
+      await createRoom(service, room, { kid, access: "open", ...(mode === "webinar" ? { mode } : {}) });
       return kid;
     });
   } catch (error) {
@@ -195,6 +198,8 @@ export type JoinDecision = {
   access: JoinAccess;
   /** The browser is not let in at all. */
   refused?: "removed" | "locked";
+  /** The record says this is a webinar. */
+  mode?: "webinar";
 };
 
 /**
@@ -215,12 +220,13 @@ export async function decideJoin(room: string, identity: string, pass: Pass): Pr
       }
       const meta = parseRoomMeta(existing.metadata);
       const access = meta.access ?? "open";
+      const mode = meta.mode ? { mode: meta.mode } : {};
       const claim = (kid: string): Promise<unknown> =>
         service.updateRoomMetadata(room, JSON.stringify({ ...meta, host: identity, claimedAt: now, kid } satisfies RoomMeta));
       if (meta.kid) {
         if (pass.key === meta.kid) {
           await claim(meta.kid);
-          return { role: "host", access };
+          return { role: "host", access, ...mode };
         }
       } else if (now - (meta.claimedAt ?? 0) >= CLAIM_WINDOW_MS) {
         // A room from before host keys, or one something else created. Hand it to the first
@@ -234,7 +240,7 @@ export async function decideJoin(room: string, identity: string, pass: Pass): Pr
       }
       if (meta.banned?.some((id) => pass.ids.includes(id))) return { role: "guest", access, refused: "removed" };
       if (access === "locked") return { role: "guest", access, refused: "locked" };
-      return { role: "guest", access };
+      return { role: "guest", access, ...mode };
     });
   } catch (error) {
     console.error("Could not read the meeting record", error);
@@ -252,7 +258,12 @@ export async function peekMeeting(room: string, pass: Pass): Promise<MeetingPeek
     const meta = parseRoomMeta(existing.metadata);
     // The count comes with the room at no extra cost. It is LiveKit's own, and can trail a join
     // or a leave by a moment. People waiting in the lobby are in another room and not counted.
-    return { access: meta.access ?? "open", host: !!meta.kid && pass.key === meta.kid, count: existing.numParticipants };
+    return {
+      access: meta.access ?? "open",
+      host: !!meta.kid && pass.key === meta.kid,
+      count: existing.numParticipants,
+      ...(meta.mode ? { mode: meta.mode } : {}),
+    };
   } catch {
     return { access: "open", host: false, count: null };
   }
@@ -298,7 +309,7 @@ export function readCallerToken(
  * Who is calling, for something any participant may do (chat): the token says who they are, and
  * the room confirms they are in it right now, under which name. Null otherwise.
  */
-export async function liveKitCaller(token: string): Promise<{ room: string; identity: string; name: string } | null> {
+export async function liveKitCaller(token: string): Promise<{ room: string; identity: string; name: string; canPublish: boolean } | null> {
   const c = config();
   const service = roomService();
   if (!c || !service) return null;
@@ -306,7 +317,7 @@ export async function liveKitCaller(token: string): Promise<{ room: string; iden
   if (!who) return null;
   try {
     const person = await service.getParticipant(who.room, who.identity);
-    return { ...who, name: person.name };
+    return { ...who, name: person.name, canPublish: !!person.permission?.canPublish };
   } catch {
     return null;
   }
@@ -351,7 +362,8 @@ export async function verifyCaller(token: string): Promise<Caller | null> {
  */
 export const lobbyOf = (room: string) => `${room}.lobby`;
 
-export type JoinTokenKind = "member" | "asking" | "lobby-watch";
+/** "viewer": a webinar's audience, in the meeting's room but unable to publish (see ./webinar.server.ts). */
+export type JoinTokenKind = "member" | "viewer" | "asking" | "lobby-watch";
 
 /** Signs a LiveKit token. `room` is always the meeting's code; the kind decides which room it opens. */
 export async function mintJoinToken(room: string, identity: string, name: string, kind: JoinTokenKind): Promise<string> {
@@ -362,11 +374,11 @@ export async function mintJoinToken(room: string, identity: string, name: string
     // also about how long a token outlives its owner being removed.
     ttl: "10m",
   });
-  if (kind === "member") {
+  if (kind === "member" || kind === "viewer") {
     token.addGrant({
       room,
       roomJoin: true,
-      canPublish: true,
+      canPublish: kind === "member",
       canSubscribe: true,
       canPublishData: true,
       canUpdateOwnMetadata: true, // lets a participant raise/lower their own hand
@@ -393,8 +405,14 @@ export async function lobbyWatchToken(caller: Caller): Promise<string | null> {
 }
 
 /** Sends someone in the lobby, and only them, their way into the meeting. */
-async function letIn(service: RoomServiceClient, room: string, person: { identity: string; name: string }): Promise<void> {
-  const token = await mintJoinToken(room, person.identity, person.name, "member");
+async function letIn(
+  service: RoomServiceClient,
+  room: string,
+  person: { identity: string; name: string },
+  /** A webinar lets people in to its audience. */
+  kind: "member" | "viewer",
+): Promise<void> {
+  const token = await mintJoinToken(room, person.identity, person.name, kind);
   await service.sendData(lobbyOf(room), new TextEncoder().encode(JSON.stringify({ token })), DataPacket_Kind.RELIABLE, {
     destinationIdentities: [person.identity],
     topic: ADMIT_TOPIC,
@@ -418,7 +436,13 @@ async function inBatches<T>(items: T[], limit: number, work: (item: T) => Promis
  * still waiting because answering them went wrong, in the order they were given. Anyone who is
  * no longer in the lobby has stopped asking, which is not a failure.
  */
-async function answerLobby(service: RoomServiceClient, room: string, verb: "admit" | "deny", identities: string[]): Promise<string[]> {
+async function answerLobby(
+  service: RoomServiceClient,
+  room: string,
+  verb: "admit" | "deny",
+  identities: string[],
+  kind: "member" | "viewer",
+): Promise<string[]> {
   let present: Map<string, ParticipantInfo>;
   try {
     present = new Map((await service.listParticipants(lobbyOf(room))).map((person) => [person.identity, person]));
@@ -432,7 +456,7 @@ async function answerLobby(service: RoomServiceClient, room: string, verb: "admi
     BULK_AT_ONCE,
     async (identity) => {
       try {
-        if (verb === "admit") await letIn(service, room, present.get(identity)!);
+        if (verb === "admit") await letIn(service, room, present.get(identity)!, kind);
         else await service.removeParticipant(lobbyOf(room), identity);
       } catch (error) {
         if (!isGone(error)) failed.add(identity);
@@ -492,7 +516,7 @@ export async function liveKitHostAction(
         case "admit": {
           // Throws, and so answers "may have left", unless they are in the lobby right now.
           const person = await service.getParticipant(lobbyOf(room), identity);
-          await letIn(service, room, person);
+          await letIn(service, room, person, meta.mode === "webinar" ? "viewer" : "member");
           return { status: 200 };
         }
         case "deny":
@@ -513,7 +537,8 @@ export async function liveKitHostAction(
     switch (request.action) {
       case "admitAll":
       case "denyAll": {
-        const failed = await answerLobby(service, room, request.action === "admitAll" ? "admit" : "deny", request.identities);
+        const kind = meta.mode === "webinar" ? "viewer" : "member";
+        const failed = await answerLobby(service, room, request.action === "admitAll" ? "admit" : "deny", request.identities, kind);
         return failed.length > 0 ? { status: 200, failed } : { status: 200 };
       }
       case "reactions": {

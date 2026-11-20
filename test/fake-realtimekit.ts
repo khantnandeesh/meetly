@@ -62,6 +62,13 @@ export class FakeParticipant extends EventEmitter {
   registered: unknown[] = [];
   /** Times a host asked the SDK to stop this person's camera (RTKParticipant.disableVideo). */
   videoStops = 0;
+  /** RTKParticipant.stageStatus. In a meeting the SDK's value does not matter to the adapter. */
+  stageStatus: FakeStageStatus = "OFF_STAGE";
+  /** What the SDK does when this person's stage status changes: the participant emits `stageStatusUpdate` with itself. */
+  setStage(status: FakeStageStatus) {
+    this.stageStatus = status;
+    this.emit("stageStatusUpdate", this);
+  }
 
   constructor(id: string, name: string, options: { presetName?: string; customParticipantId?: string } = {}) {
     super();
@@ -110,6 +117,10 @@ export class FakeSelf extends FakeParticipant {
     canDisableParticipantVideo: boolean;
     /** PermissionPreset.polls, from the preset. Left out here, it stands for a preset that allows none of it. */
     polls?: { canCreate: boolean; canVote: boolean; canView: boolean };
+    /** PermissionPreset.acceptStageRequests (`can_accept_production_requests`): may change who is on stage. */
+    acceptStageRequests?: boolean;
+    /** PermissionPreset.canChangeParticipantPermissions: may use `participants.updatePermissions`. */
+    canChangeParticipantPermissions?: boolean;
   } = { acceptWaitingRequests: false, canDisableParticipantVideo: false };
   /** RTKSelfMedia.updateVideoConstraints: what the running camera was asked to become. */
   videoConstraintCalls: unknown[] = [];
@@ -194,6 +205,20 @@ export class FakeParticipants extends EventEmitter {
   waitlisted = new FakeParticipantMap();
   accepted: string[] = [];
   rejected: string[] = [];
+  /**
+   * Participants.updatePermissions: what someone may do for the rest of the session. The calls
+   * are recorded; set `failPermissions` to make the next one fail. What a real session does
+   * with them has not been tried.
+   */
+  permissionCalls: { ids: string[]; patch: unknown }[] = [];
+  failPermissions = false;
+  async updatePermissions(ids: string[], patch: unknown) {
+    if (this.failPermissions) {
+      this.failPermissions = false;
+      throw new Error("permissions update failed");
+    }
+    this.permissionCalls.push({ ids, patch });
+  }
   acceptWaitingRoomRequest(id: string) {
     this.accepted.push(id);
     this.waitlisted.remove(id);
@@ -249,18 +274,85 @@ export class FakeParticipants extends EventEmitter {
   }
 }
 
+/** RTKStage.status (the SDK's `StageStatus`). */
+export type FakeStageStatus = "OFF_STAGE" | "REQUESTED_TO_JOIN_STAGE" | "ACCEPTED_TO_JOIN_STAGE" | "ON_STAGE";
+
 /**
- * RTKStage, for webinars: who may be on stage is changed by user id. Only the calls are
- * recorded; this stand-in does not imitate the stage-request states.
+ * RTKStage, for webinars, with the stage-request states of the docs (humans_core_stage-management):
+ * OFF_STAGE, REQUESTED_TO_JOIN_STAGE (after `requestAccess`), ACCEPTED_TO_JOIN_STAGE (a host's
+ * `grantAccess` reached you, or your preset may join directly) and ON_STAGE (after `join`).
+ * A host's calls are recorded by user id; what they do to someone else's client is played by
+ * the test with `invite`, `refuse` and `removed`, since each client has its own stage object.
+ *
+ * Assumed, not documented: `join` from a status other than ACCEPTED_TO_JOIN_STAGE fails unless
+ * the preset may join directly, and `leave` from any status goes back to OFF_STAGE.
  */
 export class FakeStage extends EventEmitter {
+  status: FakeStageStatus = "OFF_STAGE";
+  /** The preset may join the stage without being let on (a webinar host's). */
+  direct = false;
   granted: string[][] = [];
   denied: string[][] = [];
+  kicked: string[][] = [];
+  joinCalls = 0;
+  leaveCalls = 0;
+  requests: { displayName: string; userId: string; peerId: string }[] = [];
+  /** Set to make the next grantAccess or kick fail, as a refused socket request would. */
+  failNext: "grant" | "kick" | null = null;
+  private set(status: FakeStageStatus) {
+    if (status === this.status) return;
+    this.status = status;
+    this.emit("stageStatusUpdate", status);
+  }
   async grantAccess(userIds: string[]) {
+    if (this.failNext === "grant") {
+      this.failNext = null;
+      throw new Error("grant refused");
+    }
     this.granted.push(userIds);
   }
   async denyAccess(userIds: string[]) {
     this.denied.push(userIds);
+  }
+  async kick(userIds: string[]) {
+    if (this.failNext === "kick") {
+      this.failNext = null;
+      throw new Error("kick refused");
+    }
+    this.kicked.push(userIds);
+    return { id: "kick", payload: new Uint8Array() };
+  }
+  async requestAccess() {
+    this.set(this.direct ? "ACCEPTED_TO_JOIN_STAGE" : "REQUESTED_TO_JOIN_STAGE");
+  }
+  async cancelRequestAccess() {
+    if (this.status === "REQUESTED_TO_JOIN_STAGE") this.set("OFF_STAGE");
+  }
+  async join() {
+    this.joinCalls++;
+    if (this.status !== "ACCEPTED_TO_JOIN_STAGE" && !this.direct) throw new Error("Not allowed to join the stage");
+    this.set("ON_STAGE");
+  }
+  async leave() {
+    this.leaveCalls++;
+    this.set("OFF_STAGE");
+  }
+  getAccessRequests() {
+    return { stageRequests: this.requests };
+  }
+  /** A host's `grantAccess` reached this client. */
+  invite() {
+    this.set("ACCEPTED_TO_JOIN_STAGE");
+    this.emit("stageRequestApproved");
+  }
+  /** A host's `denyAccess` reached this client. */
+  refuse() {
+    this.set("OFF_STAGE");
+    this.emit("stageRequestRejected");
+  }
+  /** A host's `kick` reached this client. */
+  removed() {
+    this.set("OFF_STAGE");
   }
 }
 

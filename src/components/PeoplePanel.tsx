@@ -25,6 +25,8 @@ import { holdList, useFlip, useListHold } from "@/lib/listHold";
 import { BULK_CONFIRM, FIRST_ROWS, matchesName, oldestFirst, ordinal, people, waitingFor, type Departure } from "@/lib/hostLists";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
+import { useCallNoun } from "@/lib/useWebinar";
+import { AudienceSection, AudienceView } from "./AudienceSection";
 import { ACCESS_LABELS, HostMenu, useHost } from "./HostTools";
 import { Dropdown } from "./ui/Menu";
 import type { JoinAccess } from "@/lib/rtc/types";
@@ -72,6 +74,7 @@ export function PeoplePanel({
 
   if (peopleView === "waiting" && !emptied) return <WaitingView onBack={back} />;
   if (peopleView === "hands" && !emptied) return <HandsView hands={hands} onBack={back} />;
+  if (peopleView === "audience") return <AudienceView onBack={back} />;
   return <MainView participants={participants} hands={hands} code={code} onCopyLink={onCopyLink} cameFrom={cameFrom} />;
 }
 
@@ -96,6 +99,7 @@ function MainView({
   cameFrom: string | null;
 }) {
   const { isHost, departures } = useHost();
+  const noun = useCallNoun();
   const [query, setQuery] = useState("");
   const copyState = useCopied(onCopyLink);
   const [scrollTop, setScrollTop] = useState(0);
@@ -136,10 +140,10 @@ function MainView({
     const list: Item[] = [];
     // The count is everyone here now, even while the rows hold still.
     const searching = query.trim() !== "";
-    if (found.length > 0) list.push({ kind: "header", key: "h:everyone", label: searching ? "Matches" : "In this meeting", count: searching ? found.length : participants.length });
+    if (found.length > 0) list.push({ kind: "header", key: "h:everyone", label: searching ? "Matches" : noun === "webinar" ? "Speakers" : "In this meeting", count: searching ? found.length : participants.length });
     for (const participant of found) list.push({ kind: "row", key: participant.identity, participant });
     return { items: list, matches: found.length };
-  }, [shownPeople, participants, query]);
+  }, [shownPeople, participants, query, noun]);
 
   const searching = query.trim() !== "";
   const showLeft = isHost && !searching && departures.length > 0;
@@ -171,7 +175,7 @@ function MainView({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-sm font-semibold" role="status">
-              {copyState.copied ? "Link copied" : "Copy meeting link"}
+              {copyState.copied ? "Link copied" : `Copy ${noun} link`}
             </span>
             <span className="block truncate font-mono text-xs text-muted">{code}</span>
           </span>
@@ -196,6 +200,8 @@ function MainView({
         <div ref={aboveRef}>
           {!searching && <WaitingSection />}
           {!searching && <HandsSection hands={hands} shown={heldHands.shown} />}
+          {/* Webinars: who is watching, for the host and co-hosts only. */}
+          {!searching && <AudienceSection />}
         </div>
         {matches === 0 ? (
           <p className="px-6 pt-10 text-center text-sm leading-relaxed text-muted">Nobody here is called “{query.trim()}”.</p>
@@ -347,6 +353,7 @@ const ACCESS_ICONS: Record<JoinAccess, typeof Lock> = { open: Link2, ask: DoorOp
 /** Host and co-hosts only: who can join, mute everyone, and the rarer things in a menu. */
 function ModeratorBar() {
   const { canModerate, isHost, access, supports, setAccess, muteAll, askEnd, reactionsAllowed, setReactionsAllowed } = useHost();
+  const noun = useCallNoun();
   if (!canModerate) return null;
   const AccessIcon = ACCESS_ICONS[access];
   const choices = (Object.keys(ACCESS_LABELS) as JoinAccess[]).filter((choice) => choice !== "ask" || supports.askToJoin);
@@ -409,7 +416,7 @@ function ModeratorBar() {
                 <div className="menu-sep" />
                 <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                   <PhoneOff className="size-4" aria-hidden="true" />
-                  End meeting for everyone
+                  End {noun} for everyone
                 </Dropdown.Item>
               </>
             )}
@@ -743,11 +750,12 @@ function LeftSection({
   viewTop: number;
   viewHeight: number;
 }) {
+  const noun = useCallNoun();
   const rowsTop = HEADER;
   const from = Math.max(0, Math.floor((viewTop - rowsTop) / LEFT_ROW) - OVERSCAN);
   const to = Math.min(departures.length, Math.ceil((viewTop - rowsTop + viewHeight) / LEFT_ROW) + OVERSCAN);
   return (
-    <section aria-label="Left the meeting" className="pb-2">
+    <section aria-label={`Left the ${noun}`} className="pb-2">
       <button
         aria-expanded={open}
         onClick={onToggle}
@@ -755,7 +763,7 @@ function LeftSection({
         style={{ height: HEADER }}
       >
         <span className="eyebrow flex gap-2">
-          Left the meeting
+          Left the {noun}
           <span className="tracking-normal tabular-nums">{departures.length.toLocaleString("en-US")}</span>
         </span>
         <ChevronRight className="mb-px size-4 text-muted transition-transform group-aria-expanded:rotate-90" aria-hidden="true" />

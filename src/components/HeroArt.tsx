@@ -9,7 +9,7 @@ const PEOPLE = [
 ];
 
 /** Decorative illustration of a call for the home page. Not a screenshot; purely ornamental. */
-export function HeroArt() {
+export function HeroArt({ quiet = false }: { quiet?: boolean }) {
   return (
     <div className="relative mx-auto w-full max-w-[34rem] select-none" aria-hidden="true">
       <div className="rounded-[2rem] bg-surface p-3 shadow-[inset_0_0_0_1px_var(--border),0_40px_80px_-30px_rgb(0_0_0/0.8)]">
@@ -68,8 +68,13 @@ export function HeroArt() {
         </div>
       </div>
 
-      {/* What a message looks like when it arrives: one notification, clear of the controls. */}
-      <div className="anim-float absolute -top-4 -right-3 flex max-w-48 items-start gap-2.5 rounded-2xl bg-surface-2 p-3 text-sm shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)] sm:-right-6">
+      {/* What a message looks like when it arrives: one notification, clear of the controls. It
+          steps out of the way of the New meeting menu, which on a phone would cut it in half. */}
+      <div
+        data-hero-bubble
+        data-quiet={quiet || undefined}
+        className="anim-float absolute -top-4 -right-3 flex max-w-48 items-start gap-2.5 rounded-2xl bg-surface-2 p-3 text-sm shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)] transition-opacity duration-(--dur-fast) data-quiet:opacity-0 sm:-right-6"
+      >
         <MessageSquare className="mt-0.5 size-4 shrink-0 text-accent" />
         <span>
           <span className="block text-xs font-semibold text-muted">Jonas</span>
