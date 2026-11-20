@@ -4,7 +4,7 @@ import { Hand, Smile } from "lucide-react";
 import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { usePresence } from "@/lib/hooks";
 import { REACTION_SHOW_MS, reactions, type LaneEntry } from "@/lib/reactions";
-import { useCall, useConnectionStatus } from "@/lib/rtc/react";
+import { useCall, useCanReact, useConnectionStatus } from "@/lib/rtc/react";
 import { REACTIONS, displayName } from "@/lib/rtc/types";
 import { Dropdown } from "./ui/Menu";
 import { Tip } from "./ui/Tip";
@@ -132,6 +132,7 @@ export function ReactMenu({
 }) {
   const call = useCall();
   const connected = useConnectionStatus() === "connected";
+  const canReact = useCanReact();
   // A failed send is dropped: a reaction that arrives late is worse than one that does not.
   const send = (emoji: string) => void call.sendReaction(emoji).catch(() => {});
   const label = phone ? (handRaised ? "Reactions, hand raised" : "Reactions and raise hand") : "React";
@@ -158,10 +159,12 @@ export function ReactMenu({
             }
           }}
         >
+          {!canReact && <p className="px-2 pt-1 text-center text-xs text-muted">The host turned off reactions</p>}
           <div className="flex gap-1">
             {REACTIONS.map((emoji, index) => (
               <Dropdown.Item
                 key={emoji}
+                disabled={!canReact}
                 aria-label={NAMES[emoji]}
                 aria-keyshortcuts={String(index + 1)}
                 // Stay open: reactions come in runs.

@@ -1,6 +1,19 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 import { liveKitHostAction, parseRoomMeta, type Caller } from "../src/lib/host.server";
+import {
+  BULK_CONFIRM,
+  FIRST_ROWS,
+  MAX_DEPARTURES,
+  matchesName,
+  oldestFirst,
+  ordinal,
+  people,
+  recordJoin,
+  recordLeave,
+  waitingFor,
+  type Departure,
+} from "../src/lib/hostLists";
 import { MAX_BULK, isHostOnly, parseHostAction } from "../src/lib/rtc/hostAction";
 import { readRecord, realtimeKitHostAction } from "../src/lib/rtc/server/realtimekit";
 import { signSession } from "../src/lib/rtc/server/session";
@@ -195,7 +208,7 @@ function fakeCloudflare(records: Record_[]) {
 }
 
 const at = "2026-11-20T10:00:00Z";
-const people = (): Record_[] => [
+const meetingRecords = (): Record_[] => [
   { id: "p-host", custom_participant_id: "m-host", preset_name: "meetly-host", created_at: at },
   { id: "p-co", custom_participant_id: "m-co", preset_name: "meetly-guest", created_at: at },
   { id: "p-guest", custom_participant_id: "m-guest", preset_name: "meetly-guest", created_at: at },
@@ -208,7 +221,7 @@ const sessionOf = (participantId: string, identity: string) =>
   );
 
 test("rtk: Admit all and Deny all are authorised with one look at the records, for the host and co-hosts only", async () => {
-  const { calls } = fakeCloudflare(people());
+  const { calls } = fakeCloudflare(meetingRecords());
   const ids = Array.from({ length: 128 }, (_, i) => `peer-${i}`);
   assert.deepEqual(await realtimeKitHostAction(sessionOf("p-co", "m-co"), { action: "admitAll", identities: ids }), { status: 200 });
   assert.deepEqual(await realtimeKitHostAction(sessionOf("p-host", "m-host"), { action: "denyAll", identities: ids }), { status: 200 });
@@ -221,7 +234,7 @@ test("rtk: Admit all and Deny all are authorised with one look at the records, f
 });
 
 test("rtk: turning reactions off writes one statement to the record; turning them on removes it; roles say which", async () => {
-  const { calls, records } = fakeCloudflare(people());
+  const { calls, records } = fakeCloudflare(meetingRecords());
   const co = sessionOf("p-co", "m-co");
   assert.deepEqual(await realtimeKitHostAction(co, { action: "reactions", allowed: false }), { status: 200 });
   assert.ok(records.some((r) => r.custom_participant_id === "meetly-reactions:off"));
@@ -243,4 +256,62 @@ beforeEach(() => {
   globalThis.fetch = (async () => {
     throw new Error("no network in unit tests");
   }) as typeof fetch;
+});
+
+/* ---------------------------------------------------- the panel's sections */
+
+test("raised hands are numbered 1st, 2nd, 3rd … 11th, 12th, 13th … 21st, 101st", () => {
+  assert.deepEqual([1, 2, 3, 4, 5].map(ordinal), ["1st", "2nd", "3rd", "4th", "5th"]);
+  assert.deepEqual([11, 12, 13, 21, 22, 23, 101, 111, 112].map(ordinal), ["11th", "12th", "13th", "21st", "22nd", "23rd", "101st", "111th", "112th"]);
+});
+
+test("waiting time is whole minutes, and under a minute is just now", () => {
+  const now = 10 * 60_000;
+  assert.equal(waitingFor(now - 59_000, now), "Just now");
+  assert.equal(waitingFor(now - 60_000, now), "Waiting 1 min");
+  assert.equal(waitingFor(now - 4 * 60_000 - 30_000, now), "Waiting 4 min");
+  assert.equal(waitingFor(now + 5_000, now), "Just now", "a clock ahead of ours is not negative");
+});
+
+test("the waiting list is oldest first, and ties keep their order", () => {
+  const list = [
+    { id: "c", name: "Cy", since: 300 },
+    { id: "a", name: "Ann", since: 100 },
+    { id: "b", name: "Bo", since: 300 },
+  ];
+  assert.deepEqual(oldestFirst(list).map((w) => w.id), ["a", "c", "b"]);
+});
+
+test("who left: newest first, once each, and someone who comes back is taken off", () => {
+  let list: readonly Departure[] = [];
+  for (let i = 0; i < 40; i++) list = recordLeave(list, { identity: `p${i}`, name: `Person ${i}`, at: i });
+  assert.equal(list.length, 40);
+  assert.equal(list[0].identity, "p39");
+  list = recordLeave(list, { identity: "p0", name: "Person 0", at: 99 });
+  assert.equal(list.length, 40);
+  assert.equal(list[0].identity, "p0");
+  // Back with the same identity, or (LiveKit mints a new one per join) under the same name.
+  list = recordJoin(list, { identity: "p5", name: "Person 5" });
+  list = recordJoin(list, { identity: "fresh", name: "Person 6" });
+  assert.equal(list.length, 38);
+  assert.ok(!list.some((d) => d.identity === "p5" || d.identity === "p6"));
+  assert.equal(recordJoin(list, { identity: "new", name: "Somebody new" }), list, "nothing changes, nothing is copied");
+  assert.equal(recordJoin([], { identity: "x", name: "" }).length, 0);
+});
+
+test("the remembered departures are capped, keeping the newest", () => {
+  let list: readonly Departure[] = [];
+  for (let i = 0; i < MAX_DEPARTURES + 10; i++) list = recordLeave(list, { identity: `p${i}`, name: "", at: i });
+  assert.equal(list.length, MAX_DEPARTURES);
+  assert.equal(list[0].identity, `p${MAX_DEPARTURES + 9}`);
+});
+
+test("bulk answers ask first only above 25, and say people the way the notification does", () => {
+  assert.equal(BULK_CONFIRM, 25);
+  assert.equal(FIRST_ROWS, 5);
+  assert.equal(people(1), "1 person");
+  assert.equal(people(3), "3 people");
+  assert.equal(people(1204), "1,204 people");
+  assert.ok(matchesName("Raj Subramanian", "subra"));
+  assert.ok(matchesName("", "gue"), "no name is Guest");
 });

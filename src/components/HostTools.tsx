@@ -13,8 +13,10 @@ import {
   UserX,
   VideoOff,
 } from "lucide-react";
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import { useAccess, useCall, useCoHosts, useHostIdentity, useWaiting } from "@/lib/rtc/react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { FIRST_ROWS, people, recordJoin, recordLeave, type Departure } from "@/lib/hostLists";
+import { useAccess, useCall, useCoHosts, useHostIdentity, useReactionsAllowed, useWaiting } from "@/lib/rtc/react";
+import { bulkFailures } from "@/lib/rtc/shared";
 import { displayName, type HostAction, type JoinAccess, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
 import { Dropdown } from "./ui/Menu";
 import { useToast } from "./ui/Toaster";
@@ -42,10 +44,27 @@ type HostState = {
   setAccess: (access: JoinAccess) => void;
   admit: (waiter: RtcWaiter) => void;
   deny: (waiter: RtcWaiter) => void;
-  admitAll: () => void;
+  /** One request for everyone given, however many. Asking first above `BULK_CONFIRM` is the caller's part. */
+  admitAll: (waiters: RtcWaiter[]) => void;
+  denyAll: (waiters: RtcWaiter[]) => void;
+  /** The meeting's setting: everyone may send reactions. */
+  reactionsAllowed: boolean;
+  setReactionsAllowed: (allowed: boolean) => void;
   /** Asks first: ending the call for everyone cannot be undone. */
   askEnd: () => void;
+  /** What the People panel shows: everyone, or one section's "See all" view. */
+  peopleView: PeopleView;
+  setPeopleView: (view: PeopleView) => void;
+  /**
+   * For the knock card's View: People opens at who is waiting, on the "Waiting to join" view when
+   * more are waiting than the panel's section shows. The caller opens the panel itself.
+   */
+  openWaiting: () => void;
+  /** People this browser saw leave since it joined, newest first. */
+  departures: readonly Departure[];
 };
+
+export type PeopleView = "main" | "waiting" | "hands";
 
 const nothing = () => {};
 const HostContext = createContext<HostState>({
@@ -67,7 +86,14 @@ const HostContext = createContext<HostState>({
   admit: nothing,
   deny: nothing,
   admitAll: nothing,
+  denyAll: nothing,
+  reactionsAllowed: true,
+  setReactionsAllowed: nothing,
   askEnd: nothing,
+  peopleView: "main",
+  setPeopleView: nothing,
+  openWaiting: nothing,
+  departures: [],
 });
 export const useHost = () => useContext(HostContext);
 
@@ -91,7 +117,16 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
   const coHosts = useCoHosts();
   const access = useAccess();
   const waiting = useWaiting();
+  const reactionsAllowed = useReactionsAllowed();
   const toast = useToast();
+  const [peopleView, setPeopleView] = useState<PeopleView>("main");
+  const departures = useDepartures();
+  // Read when the knock card's View is pressed, so `openWaiting` never changes identity.
+  const waitingNow = useRef(waiting);
+  useEffect(() => {
+    waitingNow.current = waiting;
+  });
+  const openWaiting = useCallback(() => setPeopleView(waitingNow.current.length > FIRST_ROWS ? "waiting" : "main"), []);
   const [removing, setRemoving] = useState<RtcParticipant | null>(null);
   const [alsoAsk, setAlsoAsk] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -120,6 +155,38 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
           body: error instanceof Error ? error.message : undefined,
         });
         return false;
+      }
+    },
+    [call, toast],
+  );
+
+  /**
+   * Admit all and Deny all: one request, and at most one notification, however many fail. Its
+   * Try again answers only the people it failed for who are still waiting.
+   */
+  const answerAll = useCallback(
+    async function answer(verb: "admit" | "deny", ids: string[]): Promise<void> {
+      if (ids.length === 0) return;
+      try {
+        await call.moderate({ action: verb === "admit" ? "admitAll" : "denyAll", identities: ids });
+      } catch (error) {
+        const failed = bulkFailures(error);
+        const left = failed.length > 0 ? failed : ids;
+        toast.push({
+          tag: "host-error",
+          tone: "danger",
+          icon: <CircleAlert className="size-5" />,
+          title: `Couldn't ${verb} ${people(left.length)}`,
+          // Some failing leaves them waiting; a refused request says why in its own words.
+          body: failed.length > 0 ? "They're still waiting." : error instanceof Error ? error.message : undefined,
+          action: {
+            label: "Try again",
+            onClick: () => {
+              const still = new Set(call.waiting().map((person) => person.id));
+              void answer(verb, left.filter((id) => still.has(id)));
+            },
+          },
+        });
       }
     },
     [call, toast],
@@ -173,10 +240,20 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       // Their tile arriving, or their row going, is the confirmation.
       admit: (person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`),
       deny: (person) => void run({ action: "deny", identity: person.id }, null, `Couldn't deny ${waiter(person)}`),
-      admitAll: () => waiting.forEach((person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`)),
+      // The list emptying is the confirmation.
+      admitAll: (list) => void answerAll("admit", list.map((person) => person.id)),
+      denyAll: (list) => void answerAll("deny", list.map((person) => person.id)),
+      reactionsAllowed,
+      // The switch moving is the confirmation.
+      setReactionsAllowed: (allowed) =>
+        void run({ action: "reactions", allowed }, null, allowed ? "Couldn't turn reactions on" : "Couldn't turn reactions off"),
       askEnd: () => setEnding(true),
+      peopleView,
+      setPeopleView,
+      openWaiting,
+      departures,
     };
-  }, [hostId, coHosts, isHost, canModerate, access, waiting, supports, run]);
+  }, [hostId, coHosts, isHost, canModerate, access, waiting, supports, run, answerAll, reactionsAllowed, peopleView, openWaiting, departures]);
 
   async function remove(participant: RtcParticipant, thenAsk: boolean) {
     const name = displayName(participant);
@@ -279,6 +356,26 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       </Dialog.Root>
     </HostContext.Provider>
   );
+}
+
+/**
+ * Who left, as this browser saw it happen: neither provider remembers departures for us, and
+ * RealtimeKit's list of who has been in the meeting is rate-limited. Someone who comes back is
+ * taken off the list.
+ */
+function useDepartures(): readonly Departure[] {
+  const call = useCall();
+  const [list, setList] = useState<readonly Departure[]>([]);
+  useEffect(() => {
+    const stops = [
+      call.on("participantLeft", (person) =>
+        setList((current) => recordLeave(current, { identity: person.identity, name: person.name, at: Date.now() })),
+      ),
+      call.on("participantJoined", (person) => setList((current) => recordJoin(current, person))),
+    ];
+    return () => stops.forEach((stop) => stop());
+  }, [call]);
+  return list;
 }
 
 /**

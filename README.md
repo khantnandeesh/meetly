@@ -13,8 +13,10 @@ Link-based video meetings built on Next.js, running on [LiveKit](https://livekit
 - A meeting for later: a link now, and a Google Calendar, Outlook or .ics entry to go with it
 - Layouts for large calls: Auto, Tiled (paginated gallery), Spotlight and Sidebar, with a debounced
   active speaker on the main tile; only on-screen cameras are streamed
-- People list with search (windowed, fine at 100+); raised hands at the top, in the order they
-  went up
+- People list with search (windowed, fine at 1,000+), as one scrolling list: who is waiting to
+  join (the five who have waited longest, with how long, Admit all and Deny all), raised hands
+  (the first five in the order they went up, with Lower all), everyone, and for the host who
+  left since they joined. Waiting and hands each have a "See all" view with its own search
 - Whoever starts the meeting is its host, from that browser, across reloads. The host can mute one
   or all, stop a camera, lower hands, remove people, name co-hosts, end the call for everyone,
   and choose who can join: anyone with the link, people who ask, or nobody new
