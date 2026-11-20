@@ -15,16 +15,21 @@ export const SHORTCUTS = [
   { key: "?", action: "Show this list" },
 ];
 
+const MINI_SHORTCUT = { key: "Shift P", action: "Open or close the mini window" };
+
 export function ShortcutsDialog({
   open,
   onOpenChange,
   enabled,
   onEnabledChange,
+  miniWindow = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
+  /** This browser has the mini window, so its shortcut is worth listing. */
+  miniWindow?: boolean;
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -41,7 +46,7 @@ export function ShortcutsDialog({
             </Dialog.Close>
           </div>
           <dl className={`scroll-quiet flex flex-col overflow-y-auto px-6 transition-opacity ${enabled ? "" : "opacity-45"}`}>
-            {SHORTCUTS.map(({ key, action }) => (
+            {(miniWindow ? [...SHORTCUTS.slice(0, 6), MINI_SHORTCUT, ...SHORTCUTS.slice(6)] : SHORTCUTS).map(({ key, action }) => (
               <div key={key} className="flex items-center justify-between gap-4 border-t border-border py-3">
                 <dd className="text-[0.9375rem]">{action}</dd>
                 <dt>

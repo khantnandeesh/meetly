@@ -1,11 +1,12 @@
 "use client";
 
-import { Crown, Hand, MicOff, MonitorUp, Pin, PinOff, SignalLow, Sparkles } from "lucide-react";
+import { Crown, Hand, MicOff, MonitorUp, PictureInPicture2, Pin, PinOff, SignalLow, Sparkles } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { Rect } from "@/lib/motion";
 import { useLocalEffects, useParticipantState, useVideoTrack } from "@/lib/rtc/react";
 import type { RtcTile, RtcVideoTrack } from "@/lib/rtc/types";
 import { HostMenu, useHost } from "./HostTools";
+import { useMini } from "./MiniWindow";
 import { TileReactionBadge } from "./Reactions";
 import { avatarColor, initials } from "./ui/Avatar";
 import { Tip } from "./ui/Tip";
@@ -53,6 +54,9 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
   }
 
   const { hostId, canModerate } = useHost();
+  // The main picture is what the mini window would show, so that is where it is offered.
+  const mini = useMini();
+  const showMini = slot === "main" && mini.supported;
   const isScreen = source === "screen_share";
   const isLocal = participant.isLocal;
   const showVideo = isScreen || camOn;
@@ -118,9 +122,20 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
       )}
       </div>
 
-      {(onTogglePin || (canModerate && !isLocal && !isScreen)) && (
+      {(onTogglePin || showMini || (canModerate && !isLocal && !isScreen)) && (
         <div className="tile-actions absolute top-2 right-2 z-30 flex origin-top-right gap-1.5">
           {!isScreen && <HostMenu participant={participant} micOn={micOn} camOn={camOn} handRaised={handRaised} variant="tile" />}
+          {showMini && (
+            <Tip label="Open mini window" shortcut="⇧P" side="bottom">
+              <button
+                aria-label="Open mini window"
+                onClick={mini.toggle}
+                className="grid size-10 cursor-pointer place-items-center rounded-xl bg-[rgb(11_11_15/0.72)] text-text backdrop-blur-md transition-colors hover:bg-[rgb(40_40_52/0.9)] pointer-coarse:size-11"
+              >
+                <PictureInPicture2 className="size-[1.125rem]" />
+              </button>
+            </Tip>
+          )}
           {onTogglePin && (
           <Tip label={pinned ? "Unpin" : "Pin to main view"} side="bottom">
             <button

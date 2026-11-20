@@ -35,7 +35,9 @@ export type HostAction =
   | { action: "end" }
   | { action: "coHost"; identity: string; on: boolean }
   /** Shows one chat message above the conversation for everyone; null takes it down again. */
-  | { action: "pin"; messageId: string | null };
+  | { action: "pin"; messageId: string | null }
+  /** Stops a poll taking votes. Its result stays where it is. */
+  | { action: "closePoll"; pollId: string };
 
 /** Someone asking to join. `id` is what `admit` and `deny` take as `identity`. */
 export type RtcWaiter = { id: string; name: string };
@@ -88,6 +90,11 @@ export type RtcTile = {
   source: TileSource;
   /** Absent while there is nothing to show (camera never turned on, or not being received). */
   track?: RtcVideoTrack;
+  /**
+   * Set by the interface, never by an adapter: this picture is deliberately not being shown
+   * ("use less data"), so it should not be asked for either.
+   */
+  withheld?: boolean;
 };
 
 export type RtcChatMessage = {
@@ -102,6 +109,55 @@ export type RtcChatMessage = {
   earlier?: boolean;
   /** Its author took it back. The entry stays, so the conversation keeps its shape. */
   deleted?: boolean;
+};
+
+/** Limits on a poll, enforced wherever a poll is made. */
+export const POLL_LIMITS = { question: 140, option: 80, minOptions: 2, maxOptions: 6, open: 5 } as const;
+
+/** A question put to everyone in the call, with a few answers to choose from. */
+export type RtcPoll = {
+  id: string;
+  question: string;
+  /** Name of whoever started it, for display. */
+  createdBy: string;
+  /** Votes are counted without saying whose they are. */
+  anonymous: boolean;
+  /** Still taking votes. */
+  open: boolean;
+  options: {
+    text: string;
+    votes: number;
+    /** Names of people who chose this, as far as they are known. Always empty when `anonymous`. */
+    voters: string[];
+  }[];
+  /** Votes cast so far, over all options. */
+  total: number;
+  /** You have voted in this poll (from this browser, now or before a reload). */
+  voted: boolean;
+  /** The option you chose, when that is known. */
+  myVote?: number;
+};
+
+export type NewPoll = { question: string; options: string[]; anonymous: boolean };
+
+/** How your own connection to the call is doing, as the provider judges it. */
+export type ConnectionHealth = "unknown" | "good" | "fair" | "poor";
+
+export type CallQuality = {
+  connection: ConnectionHealth;
+  /** "Use less data" is on: your camera is sent smaller, and the interface asks for fewer pictures. */
+  dataSaver: boolean;
+};
+
+/** Numbers behind `CallQuality`, for the person who wants them. Null where the provider does not say. */
+export type CallStats = {
+  sentKbps: number | null;
+  receivedKbps: number | null;
+  roundTripMs: number | null;
+  /** Share of what you send that is being lost on the way, in percent. */
+  lossPercent: number | null;
+  /** Your camera as it is being sent (its largest version). */
+  sentVideo: { width: number; height: number; fps: number | null } | null;
 };
 
 /** What is done to your camera picture before anyone else sees it. */
@@ -168,6 +224,10 @@ export type RtcEvents = {
   reaction: [participant: RtcParticipant, emoji: string];
   /** `audioBlocked` changed. */
   audio: [];
+  /** The list from `polls()` changed. */
+  polls: [];
+  /** `quality()` changed. */
+  quality: [];
 };
 
 export type RtcEventName = keyof RtcEvents;
@@ -206,8 +266,12 @@ export interface RtcCall {
    * Rejects with a message fit to show if it was refused or failed.
    */
   moderate(action: HostAction): Promise<void>;
-  /** Moderation that depends on how the provider is set up. Everything else is always available. */
-  readonly supports: { askToJoin: boolean; stopCamera: boolean };
+  /**
+   * What depends on how the provider is set up. Everything else is always available. `polls`:
+   * this call has polls at all; `createPolls`: the provider would let you start one (our server
+   * still decides whether you may).
+   */
+  readonly supports: { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean };
 
   /* pictures */
   /** A new array whenever `tiles` fires. */
@@ -254,6 +318,22 @@ export interface RtcCall {
   /** Shows `emoji` (one of `REACTIONS`) to everyone for a moment. Nothing is stored. */
   sendReaction(emoji: string): Promise<void>;
 
+  /* polls */
+  /** Oldest first, including what was started before you joined. A new array whenever `polls` fires. */
+  polls(): RtcPoll[];
+  /** Starts a poll. Rejects with a message fit to show if you may not, or it is not a valid poll. */
+  createPoll(poll: NewPoll): Promise<void>;
+  /** Casts your one vote. Rejects with a message fit to show if it was not counted. */
+  votePoll(pollId: string, option: number): Promise<void>;
+
+  /* how the call is doing */
+  /** A new object whenever `quality` fires. */
+  quality(): CallQuality;
+  /** Sends your camera smaller (and, with the interface's help, receives fewer pictures). Never rejects. */
+  setDataSaver(on: boolean): Promise<void>;
+  /** A fresh measurement. Never rejects; what cannot be measured is null. */
+  stats(): Promise<CallStats>;
+
   on<E extends RtcEventName>(event: E, listener: (...args: RtcEvents[E]) => void): () => void;
 }
 
@@ -295,6 +375,8 @@ export type JoinGrant =
       canAsk: boolean;
       /** Id of the pinned chat message at the moment of joining, if any. */
       pin?: string | null;
+      /** Ids of polls that had been ended at the moment of joining. */
+      closedPolls?: string[];
     };
 
 export type RtcProviderModule = {

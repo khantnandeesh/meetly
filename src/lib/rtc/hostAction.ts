@@ -1,3 +1,4 @@
+import { POLL_ID } from "./shared";
 import type { HostAction, JoinAccess } from "./types";
 
 const ON_ONE = ["mute", "remove", "stopCamera", "lowerHand", "admit", "deny"] as const;
@@ -30,6 +31,9 @@ export function parseHostAction(body: Record<string, unknown>): HostAction | nul
     const id = body.messageId;
     if (id === null) return { action, messageId: null };
     return typeof id === "string" && MESSAGE_ID.test(id) ? { action, messageId: id } : null;
+  }
+  if (action === "closePoll") {
+    return typeof body.pollId === "string" && POLL_ID.test(body.pollId) ? { action, pollId: body.pollId } : null;
   }
   if (action === "access") {
     return ACCESS.includes(body.access as JoinAccess) ? { action, access: body.access as JoinAccess } : null;

@@ -3,9 +3,22 @@ import type { AudioMiddleware, RTKParticipant, VideoMiddleware } from "@cloudfla
 import { BlurRenderer, blurUnavailable, watchFrameRate, type BlurStrength } from "../effects/blur";
 import { createNoiseNode, noiseFilterSupported } from "../effects/noise";
 import { Notifier, RtcEmitter } from "./emitter";
-import { REACTION_MESSAGE, createReactionLimits, isReaction, postHost, type HostApi } from "./shared";
+import {
+  REACTION_MESSAGE,
+  SAVER_FPS,
+  SAVER_HEIGHT,
+  SAVER_WIDTH,
+  checkNewPoll,
+  createReactionLimits,
+  isReaction,
+  postHost,
+  type HostApi,
+} from "./shared";
+import { POLL_LIMITS } from "./types";
 import type {
   BackgroundMode,
+  CallQuality,
+  CallStats,
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
@@ -16,9 +29,11 @@ import type {
   LocalEffects,
   LocalMedia,
   LocalSource,
+  NewPoll,
   RtcCall,
   RtcChatMessage,
   RtcParticipant,
+  RtcPoll,
   RtcTile,
   RtcVideoTrack,
   RtcWaiter,
@@ -90,6 +105,22 @@ export const MAX_ACTIVE = 24;
  * and the stage picks who is visible; a little headroom keeps the two from disagreeing.
  */
 export const DEMAND_HEADROOM = 2;
+/** Below this (and at or above `WEAK_SCORE`) your own connection is "fair" rather than "good". */
+export const FAIR_SCORE = 7;
+/** How long RealtimeKit is given to say a vote was counted before the voter is told it was not. */
+const VOTE_WAIT_MS = 6000;
+
+/** What comes with a media score. The fields are the SDK's; which are present depends on the kind of stream. */
+type ScoreStats = {
+  bitrate?: number;
+  packetsLostPercentage?: number;
+  frameWidth?: number;
+  frameHeight?: number;
+  framesPerSecond?: number;
+};
+/** The payload of `mediaScoreUpdate`, on yourself and on other people. */
+type ScoreUpdate = { kind: string; isScreenshare?: boolean; score: number; scoreStats?: ScoreStats };
+
 /** How long after connecting a microphone that was asked for is given to start. */
 const MIC_SETTLE_MS = 3000;
 
@@ -273,6 +304,27 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * "on" is not you (or the host) toggling anything.
    */
   private micWas: boolean;
+  /**
+   * Polls a host or co-host ended, as our server recorded it. RealtimeKit has no such thing: it
+   * goes on accepting votes for as long as the meeting lasts. This client stops offering an ended
+   * poll and stops sending votes for it; it cannot stop somebody else's modified client sending
+   * one, and Cloudflare would count it.
+   */
+  private closedPolls: Set<string>;
+  private pollList: RtcPoll[] = [];
+  private pollsSeen = "[]";
+  /** What you chose, kept for anonymous polls, where RealtimeKit says that you voted but not for what. */
+  private readonly myChoices = new Map<string, number>();
+  private health: CallQuality = { connection: "unknown", dataSaver: false };
+  private saver = false;
+  /** The latest scores RealtimeKit gave your own microphone and camera (0 to 10), and what came with them. */
+  private scores: { audio?: number; video?: number } = {};
+  private sent: { audio?: ScoreStats; video?: ScoreStats } = {};
+  /** Bits a second arriving, per stream, as last reported. */
+  private readonly receiving = new Map<string, number>();
+  /** What the camera was capturing before "use less data" made it smaller, and which track that was done to. */
+  private fullCapture: { width: number; height: number; frameRate: number } | null = null;
+  private savedTrack: string | null = null;
 
   constructor(
     grant: Grant,
@@ -290,6 +342,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.cohosts = grant.coHosts ?? [];
     this.gate = grant.access ?? "open";
     this.pinId = grant.pin ?? null;
+    this.closedPolls = new Set(grant.closedPolls ?? []);
     const unavailable = effects.blurUnavailable();
     this.fx = {
       noiseSuppression: choices.noiseSuppression !== false,
@@ -464,6 +517,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     void this.queued(() => this.syncNoise());
     this.applyDemand();
     this.readWaiters();
+    this.readPolls();
     // If the microphone never came up (no permission, no device), stop expecting it to.
     const settle = setTimeout(() => {
       this.micWas = !!meeting.self.audioEnabled;
@@ -517,6 +571,12 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.noiseMiddleware = null;
     this.noiseFiltering = false;
     this.setFx({ noiseState: "off", backgroundState: "off" });
+    this.scores = {};
+    this.sent = {};
+    this.receiving.clear();
+    this.fullCapture = null;
+    this.savedTrack = null;
+    this.readQuality();
     this.statusChanged();
     this.rosterChanged();
     this.tilesChanged();
@@ -583,11 +643,14 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * Both depend on the presets the app was given: letting people in from the waiting room and
    * stopping a camera are done by RealtimeKit itself, for participants whose preset allows it.
    */
-  get supports(): { askToJoin: boolean; stopCamera: boolean } {
+  get supports(): { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean } {
     const permissions = this.meeting?.self.permissions;
     return {
       askToJoin: !!this.grant.canAsk && !!permissions?.acceptWaitingRequests,
       stopCamera: !!permissions?.canDisableParticipantVideo,
+      // RealtimeKit's own polls: each preset says whether its holders see them, vote and start them.
+      polls: !!permissions?.polls?.canView,
+      createPolls: !!permissions?.polls?.canCreate,
     };
   }
 
@@ -610,6 +673,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const coHosts = Array.isArray(data.coHosts) ? data.coHosts.filter((id): id is string => typeof id === "string") : [];
     const access: JoinAccess = data.access === "ask" || data.access === "locked" ? data.access : "open";
     const pin = typeof data.pin === "string" ? data.pin : null;
+    const closed = Array.isArray(data.closedPolls) ? data.closedPolls.filter((id): id is string => typeof id === "string") : [];
+    if (closed.slice().sort().join() !== Array.from(this.closedPolls).sort().join()) {
+      this.closedPolls = new Set(closed);
+      this.readPolls();
+    }
     if (pin !== this.pinId) {
       this.pinId = pin;
       this.readChat();
@@ -654,6 +722,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       case "access":
       case "remove":
       case "pin":
+      case "closePoll":
         await this.refreshRoles().catch(() => {});
         await this.tell(ROLES_MESSAGE);
         break;
@@ -722,7 +791,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         this.emit("screenShare", now);
       }
     };
-    const onScore = ({ score }: { score: number }) => {
+    const onScore = ({ kind, isScreenshare, score, scoreStats }: ScoreUpdate) => {
+      const bitrate = scoreStats?.bitrate;
+      if (typeof bitrate === "number") this.receiving.set(`${peer.id}:${kind}:${!!isScreenshare}`, bitrate);
       const weak = score < WEAK_SCORE;
       if (weak === person.weak) return;
       person.weak = weak;
@@ -756,6 +827,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     if (!entry) return;
     entry.stop();
     this.peers.delete(peerId);
+    for (const key of Array.from(this.receiving.keys())) if (key.startsWith(`${peerId}:`)) this.receiving.delete(key);
     const wasSpeaker = this.speaker === peerId;
     if (wasSpeaker) this.speaker = null;
     this.rosterChanged();
@@ -821,7 +893,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private applyDemand(): void {
     const meeting = this.meeting;
     if (!meeting || !this.joined || this.demand === null) return;
-    const wanted = Math.min(MAX_ACTIVE, Math.max(2, this.demand + 1 + DEMAND_HEADROOM));
+    // While saving data nothing extra is kept flowing just in case.
+    const wanted = Math.min(MAX_ACTIVE, Math.max(2, this.demand + 1 + (this.saver ? 0 : DEMAND_HEADROOM)));
     try {
       if (meeting.participants.maxActiveParticipantsCount !== wanted) {
         meeting.participants.setMaxActiveParticipantsCount(wanted);
@@ -1187,6 +1260,198 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     await meeting.participants.broadcastMessage(REACTION_MESSAGE, { peerId: meeting.self.id, emoji });
   }
 
+  /* ------------------------------------------------------------------- polls */
+
+  /**
+   * RealtimeKit's own polls. Cloudflare keeps them, counts the votes and hands both to whoever
+   * joins later; each participant's preset says whether they may see polls, vote and start one,
+   * and Cloudflare is who enforces that. What Meetly adds is its limits on a new poll (checked
+   * here, so only as good as this client) and ending one (see `closedPolls`).
+   */
+  polls(): RtcPoll[] {
+    return this.pollList;
+  }
+
+  /** Every id RealtimeKit might file you under: its documentation says "participant ID" and no more. */
+  private myIds(): string[] {
+    const me = this.meeting?.self;
+    return me ? [me.userId, me.id, me.customParticipantId].filter((id): id is string => !!id) : [];
+  }
+
+  private readPolls(): void {
+    const meeting = this.meeting;
+    const items = meeting && this.joined && meeting.self.permissions?.polls?.canView ? (meeting.polls?.items ?? []) : [];
+    const mine = this.myIds();
+    const next = items.map((poll): RtcPoll => {
+      const options = poll.options ?? [];
+      const named = options.findIndex((option) => option.votes?.some((vote) => mine.includes(vote.id)));
+      const remembered = this.myChoices.get(poll.id);
+      const myVote = named >= 0 ? named : remembered;
+      const counts = options.map((option) => (typeof option.count === "number" ? option.count : (option.votes?.length ?? 0)));
+      return {
+        id: poll.id,
+        question: poll.question,
+        createdBy: poll.createdBy ?? "",
+        anonymous: !!poll.anonymous,
+        open: !this.closedPolls.has(poll.id),
+        options: options.map((option, index) => ({
+          text: option.text,
+          votes: counts[index],
+          voters: poll.anonymous ? [] : (option.votes ?? []).map((vote) => vote.name || "Guest"),
+        })),
+        total: counts.reduce((sum, count) => sum + count, 0),
+        voted: named >= 0 || !!poll.voted?.some((id) => mine.includes(id)),
+        ...(myVote !== undefined ? { myVote } : {}),
+      };
+    });
+    const signature = JSON.stringify(next);
+    if (signature === this.pollsSeen) return;
+    this.pollsSeen = signature;
+    this.pollList = next;
+    this.emit("polls");
+  }
+
+  async createPoll(poll: NewPoll): Promise<void> {
+    const checked = checkNewPoll(poll);
+    if (typeof checked === "string") throw new Error(checked);
+    const meeting = this.meeting;
+    if (!meeting || !this.joined) throw new Error("Not connected.");
+    // The SDK drops the request without a word if the preset does not allow it.
+    if (!meeting.self.permissions?.polls?.canCreate) throw new Error("Only the host can start a poll.");
+    if (this.pollList.filter((existing) => existing.open).length >= POLL_LIMITS.open) {
+      throw new Error(`There are already ${POLL_LIMITS.open} polls open. End one first.`);
+    }
+    await meeting.polls.create(checked.question, checked.options, checked.anonymous, false);
+  }
+
+  /**
+   * The SDK sends the vote and says nothing back; that it counted is known when the poll comes
+   * round again with you among its voters. If that does not happen, the vote is reported as not
+   * counted rather than assumed.
+   */
+  async votePoll(pollId: string, option: number): Promise<void> {
+    const meeting = this.meeting;
+    if (!meeting || !this.joined) throw new Error("Not connected.");
+    const poll = this.pollList.find((entry) => entry.id === pollId);
+    if (!poll) throw new Error("That poll is no longer there.");
+    if (!poll.open) throw new Error("That poll has ended.");
+    if (poll.voted) throw new Error("You've already voted in this poll.");
+    if (!Number.isInteger(option) || option < 0 || option >= poll.options.length) throw new Error("That isn't one of the options.");
+    if (!meeting.self.permissions?.polls?.canVote) throw new Error("You can't vote in this call's polls.");
+    const counted = new Promise<boolean>((resolve) => {
+      const seen = () => !!this.pollList.find((entry) => entry.id === pollId)?.voted;
+      const stop = this.on("polls", () => {
+        if (!seen()) return;
+        clearTimeout(timer);
+        stop();
+        resolve(true);
+      });
+      const timer = setTimeout(() => {
+        stop();
+        resolve(seen());
+      }, VOTE_WAIT_MS);
+    });
+    this.myChoices.set(pollId, option);
+    await meeting.polls.vote(pollId, option);
+    this.readPolls();
+    if (await counted) return;
+    this.myChoices.delete(pollId);
+    this.readPolls();
+    throw new Error("Your vote wasn't counted. Try again.");
+  }
+
+  /* ------------------------------------------------------ how the call is doing */
+
+  quality(): CallQuality {
+    return this.health;
+  }
+
+  /**
+   * RealtimeKit scores what you send, microphone and camera separately, from 0 to 10. The worse
+   * of the two stands for your connection; a device that is off has no say.
+   */
+  private readQuality(): void {
+    const known = [this.scores.audio, this.scores.video].filter((score): score is number => typeof score === "number");
+    const worst = known.length > 0 ? Math.min(...known) : null;
+    const connection =
+      worst === null || !this.joined ? "unknown" : worst < WEAK_SCORE ? "poor" : worst < FAIR_SCORE ? "fair" : "good";
+    if (connection === this.health.connection && this.saver === this.health.dataSaver) return;
+    this.health = { connection, dataSaver: this.saver };
+    this.emit("quality");
+  }
+
+  private forgetScore(kind: "audio" | "video"): void {
+    if (this.scores[kind] === undefined) return;
+    delete this.scores[kind];
+    delete this.sent[kind];
+    this.readQuality();
+  }
+
+  async setDataSaver(on: boolean): Promise<void> {
+    this.saver = on;
+    this.readQuality();
+    // Fewer pictures are kept flowing "just in case" (see applyDemand).
+    this.applyDemand();
+    await this.queued(() => this.syncSaver());
+  }
+
+  /**
+   * "Use less data", the sending half: the camera is asked for a small, slow picture, and for
+   * what it had before when the switch goes off again. (The receiving half is the interface
+   * showing fewer pictures, which `setVideoDemand` turns into a smaller active set.)
+   */
+  private async syncSaver(): Promise<void> {
+    const me = this.meeting?.self;
+    const track = me?.videoEnabled ? me.videoTrack : undefined;
+    if (!me || !track) return;
+    try {
+      if (this.saver) {
+        if (this.savedTrack === track.id) return;
+        const now = track.getSettings?.() ?? {};
+        this.fullCapture = { width: now.width || 1280, height: now.height || 720, frameRate: now.frameRate || 30 };
+        this.savedTrack = track.id;
+        await me.updateVideoConstraints({
+          width: { ideal: SAVER_WIDTH },
+          height: { ideal: SAVER_HEIGHT },
+          frameRate: { ideal: SAVER_FPS },
+        });
+      } else if (this.fullCapture && this.savedTrack === track.id) {
+        const full = this.fullCapture;
+        this.fullCapture = null;
+        this.savedTrack = null;
+        await me.updateVideoConstraints({
+          width: { ideal: full.width },
+          height: { ideal: full.height },
+          frameRate: { ideal: full.frameRate },
+        });
+      } else {
+        this.fullCapture = null;
+        this.savedTrack = null;
+      }
+    } catch {
+      // The camera carries on as it was.
+    }
+  }
+
+  async stats(): Promise<CallStats> {
+    const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+    const { audio, video } = this.sent;
+    const sentBits = [audio?.bitrate, video?.bitrate].map(number).filter((bits): bits is number => bits !== null);
+    const losses = [audio?.packetsLostPercentage, video?.packetsLostPercentage].map(number).filter((loss): loss is number => loss !== null);
+    const width = number(video?.frameWidth);
+    const height = number(video?.frameHeight);
+    let received = 0;
+    this.receiving.forEach((bits) => (received += bits));
+    return {
+      sentKbps: sentBits.length > 0 ? Math.round(sentBits.reduce((sum, bits) => sum + bits, 0) / 1000) : null,
+      receivedKbps: this.receiving.size > 0 ? Math.round(received / 1000) : null,
+      // RealtimeKit's scores do not include it.
+      roundTripMs: null,
+      lossPercent: losses.length > 0 ? Math.round(Math.max(...losses) * 10) / 10 : null,
+      sentVideo: width && height ? { width, height, fps: number(video?.framesPerSecond) } : null,
+    };
+  }
+
   /* ------------------------------------------------------------------ events */
 
   private onSelf(event: "videoUpdate" | "screenShareUpdate", listener: () => void): () => void {
@@ -1262,6 +1527,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     };
     on(self, "audioUpdate", () => {
       mediaChanged();
+      if (!self.audioEnabled) this.forgetScore("audio");
       const now = !!self.audioEnabled;
       if (now === this.micWas) return;
       this.micWas = now;
@@ -1271,6 +1537,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     on(self, "videoUpdate", () => {
       mediaChanged();
       this.tilesChanged();
+      if (!self.videoEnabled) this.forgetScore("video");
+      // A camera that was (re)started comes back at full size.
+      if (this.saver) void this.queued(() => this.syncSaver());
     });
     on(self, "screenShareUpdate", () => {
       mediaChanged();
@@ -1285,7 +1554,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       this.mediaSettled();
     });
     on(self, "mediaPermissionUpdate", () => this.mediaSettled());
-    on(self, "mediaScoreUpdate", ({ score }: { score: number }) => {
+    on(self, "mediaScoreUpdate", (update: ScoreUpdate) => {
+      const { kind, isScreenshare, score } = update;
+      if (!isScreenshare && (kind === "audio" || kind === "video")) {
+        this.scores[kind] = score;
+        this.sent[kind] = update.scoreStats;
+        this.readQuality();
+      }
       const weak = score < WEAK_SCORE;
       if (weak === this.self.weak) return;
       this.self.weak = weak;
@@ -1346,6 +1621,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       this.rosterChanged();
       if (raised) this.emit("handRaised", entry.person);
     });
+
+    // Absent only in a build of the SDK without polls; a preset that may not view them simply gets none.
+    if (meeting.polls) on(meeting.polls, "pollsUpdate", () => this.readPolls());
 
     on(chat, "chatUpdate", (update?: { action?: string; message?: { id?: unknown } }) => {
       // A message taken back leaves the SDK's list. What it was is kept, without its text, so

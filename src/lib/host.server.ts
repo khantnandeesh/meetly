@@ -11,7 +11,8 @@ import {
   isHostOnly,
   type HostActionResult,
 } from "./rtc/hostAction";
-import { ADMIT_TOPIC } from "./rtc/shared";
+import { closeStoredPoll } from "./pollStore";
+import { ADMIT_TOPIC, readStoredPolls, type StoredPoll } from "./rtc/shared";
 import type { HostAction, JoinAccess } from "./rtc/types";
 
 /**
@@ -55,6 +56,8 @@ export type RoomMeta = {
    * later has to be able to read it. Only ever a message this server signed (see ./chat.server.ts).
    */
   pin?: { id: string; identity: string; name: string; ts: number; text: string };
+  /** Polls and their votes (see ./polls.server.ts). */
+  polls?: StoredPoll[];
 };
 
 /** A host token minted for a room without a host key gets this long to connect. */
@@ -109,6 +112,7 @@ export function parseRoomMeta(metadata: string | undefined): RoomMeta {
             },
           }
         : {}),
+      ...(Array.isArray(value.polls) && value.polls.length > 0 ? { polls: readStoredPolls(value.polls) } : {}),
     };
   } catch {
     return {};
@@ -136,13 +140,17 @@ function createRoom(service: RoomServiceClient, room: string, meta: RoomMeta) {
   });
 }
 
-/** Reads the record, applies `change`, writes it back. Returns the new record, or null if the room is gone. */
-function updateMeta(service: RoomServiceClient, room: string, change: (meta: RoomMeta) => RoomMeta): Promise<RoomMeta | null> {
+/**
+ * Reads the record, applies `change`, writes it back. Returns the new record, or null if the room
+ * is gone. A `change` that hands back the very record it was given writes nothing.
+ */
+export function updateMeta(service: RoomServiceClient, room: string, change: (meta: RoomMeta) => RoomMeta): Promise<RoomMeta | null> {
   return exclusive(room, async () => {
     const [existing] = await service.listRooms([room]);
     if (!existing) return null;
-    const next = change(parseRoomMeta(existing.metadata));
-    await service.updateRoomMetadata(room, JSON.stringify(next));
+    const current = parseRoomMeta(existing.metadata);
+    const next = change(current);
+    if (next !== current) await service.updateRoomMetadata(room, JSON.stringify(next));
     return next;
   });
 }
@@ -476,6 +484,16 @@ export async function liveKitHostAction(
         const next = await updateMeta(service, room, (current) => ({ ...current, pin: { id, identity, name, ts, text } }));
         return next ? { status: 200 } : GONE;
       }
+      case "closePoll": {
+        let found = false;
+        const next = await updateMeta(service, room, (current) => {
+          const closed = closeStoredPoll(current.polls ?? [], request.pollId);
+          found = closed !== null;
+          return closed ? { ...current, polls: closed } : current;
+        });
+        if (!next) return GONE;
+        return found ? { status: 200 } : { status: 404, error: "That poll is no longer there." };
+      }
       case "end": {
         // Deleting the room disconnects everyone with "the room was closed". The record is put
         // straight back, without the co-hosts: the meeting can be used again, by the same host.
@@ -485,7 +503,7 @@ export async function liveKitHostAction(
           await service.deleteRoom(room);
           // Anyone still asking to join is told the same thing.
           await service.deleteRoom(lobbyOf(room)).catch(() => {});
-          await createRoom(service, room, { ...current, cohosts: [], pin: undefined }).catch((error) =>
+          await createRoom(service, room, { ...current, cohosts: [], pin: undefined, polls: undefined }).catch((error) =>
             console.error("Could not keep the meeting record after ending the call", error),
           );
         });

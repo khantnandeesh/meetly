@@ -1,12 +1,21 @@
 "use client";
 
 import { MessageSquare, Pin } from "lucide-react";
-import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useChat, useConnectionStatus } from "@/lib/rtc/react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useChat, useConnectionStatus, usePolls } from "@/lib/rtc/react";
+import type { RtcPoll } from "@/lib/rtc/types";
 import { playChatMessageSound } from "@/lib/useSounds";
 import { useToast } from "./ui/Toaster";
 
-type ChatState = ReturnType<typeof useChat> & { seen: number; markSeen: (count: number) => void };
+type ChatState = ReturnType<typeof useChat> & {
+  seen: number;
+  markSeen: (count: number) => void;
+  /** Polls live in the chat panel, so they are kept here with it. */
+  polls: RtcPoll[];
+  /** Open polls you have not voted in and have not yet been shown. */
+  pollsWaiting: number;
+  markPollsSeen: () => void;
+};
 const ChatContext = createContext<ChatState | null>(null);
 
 /**
@@ -16,8 +25,22 @@ const ChatContext = createContext<ChatState | null>(null);
  */
 export function ChatStore({ children }: { children: React.ReactNode }) {
   const chat = useChat();
+  const polls = usePolls();
   const [seen, markSeen] = useState(0);
-  const value = useMemo(() => ({ ...chat, seen, markSeen }), [chat, seen]);
+  const [seenPolls, setSeenPolls] = useState<ReadonlySet<string>>(() => new Set());
+  const pollsWaiting = useMemo(
+    () => polls.reduce((count, poll) => count + (poll.open && !poll.voted && !seenPolls.has(poll.id) ? 1 : 0), 0),
+    [polls, seenPolls],
+  );
+  const pollIds = polls.map((poll) => poll.id).join("\n");
+  const markPollsSeen = useCallback(() => {
+    const ids = pollIds ? pollIds.split("\n") : [];
+    setSeenPolls((current) => (ids.every((id) => current.has(id)) ? current : new Set(ids)));
+  }, [pollIds]);
+  const value = useMemo(
+    () => ({ ...chat, seen, markSeen, polls, pollsWaiting, markPollsSeen }),
+    [chat, seen, polls, pollsWaiting, markPollsSeen],
+  );
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }
 
@@ -28,16 +51,20 @@ export function useChatStore(): ChatState {
 }
 
 /**
- * Messages that arrived while the chat panel was closed. What was said before you joined is
- * history, not news: it never counts.
+ * What is waiting in the chat panel while it is closed: messages that arrived, and each open
+ * poll you have not voted in (one each). What was said before you joined is history, not news:
+ * it never counts.
  */
 export function useUnread(open: boolean): number {
-  const { chatMessages, seen, markSeen } = useChatStore();
+  const { chatMessages, seen, markSeen, pollsWaiting, markPollsSeen } = useChatStore();
   const total = useMemo(() => chatMessages.reduce((count, message) => count + (message.earlier ? 0 : 1), 0), [chatMessages]);
   useEffect(() => {
     if (open) markSeen(total);
   }, [open, total, markSeen]);
-  return open ? 0 : Math.max(0, total - seen);
+  useEffect(() => {
+    if (open) markPollsSeen();
+  }, [open, markPollsSeen]);
+  return open ? 0 : Math.max(0, total - seen) + pollsWaiting;
 }
 
 /**

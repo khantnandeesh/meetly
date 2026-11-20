@@ -8,9 +8,11 @@ import {
   ChevronUp,
   CircleAlert,
   Ellipsis,
+  Gauge,
   Hand,
   Keyboard,
   LayoutGrid,
+  Leaf,
   LoaderCircle,
   LogOut,
   MessageSquare,
@@ -19,6 +21,7 @@ import {
   MonitorUp,
   MonitorX,
   PhoneOff,
+  PictureInPicture2,
   Sparkles,
   Users,
   Video,
@@ -29,15 +32,17 @@ import { Fragment, useEffect, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
 import { useCopied } from "@/lib/hooks";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
-import { useActiveDevice, useCall, useLocalEffects, useLocalToggle } from "@/lib/rtc/react";
+import { useActiveDevice, useCall, useCallQuality, useLocalEffects, useLocalToggle } from "@/lib/rtc/react";
 import type { BackgroundMode } from "@/lib/rtc/types";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
 import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
+import { DataSaverBadge, setDataSaver } from "./CallQuality";
 import { useUnread } from "./ChatStore";
 import { useHost } from "./HostTools";
 import { LayoutMenuItems } from "./LayoutMenu";
+import { useMini } from "./MiniWindow";
 import { ReactMenu } from "./Reactions";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -60,6 +65,7 @@ export function ControlBar({
   onCopyLink,
   onShowShortcuts,
   onShowSchedule,
+  onShowQuality,
   settings,
   onSettings,
 }: {
@@ -79,6 +85,8 @@ export function ControlBar({
   onShowShortcuts: () => void;
   /** Opens "add this meeting to a calendar". */
   onShowSchedule: () => void;
+  /** Opens "call quality". */
+  onShowQuality: () => void;
   settings: CallSettings;
   onSettings: (patch: Partial<CallSettings>) => void;
 }) {
@@ -86,6 +94,7 @@ export function ControlBar({
   const toast = useToast();
   const copyState = useCopied(onCopyLink);
   const { isHost, waiting, askEnd } = useHost();
+  const mini = useMini();
 
   const deviceError = (what: string) => () =>
     toast.push({
@@ -188,6 +197,19 @@ export function ControlBar({
             <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
             Add to calendar…
           </Dropdown.Item>
+          {mini.supported && !phone && (
+            <Dropdown.Item className="menu-item" onSelect={mini.toggle}>
+              <PictureInPicture2 className="size-4 text-muted" aria-hidden="true" />
+              {mini.open ? "Close mini window" : "Open mini window"}
+              <kbd className="kbd ml-auto">⇧P</kbd>
+            </Dropdown.Item>
+          )}
+          <div className="menu-sep" />
+          <DataSaverSwitch />
+          <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
+            <Gauge className="size-4 text-muted" aria-hidden="true" />
+            Call quality…
+          </Dropdown.Item>
           {phone ? (
             <>
               <div className="menu-sep" />
@@ -252,6 +274,7 @@ export function ControlBar({
             <CopyIcon copied={copyState.copied} />
           </button>
         </Tip>
+        <DataSaverBadge onOpen={onShowQuality} />
       </div>
 
       <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Call controls">
@@ -449,6 +472,28 @@ function NoiseSwitch() {
         <span className="block text-xs text-muted">
           {on ? "Removes background noise, on this device" : "Off: sent as it is, which suits music"}
         </span>
+      </span>
+      <span className="switch" data-on={on} aria-hidden="true" />
+    </Dropdown.CheckboxItem>
+  );
+}
+
+/** "Use less data", off unless switched on. Never switched on for you; the weak-connection notice only offers it. */
+function DataSaverSwitch() {
+  const call = useCall();
+  const { dataSaver: on } = useCallQuality();
+  return (
+    <Dropdown.CheckboxItem
+      checked={on}
+      onCheckedChange={(next) => setDataSaver(call, next)}
+      // Stay open: the switch is seen to move.
+      onSelect={(event) => event.preventDefault()}
+      className="menu-item"
+    >
+      <Leaf className="size-4 shrink-0 text-muted" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium">Use less data</span>
+        <span className="block text-xs text-muted">{on ? "Smaller camera, fewer pictures" : "For a weak or metered connection"}</span>
       </span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>

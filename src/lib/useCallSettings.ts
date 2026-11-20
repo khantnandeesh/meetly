@@ -12,10 +12,12 @@ export type CallSettings = {
   maxTiles: (typeof TILE_LIMITS)[number];
   selfView: SelfView;
   shortcuts: boolean;
+  /** Open the mini window whenever you start presenting. Offered after the mini window was first used. */
+  miniOnShare: boolean;
 };
 
 const KEY = "meetly:call-settings";
-const DEFAULTS: CallSettings = { layout: "auto", maxTiles: 16, selfView: "grid", shortcuts: true };
+const DEFAULTS: CallSettings = { layout: "auto", maxTiles: 16, selfView: "grid", shortcuts: true, miniOnShare: false };
 
 function load(): CallSettings {
   try {
@@ -29,6 +31,7 @@ function load(): CallSettings {
         ? (saved.selfView as SelfView)
         : DEFAULTS.selfView,
       shortcuts: saved.shortcuts !== false,
+      miniOnShare: saved.miniOnShare === true,
     };
   } catch {
     return DEFAULTS;

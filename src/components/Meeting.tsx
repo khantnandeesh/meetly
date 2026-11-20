@@ -1,14 +1,15 @@
 "use client";
 
-import { CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, Unplug, UserX } from "lucide-react";
+import { CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, ThumbsDown, ThumbsUp, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { saveChat } from "@/lib/chatExport";
 import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
 import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
+import { deviceClass, lengthBucket, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
 import { PreJoin, PreJoinSkeleton } from "./PreJoin";
@@ -24,6 +25,8 @@ type Departure = {
   /** The conversation as it stood when the call ended for you: the last chance to keep it. */
   chat: RtcChatMessage[];
   pinned: RtcChatMessage | null;
+  /** The most people who were in the call at once while you were. */
+  people: number;
 };
 
 /** The status of a call that is not (yet) provided through context. */
@@ -47,7 +50,17 @@ export function Meeting({ code }: { code: string }) {
   /** The pre-join screen is still on top (it leaves once `ready`). */
   const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, chat: [], pinned: null });
+  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, chat: [], pinned: null, people: 1 });
+  // The most people the call held while you were in it: a size for the rating, not a list of anyone.
+  const mostPeople = useRef(1);
+  const currentCall = session?.call;
+  useEffect(() => {
+    if (!currentCall) return;
+    mostPeople.current = 1;
+    return currentCall.on("roster", () => {
+      mostPeople.current = Math.max(mostPeople.current, currentCall.participants().length);
+    });
+  }, [currentCall]);
   /** Who may join, and whether this browser is the host. Asked each time the pre-join screen is up. */
   const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean } | null>(null);
 
@@ -115,6 +128,7 @@ export function Meeting({ code }: { code: string }) {
               byYou: reason === "ended" && call.hostIdentity !== null && call.hostIdentity === call.local.identity,
               chat: call.chatMessages(),
               pinned: call.pinnedMessage(),
+              people: mostPeople.current,
             });
             setStage("left");
           }}
@@ -187,7 +201,7 @@ function LeftScreen({
   departure: Departure;
   onRejoin: () => void;
 }) {
-  const { minutes, reason, byYou, chat, pinned } = departure;
+  const { minutes, reason, byYou, chat, pinned, people } = departure;
   const canSaveChat = chat.some((message) => !message.deleted);
   const { icon: Icon, title, note } = ENDINGS[reason];
   // Someone the host turned away is shown the way out first; coming back is the quieter option,
@@ -235,7 +249,48 @@ function LeftScreen({
           )}
         </div>
         <p className="text-sm text-faint">{byYou ? "Everyone was disconnected. The link still works." : note}</p>
+        {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
+        {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>
+    </div>
+  );
+}
+
+/** Off until answers have somewhere to go: asking and then discarding the answer would mislead. */
+const RATING_ENABLED = process.env.NEXT_PUBLIC_CALL_RATING === "1";
+
+/**
+ * "How was the call?", answered with one tap. The answer goes to `sendUsageEvent`, which today
+ * reaches nothing (see src/lib/usage.ts): there is no storage to keep it in.
+ */
+function CallRating({ minutes, people }: { minutes: number; people: number }) {
+  const [rated, setRated] = useState(false);
+  const label = useId();
+  const rate = (rating: "good" | "bad") => {
+    sendUsageEvent({ kind: "call-rating", rating, size: sizeBucket(people), length: lengthBucket(minutes), device: deviceClass() });
+    setRated(true);
+  };
+  return (
+    <div data-call-rating className="flex min-h-11 flex-wrap items-center justify-center gap-x-3 gap-y-2 border-t border-border pt-6 text-sm text-muted">
+      {rated ? (
+        <p role="status" className="anim-fade">
+          Thanks.
+        </p>
+      ) : (
+        <>
+          <p id={label}>How was the call?</p>
+          <div role="group" aria-labelledby={label} className="flex gap-2">
+            <button className="btn btn-secondary h-11 rounded-xl px-4 text-sm" onClick={() => rate("good")}>
+              <ThumbsUp className="size-4" aria-hidden="true" />
+              Good
+            </button>
+            <button className="btn btn-secondary h-11 rounded-xl px-4 text-sm" onClick={() => rate("bad")}>
+              <ThumbsDown className="size-4" aria-hidden="true" />
+              Not good
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

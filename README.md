@@ -18,6 +18,11 @@ Link-based video meetings built on Next.js, running on [LiveKit](https://livekit
   or all, stop a camera, lower hands, remove people, name co-hosts, end the call for everyone,
   and choose who can join: anyone with the link, people who ask, or nobody new
 - Simulcast enabled for larger calls (plus dynacast and adaptive stream on LiveKit)
+- A mini window that keeps the call on top while you use other tabs or present (desktop Chrome
+  and Edge)
+- Polls: the host and co-hosts ask, everyone gets one vote
+- A notice when your own connection is the weak one, a "call quality" view and a "use less data"
+  switch
 
 ## Run locally
 
@@ -34,7 +39,8 @@ server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `s
 
 `node test/e2e/run.cjs` runs the browser tests: real Chromium clients with fake cameras, against
 a running LiveKit build (`MEETLY_URL`, default `http://localhost:3000`). Name suites to run only
-some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`); set
+some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`, `polls`,
+`quality`, `mini`, `rating`); set
 `MEETLY_SHOTS=<dir>` to keep screenshots.
 They need [Playwright](https://playwright.dev) where Node can find it (`npm i --no-save playwright`,
 or a global install on `NODE_PATH`). `node test/e2e/realtimekit-rest.cjs` checks a RealtimeKit
@@ -138,6 +144,86 @@ The smallest thing that would improve this is a per-meeting store (a Durable Obj
 entry) holding the log: history would then survive everyone leaving, and deletions would be
 remembered by the server instead of by the clients that saw them.
 
+## Mini window
+
+"Open mini window" (More, the main tile's actions, or Shift+P) moves the call into a small
+window that stays on top of everything: whoever the stage would show (the person talking, a pin,
+somebody's shared screen; never your own shared screen), with microphone, camera, back and leave.
+Closing it by any route brings the call back to the tab; the call itself is not touched. While
+it is open the tab shows a placeholder instead of drawing the same pictures twice, and offers an
+opt-in to open the mini window whenever you start presenting.
+
+It is the browser's Document Picture-in-Picture, which today exists in desktop Chromium browsers
+only. In Firefox, in Safari and at phone width nothing offers it: no menu item, no tile button,
+no shortcut. There is no video-only fallback, because a floating picture without a mute button
+would look like this feature without being it. Where the browser asks a page for its
+picture-in-picture on switching tabs (Chrome, for sites allowed to open one automatically), the
+mini window answers; opening when you start presenting depends on the browser still counting the
+click that started the share, and is silently skipped when it does not.
+
+## Polls
+
+Polls sit at the top of the chat panel. The host and co-hosts start one (a question of up to 140
+characters, two to six options, anonymous or by name) and end it; everyone votes once. Until you
+have voted you see the options and not the counts; the host and co-hosts see the counts from the
+start. Someone who joins late finds the open polls waiting, with a count on the chat button. At
+most five are open at a time.
+
+**On LiveKit** there are no polls and this app has no storage, so a poll is part of the
+meeting's record: the room's metadata, which only the API secret can write and which LiveKit
+gives to everyone, late joiners included. Starting one and voting are requests to `/api/poll`
+(`src/lib/polls.server.ts`, rules in `src/lib/pollStore.ts`); ending one is a host action through
+`/api/host`. The server takes who is asking from their signed token and what they may do from the
+record, and counts one vote per identity it minted and per browser (the signed cookie lists the
+identities a browser has held in the meeting, so a reload is not a second vote). An anonymous
+poll's record holds a keyed hash per voter in place of their identity. Nothing a browser can
+write (data messages, its own attributes or metadata) is read as a vote.
+
+What it cannot stop, without accounts: a second browser, or a private window, is a second
+participant and has a second vote. A poll takes at most 150 votes, because the record is sent to
+everyone on every change. And the record is read, changed and written back, so two votes that
+reach two server instances in the same instant can lose one: each client checks that its
+confirmed vote is in the record and sends it again if not (the server takes the same vote twice
+without counting it twice).
+
+**On RealtimeKit** polls are RealtimeKit's own (`meeting.polls`): Cloudflare keeps them, counts
+the votes and hands them to late joiners. Who may see polls, vote and start one is each preset's
+`polls` permission (`can_view`, `can_vote`, `can_create`), enforced by Cloudflare; until the
+presets grant them there are no polls in a RealtimeKit call. Give the host preset all three and
+the guest preset `can_view` and `can_vote`. Co-hosts join with the guest preset, so on
+RealtimeKit only the host starts polls; co-hosts can still end them. Three things there are only
+as good as the client: Meetly's limits on a new poll, "results once you have voted", and ending.
+RealtimeKit has no way to end a poll, so that a poll has ended is one more `meetly-…` record
+written through `/api/host`; honest clients stop offering it, but a modified client can still
+send a vote and Cloudflare will count it. Whether Cloudflare refuses a second vote from the same
+participant is its rule and is not documented.
+
+## Call quality and using less data
+
+When your own connection has been poor for ten seconds in a row, one chip appears at the top of
+the stage: "Your connection is weak", with "Use less data" and a way to dismiss it. It goes a few
+seconds after things improve, is not repeated for two minutes after that, and not for ten after
+being dismissed (`src/lib/callHealth.ts`). No toast, no sound. "Poor" is the provider's judgement:
+LiveKit's connection quality for you, or RealtimeKit's media scores for what you send.
+
+More → "Call quality…" shows the same judgement in a word, what is being sent and received, the
+switch, and "Copy diagnostics". Everything in it is about this browser and stays there.
+
+"Use less data" is never switched on for you. While it is on your camera is captured at 640 × 360
+and 15 frames a second (so the largest version anyone receives is 320 × 180) and, on LiveKit,
+each version is capped at 150 kbit/s; and only the main picture and shared screens are shown,
+everyone else is their avatar, which is what stops their video being sent to you. Sound is not
+touched. A leaf in the bar (the top bar on a phone) shows it is on.
+
+## Usage counts and the rating
+
+The screen you see after leaving asks "How was the call?" with two buttons, and a few features
+report that they were used. All of it goes to `sendUsageEvent` in `src/lib/usage.ts`, which today
+does nothing: Meetly has no storage and no analytics service, so no request is made and nothing
+is kept. The event's shape is fixed there (a feature name or a rating, and coarse buckets for
+call size, length and phone or desktop; no code, names or text). Making it real needs somewhere
+to keep one counter per day and event, for example a Workers Analytics Engine dataset.
+
 ## Meetings for later
 
 "New meeting" has an arrow with "Get a link for later" and "Schedule…"; in a call, More has "Add
@@ -193,6 +279,10 @@ and the host has not joined for thirty days.
 | Host rule, the meeting's record and moderation (server-verified) | `src/lib/host.server.ts` (LiveKit), `src/lib/rtc/server/` (RealtimeKit), `src/lib/pass.server.ts`, `src/app/api/host/route.ts`, `src/app/api/meeting/route.ts` |
 | Host tools, waiting list, what moderation looks like to the person it happens to | `src/components/HostTools.tsx`, `PeoplePanel.tsx`, `ModerationNotices.tsx` |
 | Reactions | `src/lib/reactions.ts`, `src/components/Reactions.tsx` |
+| Mini window | `src/lib/usePip.ts`, `src/lib/miniTile.ts`, `src/components/MiniWindow.tsx` |
+| Polls | `src/components/Polls.tsx`, `src/lib/pollStore.ts`, `src/lib/polls.server.ts`, `src/app/api/poll/route.ts` |
+| Call quality, the weak-connection notice, using less data | `src/lib/callHealth.ts`, `src/lib/useCallHealth.ts`, `src/components/CallQuality.tsx` |
+| Usage events and the leave-screen rating (sent nowhere) | `src/lib/usage.ts` |
 | Design tokens, motion, shared UI primitives | `src/app/globals.css`, `src/components/ui/` |
 | Meeting code format | `src/lib/code.ts` |
 

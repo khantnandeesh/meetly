@@ -17,19 +17,25 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
+import { miniTile } from "@/lib/miniTile";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { useAudioBlocked, useCall, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
+import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
+import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { useCallSettings } from "@/lib/useCallSettings";
+import { useMiniWindow } from "@/lib/usePip";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
+import { CallQualityDialog, DataSaverBadge, WeakConnectionNotice } from "./CallQuality";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
 import { ControlBar, type Panel } from "./ControlBar";
+import { MiniPlaceholder, MiniProvider, MiniWindow, type MiniControl } from "./MiniWindow";
 import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
+import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ScheduleDialog } from "./ScheduleDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
@@ -187,6 +193,76 @@ function Call({ code }: { code: string }) {
 
   const openChat = useCallback(() => setPanel("chat"), []);
   const [reactOpen, setReactOpen] = useState(false);
+  const [qualityOpen, setQualityOpen] = useState(false);
+
+  /* ---------------------------------------------------------- using less data */
+  // The sending half is the call's business (see `setDataSaver`). The receiving half is here:
+  // only the main picture and shared screens are shown, everyone else is their avatar, and a
+  // picture that is not shown is not asked for (see src/lib/videoDemand.ts).
+  const { dataSaver } = useCallQuality();
+  const lean = (list: RtcTile[]): RtcTile[] =>
+    dataSaver
+      ? list.map((tile) =>
+          tile !== main && tile.source === "camera" && !tile.participant.isLocal
+            ? { participant: tile.participant, source: tile.source, withheld: true }
+            : tile,
+        )
+      : list;
+  const showQuality = useCallback(() => {
+    setQualityOpen(true);
+    sendUsageEvent({ kind: "feature", feature: "call-quality-opened", size: sizeBucket(call.participants().length), device: deviceClass() });
+  }, [call, setQualityOpen]);
+
+  /* ------------------------------------------------------------- mini window */
+  const miniWindow = useMiniWindow();
+  const { supported: miniSupported, window: miniTarget, open: openMiniWindow, close: closeMini } = miniWindow;
+  const miniOpen = miniTarget !== null;
+  const openMini = useCallback(async () => {
+    const opened = await openMiniWindow();
+    if (opened) sendUsageEvent({ kind: "feature", feature: "mini-window", size: sizeBucket(call.participants().length), device: deviceClass() });
+    return opened;
+  }, [openMiniWindow, call]);
+  const toggleMini = useCallback(() => {
+    if (miniOpen) closeMini();
+    else void openMini();
+  }, [miniOpen, closeMini, openMini]);
+  const backFromMini = useCallback(() => {
+    closeMini();
+    // Brings this tab forward where the browser allows it from a click in the mini window.
+    window.focus();
+  }, [closeMini]);
+  const mini = useMemo<MiniControl>(() => ({ supported: miniSupported, open: miniOpen, toggle: toggleMini }), [miniSupported, miniOpen, toggleMini]);
+
+  // Chromium asks the page for its picture-in-picture when you switch to another tab while in a
+  // call, if the site is allowed to open one automatically. Where it does not ask, nothing happens.
+  useEffect(() => {
+    if (!miniSupported || !("mediaSession" in navigator)) return;
+    const action = "enterpictureinpicture" as MediaSessionAction;
+    try {
+      navigator.mediaSession.setActionHandler(action, () => void openMini());
+    } catch {
+      return;
+    }
+    return () => {
+      try {
+        navigator.mediaSession.setActionHandler(action, null);
+      } catch {}
+    };
+  }, [miniSupported, openMini]);
+
+  // Opted in (on the placeholder the stage shows while the mini window is open): presenting
+  // opens it. A browser may refuse, since choosing what to share can use up the click that
+  // would have allowed it; the window is then simply not opened, and More still offers it.
+  const miniOnShare = settings.miniOnShare;
+  useEffect(() => {
+    if (!miniSupported || !miniOnShare) return;
+    let sharing = call.localMedia().screenShare;
+    return call.on("localMedia", () => {
+      const now = call.localMedia().screenShare;
+      if (now && !sharing) void openMini();
+      sharing = now;
+    });
+  }, [call, miniSupported, miniOnShare, openMini]);
 
   /* ------------------------------------------------------------ room events */
   useEffect(() => {
@@ -365,6 +441,13 @@ function Call({ code }: { code: string }) {
         return;
       }
       if (!shortcutsOn) return;
+      if (event.shiftKey && event.key.toLowerCase() === "p") {
+        // Where there is no mini window, Shift+P is not a shortcut at all.
+        if (!miniSupported) return;
+        toggleMini();
+        event.preventDefault();
+        return;
+      }
       const media = call.localMedia();
       switch (event.key.toLowerCase()) {
         case "m":
@@ -395,7 +478,7 @@ function Call({ code }: { code: string }) {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [call, shortcutsOn, toggleHand, togglePanel, paged, currentPage, pageCount]);
+  }, [call, shortcutsOn, toggleHand, togglePanel, paged, currentPage, pageCount, miniSupported, toggleMini]);
 
   /* ------------------------------------------------------------------ render */
   const connecting = connection === "connecting";
@@ -406,6 +489,7 @@ function Call({ code }: { code: string }) {
 
   return (
     <HostProvider localIdentity={localParticipant.identity}>
+      <MiniProvider value={mini}>
       <ModerationNotices localIdentity={localParticipant.identity} onShowPeople={showPeople} />
       <ReactionFeed />
       {phone && (
@@ -423,6 +507,7 @@ function Call({ code }: { code: string }) {
             </span>
           </button>
           <div className="flex shrink-0 items-center gap-2">
+            <DataSaverBadge onOpen={showQuality} compact />
             <RaisedHands hands={raisedHands} onShow={showPeople} compact />
             <button
               id="toggle-people"
@@ -441,24 +526,36 @@ function Call({ code }: { code: string }) {
 
       <div className="relative flex min-h-0 flex-1 gap-3 p-3 max-md:py-2">
         <main className="relative min-w-0 flex-1" aria-label="Meeting stage">
-          <Stage
-            view={view}
-            tiles={gallery.slice(currentPage * pageSize, (currentPage + 1) * pageSize)}
-            total={gallery.length}
-            rangeStart={currentPage * pageSize}
-            page={currentPage}
-            pageCount={pageCount}
-            onPage={goToPage}
-            main={main}
-            others={others}
-            phone={phone}
-            pinned={!!pinned}
-            onTogglePin={togglePin}
-            onShowEveryone={showPeople}
-          />
+          {miniOpen ? (
+            // The pictures are in the mini window; drawing them here as well would stream them twice over.
+            <MiniPlaceholder onBack={backFromMini} onShare={settings.miniOnShare} onShareChange={(miniOnShare) => updateSettings({ miniOnShare })} />
+          ) : (
+            <Stage
+              view={view}
+              tiles={lean(gallery.slice(currentPage * pageSize, (currentPage + 1) * pageSize))}
+              total={gallery.length}
+              rangeStart={currentPage * pageSize}
+              page={currentPage}
+              pageCount={pageCount}
+              onPage={goToPage}
+              main={main}
+              others={lean(others)}
+              phone={phone}
+              pinned={!!pinned}
+              onTogglePin={togglePin}
+              onShowEveryone={showPeople}
+            />
+          )}
+          {miniTarget && (
+            <MiniWindow
+              target={miniTarget}
+              tile={miniTile(main, [stageSpeaker ? cameras.get(stageSpeaker) : undefined, firstRemote, selfTile])}
+              onBack={backFromMini}
+            />
+          )}
 
           <FloatingSelf
-            tile={floatSelf ? selfTile : undefined}
+            tile={floatSelf && !miniOpen ? selfTile : undefined}
             offset={
               view === "sidebar"
                 ? phone
@@ -477,6 +574,7 @@ function Call({ code }: { code: string }) {
 
           <div className="pointer-events-none absolute inset-x-0 top-3 z-40 flex flex-col items-center gap-2">
             <Reconnecting show={reconnecting} />
+            <WeakConnectionNotice />
             <AudioUnlock />
           </div>
         </main>
@@ -548,6 +646,7 @@ function Call({ code }: { code: string }) {
         onCopyLink={copyLink}
         onShowShortcuts={() => setShortcutsOpen(true)}
         onShowSchedule={() => setScheduleOpen(true)}
+        onShowQuality={showQuality}
         settings={settings}
         onSettings={updateSettings}
       />
@@ -557,9 +656,13 @@ function Call({ code }: { code: string }) {
         onOpenChange={setShortcutsOpen}
         enabled={shortcutsOn}
         onEnabledChange={(shortcuts) => updateSettings({ shortcuts })}
+        miniWindow={miniSupported}
       />
       <ScheduleDialog code={code} open={scheduleOpen} onOpenChange={setScheduleOpen} />
+      <CallQualityDialog open={qualityOpen} onOpenChange={setQualityOpen} />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
+      <PollToasts open={panel === "chat"} onShow={openChat} />
+      </MiniProvider>
     </HostProvider>
   );
 }
