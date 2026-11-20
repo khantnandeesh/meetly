@@ -4,6 +4,9 @@ const ON_ONE = ["mute", "remove", "stopCamera", "lowerHand", "admit", "deny"] as
 const ON_ALL = ["muteAll", "lowerAllHands", "end"] as const;
 const ACCESS: readonly JoinAccess[] = ["open", "ask", "locked"];
 
+/** What a chat message's id may look like: both providers hand out short, plain ones. */
+export const MESSAGE_ID = /^[A-Za-z0-9_.:-]{1,80}$/;
+
 /** What only the host may do; everything else is open to co-hosts as well. */
 export function isHostOnly(action: HostAction): boolean {
   return action.action === "end" || action.action === "coHost";
@@ -22,6 +25,11 @@ export function parseHostAction(body: Record<string, unknown>): HostAction | nul
   if ((ON_ALL as readonly unknown[]).includes(action)) return { action: action as (typeof ON_ALL)[number] };
   if (action === "coHost") {
     return identity && typeof body.on === "boolean" ? { action, identity, on: body.on } : null;
+  }
+  if (action === "pin") {
+    const id = body.messageId;
+    if (id === null) return { action, messageId: null };
+    return typeof id === "string" && MESSAGE_ID.test(id) ? { action, messageId: id } : null;
   }
   if (action === "access") {
     return ACCESS.includes(body.access as JoinAccess) ? { action, access: body.access as JoinAccess } : null;

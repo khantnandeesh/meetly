@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  AudioLines,
   Bell,
+  CalendarPlus,
   Check,
   ChevronUp,
   CircleAlert,
@@ -17,15 +19,18 @@ import {
   MonitorUp,
   MonitorX,
   PhoneOff,
+  Sparkles,
   Users,
   Video,
   VideoOff,
   Volume2,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
+import { saveEffectSettings } from "@/lib/effects/settings";
 import { useCopied } from "@/lib/hooks";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
-import { useActiveDevice, useCall, useLocalToggle } from "@/lib/rtc/react";
+import { useActiveDevice, useCall, useLocalEffects, useLocalToggle } from "@/lib/rtc/react";
+import type { BackgroundMode } from "@/lib/rtc/types";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
@@ -54,6 +59,7 @@ export function ControlBar({
   onTogglePanel,
   onCopyLink,
   onShowShortcuts,
+  onShowSchedule,
   settings,
   onSettings,
 }: {
@@ -71,6 +77,8 @@ export function ControlBar({
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
   onCopyLink: () => Promise<boolean>;
   onShowShortcuts: () => void;
+  /** Opens "add this meeting to a calendar". */
+  onShowSchedule: () => void;
   settings: CallSettings;
   onSettings: (patch: Partial<CallSettings>) => void;
 }) {
@@ -175,6 +183,10 @@ export function ControlBar({
               <CopyIcon copied={copyState.copied} />
             </span>
             <span role="status">{copyState.copied ? "Link copied" : "Copy meeting link"}</span>
+          </Dropdown.Item>
+          <Dropdown.Item className="menu-item" onSelect={onShowSchedule}>
+            <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
+            Add to calendar…
           </Dropdown.Item>
           {phone ? (
             <>
@@ -401,9 +413,112 @@ function DeviceGroups({ kinds }: { kinds: MediaDeviceKind[] }) {
   return (
     <>
       {kinds.map((kind, index) => (
-        <DeviceGroup key={kind} kind={kind} separated={index > 0} />
+        <Fragment key={kind}>
+          <DeviceGroup kind={kind} separated={index > 0} />
+          {/* What is done to a device sits under the list that chooses it. */}
+          {kind === "audioinput" && <NoiseSwitch />}
+          {kind === "videoinput" && <BackgroundGroup />}
+        </Fragment>
       ))}
       {kinds.includes("audiooutput") && <SoundGroup />}
+    </>
+  );
+}
+
+/**
+ * Noise suppression, on unless switched off. Off is for music, which a filter built to keep
+ * voices would thin out; it also turns the browser's own suppression off.
+ */
+function NoiseSwitch() {
+  const call = useCall();
+  const { noiseSuppression: on } = useLocalEffects();
+  return (
+    <Dropdown.CheckboxItem
+      checked={on}
+      onCheckedChange={(next) => {
+        saveEffectSettings({ noiseSuppression: next });
+        void call.setNoiseSuppression(next);
+      }}
+      // Stay open: the switch is seen to move.
+      onSelect={(event) => event.preventDefault()}
+      className="menu-item"
+    >
+      <AudioLines className="size-4 shrink-0 text-muted" aria-hidden="true" />
+      <span className="min-w-0 flex-1">
+        <span className="block font-medium">Noise suppression</span>
+        <span className="block text-xs text-muted">
+          {on ? "Removes background noise, on this device" : "Off: sent as it is, which suits music"}
+        </span>
+      </span>
+      <span className="switch" data-on={on} aria-hidden="true" />
+    </Dropdown.CheckboxItem>
+  );
+}
+
+const BACKGROUNDS: { value: BackgroundMode; label: string }[] = [
+  { value: "none", label: "None" },
+  { value: "light", label: "Slight blur" },
+  { value: "blur", label: "Blur" },
+];
+
+/** What is behind you: as it is, or out of focus. Camera only; a shared screen is never touched. */
+function BackgroundGroup() {
+  const call = useCall();
+  const toast = useToast();
+  const { background, backgroundState, backgroundUnavailable } = useLocalEffects();
+  const choose = (value: string) => {
+    const mode = BACKGROUNDS.find((entry) => entry.value === value)?.value;
+    if (!mode) return;
+    call.setBackground(mode).then(
+      () => saveEffectSettings({ background: mode }),
+      (error) =>
+        toast.push({
+          title: "Couldn't start background blur",
+          body: error instanceof Error ? error.message : undefined,
+          tone: "danger",
+          icon: <CircleAlert className="size-5" />,
+          duration: 7000,
+        }),
+    );
+  };
+  return (
+    <>
+      <div className="menu-sep" />
+      <Dropdown.Label className="menu-label">
+        <Sparkles className="size-3.5" aria-hidden="true" />
+        Background
+      </Dropdown.Label>
+      {backgroundUnavailable ? (
+        <Dropdown.Item disabled className="menu-item">
+          {backgroundUnavailable}
+        </Dropdown.Item>
+      ) : (
+        <>
+          <Dropdown.RadioGroup value={background} onValueChange={choose}>
+            {BACKGROUNDS.map(({ value, label }) => (
+              <Dropdown.RadioItem
+                key={value}
+                value={value}
+                // Stay open: the picture changes behind the menu, and the choice can be changed again.
+                onSelect={(event) => event.preventDefault()}
+                className="menu-item pr-10"
+              >
+                <span className="min-w-0 truncate">{label}</span>
+                {value === background && value !== "none" && backgroundState === "starting" ? (
+                  <LoaderCircle className="anim-spin absolute right-3 size-4 text-accent" aria-label="Starting" />
+                ) : (
+                  <Dropdown.ItemIndicator className="absolute right-3 text-accent">
+                    <Check className="size-4" aria-hidden="true" />
+                  </Dropdown.ItemIndicator>
+                )}
+              </Dropdown.RadioItem>
+            ))}
+          </Dropdown.RadioGroup>
+          <p className="px-3 pt-0.5 pb-1.5 text-xs text-muted" role="status">
+            {backgroundState === "starting" ? "Starting…" : "Blurred on this device, before anything is sent."}
+          </p>
+        </>
+      )}
     </>
   );
 }

@@ -1,12 +1,13 @@
 "use client";
 
-import { CircleAlert, DoorClosed, Home, LogOut, PhoneOff, RotateCcw, Unplug, UserX } from "lucide-react";
+import { CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff, RotateCcw, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { saveChat } from "@/lib/chatExport";
 import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
-import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall } from "@/lib/rtc/types";
+import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
@@ -16,7 +17,14 @@ import { useToast } from "./ui/Toaster";
 
 type Session = { call: RtcCall; joinedAt: number };
 type Stage = "prejoin" | "joined" | "left";
-type Departure = { minutes: number; reason: DisconnectReason; byYou: boolean };
+type Departure = {
+  minutes: number;
+  reason: DisconnectReason;
+  byYou: boolean;
+  /** The conversation as it stood when the call ended for you: the last chance to keep it. */
+  chat: RtcChatMessage[];
+  pinned: RtcChatMessage | null;
+};
 
 /** The status of a call that is not (yet) provided through context. */
 function useStatusOf(call: RtcCall | null): ConnectionStatus | null {
@@ -39,7 +47,7 @@ export function Meeting({ code }: { code: string }) {
   /** The pre-join screen is still on top (it leaves once `ready`). */
   const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false });
+  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, chat: [], pinned: null });
   /** Who may join, and whether this browser is the host. Asked each time the pre-join screen is up. */
   const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean } | null>(null);
 
@@ -105,6 +113,8 @@ export function Meeting({ code }: { code: string }) {
               minutes: reason === "denied" ? 0 : Math.round((Date.now() - session.joinedAt) / 60_000),
               reason,
               byYou: reason === "ended" && call.hostIdentity !== null && call.hostIdentity === call.local.identity,
+              chat: call.chatMessages(),
+              pinned: call.pinnedMessage(),
             });
             setStage("left");
           }}
@@ -177,7 +187,8 @@ function LeftScreen({
   departure: Departure;
   onRejoin: () => void;
 }) {
-  const { minutes, reason, byYou } = departure;
+  const { minutes, reason, byYou, chat, pinned } = departure;
+  const canSaveChat = chat.some((message) => !message.deleted);
   const { icon: Icon, title, note } = ENDINGS[reason];
   // Someone the host turned away is shown the way out first; coming back is the quieter option,
   // and for someone who was removed it is not an option at all.
@@ -216,6 +227,12 @@ function LeftScreen({
             </button>
           )}
           {!turnedAway && home}
+          {canSaveChat && (
+            <button className="btn btn-quiet" onClick={() => saveChat(code, chat, pinned)}>
+              <Download className="size-[1.125rem]" aria-hidden="true" />
+              Save chat
+            </button>
+          )}
         </div>
         <p className="text-sm text-faint">{byYou ? "Everyone was disconnected. The link still works." : note}</p>
       </main>

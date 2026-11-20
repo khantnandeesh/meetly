@@ -45,6 +45,8 @@ const MAX_PAGES = 20;
 const BAN = "meetly-ban:";
 const COHOST = "meetly-cohost:";
 const ACCESS = "meetly-access:";
+/** "meetly-pin:<chat message id>": the message shown above the conversation. The newest one stands. */
+const PIN = "meetly-pin:";
 const isMarker = (p: Participant) => p.custom_participant_id.startsWith("meetly-");
 
 type Config = {
@@ -174,6 +176,8 @@ type MeetingRecord = {
   /** Identities the host removed. */
   banned: Set<string>;
   access: JoinAccess;
+  /** Id of the pinned chat message. */
+  pin: string | null;
   markers: Participant[];
 };
 
@@ -186,12 +190,15 @@ export function readRecord(participants: Participant[], hostPreset: string, canA
   const stated = tagged(ACCESS);
   // The stricter statement wins if two were ever written at once.
   const access: JoinAccess = stated.includes("locked") ? "locked" : stated.includes("ask") && canAsk ? "ask" : "open";
+  // Pinning writes the new statement before removing the old, so for a moment there can be two.
+  const pins = markers.filter((m) => m.custom_participant_id.startsWith(PIN)).sort(oldestFirst);
   return {
     people,
     hosts: people.filter((p) => p.preset_name === hostPreset),
     coHostIds: new Set(tagged(COHOST)),
     banned: new Set(tagged(BAN)),
     access,
+    pin: pins.length > 0 ? pins[pins.length - 1].custom_participant_id.slice(PIN.length) : null,
     markers,
   };
 }
@@ -252,6 +259,7 @@ export type RealtimeKitJoin = {
   coHosts: string[];
   access: JoinAccess;
   canAsk: boolean;
+  pin: string | null;
 };
 
 export type RealtimeKitJoinOutcome =
@@ -290,6 +298,7 @@ function grant(
     coHosts: record ? coHostIdentities(record) : [],
     access: record?.access ?? "open",
     canAsk: c.knockPreset !== null,
+    pin: record?.pin ?? null,
   };
 }
 
@@ -378,7 +387,7 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
 
 /* --------------------------------------------------------------- moderation */
 
-export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess };
+export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess; pin: string | null };
 
 /**
  * Moderation, and `roles`: the one thing here any participant may ask, since RealtimeKit has no
@@ -404,7 +413,7 @@ export async function realtimeKitHostAction(
     const me = record.people.find((p) => p.id === session.participantId);
     if (!me) return DENIED;
     if (request.action === "roles") {
-      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access } };
+      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access, pin: record.pin } };
     }
     const role = me.preset_name === c.hostPreset ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
     if (role === "guest") return DENIED;
@@ -462,6 +471,17 @@ export async function realtimeKitHostAction(
       case "end": {
         const done = await api(c, "POST", `${session_}/kick-all`);
         return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the call." };
+      }
+      case "pin": {
+        // Only the id is kept: every client reads the message itself from RealtimeKit's chat,
+        // so what is shown as pinned is always something that was really said.
+        const wanted = request.messageId === null ? null : `${PIN}${request.messageId}`;
+        if (wanted && record.pin !== request.messageId) {
+          const added = await addMarker(c, session.meetingId, wanted);
+          if (!added.ok) return UNREACHABLE;
+        }
+        const cleared = await removeMarkers(c, session.meetingId, record, (fact) => fact.startsWith(PIN) && fact !== wanted);
+        return cleared ? { status: 200 } : UNREACHABLE;
       }
       case "access": {
         if (request.access === "ask" && !c.knockPreset) {

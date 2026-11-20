@@ -52,3 +52,6 @@ next-env.d.ts
 # stray test output
 /undefined/
 !.env.production
+
+# copied from node_modules by scripts/copy-effects.mjs
+/public/effects/

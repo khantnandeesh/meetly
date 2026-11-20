@@ -6,6 +6,7 @@ import type {
   DeviceKind,
   DisconnectReason,
   JoinAccess,
+  LocalEffects,
   LocalMedia,
   LocalSource,
   RtcCall,
@@ -100,6 +101,7 @@ const HOST = ["host", "status"] as const;
 const LOCAL_MEDIA = ["localMedia"] as const;
 const CHAT = ["chat"] as const;
 const AUDIO = ["audio"] as const;
+const EFFECTS = ["effects"] as const;
 const DEVICE = ["device"] as const;
 
 export function useConnectionStatus(): ConnectionStatus {
@@ -158,12 +160,28 @@ export function useActiveDevice(kind: DeviceKind): string {
   return useCallValue(call, DEVICE, () => call.activeDevice(kind) ?? "default");
 }
 
-export function useChat(): { chatMessages: RtcChatMessage[]; isSending: boolean; send: (text: string) => Promise<void> } {
+/** What is being done to your own microphone and camera before they are sent. */
+export function useLocalEffects(): LocalEffects {
+  const call = useCall();
+  return useCallValue(call, EFFECTS, () => call.localEffects());
+}
+
+export function useChat(): {
+  chatMessages: RtcChatMessage[];
+  /** The message a host put above the conversation, if any. */
+  pinned: RtcChatMessage | null;
+  isSending: boolean;
+  send: (text: string) => Promise<void>;
+  /** Takes back one of your own messages, for everyone. */
+  remove: (id: string) => Promise<void>;
+} {
   const call = useCall();
   const chatMessages = useCallValue(call, CHAT, () => call.chatMessages());
+  const pinned = useCallValue(call, CHAT, () => call.pinnedMessage());
   const isSending = useCallValue(call, CHAT, () => call.chatSending);
   const send = useCallback((text: string) => call.sendChat(text), [call]);
-  return { chatMessages, isSending, send };
+  const remove = useCallback((id: string) => call.deleteChatMessage(id), [call]);
+  return { chatMessages, pinned, isSending, send, remove };
 }
 
 /**

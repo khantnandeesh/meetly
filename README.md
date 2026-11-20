@@ -7,6 +7,10 @@ Link-based video meetings built on Next.js, running on [LiveKit](https://livekit
 - Pre-join screen with camera preview and device selection
 - Adaptive video grid, screen sharing with a focus layout
 - In-call chat with unread badge, participant list, raise hand, emoji reactions
+- Chat that late joiners can read back, one message pinned by the host, deleting your own
+  message, and saving the conversation as a text file
+- Noise suppression (on by default) and background blur, both done in the browser
+- A meeting for later: a link now, and a Google Calendar, Outlook or .ics entry to go with it
 - Layouts for large calls: Auto, Tiled (paginated gallery), Spotlight and Sidebar, with a debounced
   active speaker on the main tile; only on-screen cameras are streamed
 - People list with search (windowed, fine at 100+)
@@ -30,7 +34,8 @@ server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `s
 
 `node test/e2e/run.cjs` runs the browser tests: real Chromium clients with fake cameras, against
 a running LiveKit build (`MEETLY_URL`, default `http://localhost:3000`). Name suites to run only
-some (`host`, `reactions`, `host-tools`, `access`); set `MEETLY_SHOTS=<dir>` to keep screenshots.
+some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`); set
+`MEETLY_SHOTS=<dir>` to keep screenshots.
 They need [Playwright](https://playwright.dev) where Node can find it (`npm i --no-save playwright`,
 or a global install on `NODE_PATH`). `node test/e2e/realtimekit-rest.cjs` checks a RealtimeKit
 build's server routes against Cloudflare's REST API without joining a call; it creates test
@@ -77,6 +82,73 @@ What differs in a RealtimeKit call:
   changed, since the server cannot push to them. Lowering hands and "the host ended the call"
   (as opposed to "removed you") are messages between clients, as raised hands are.
 - "Mute all" uses Cloudflare's mute-all call, which makes no exception for the host or co-hosts.
+- Chat is RealtimeKit's own, kept by Cloudflare, so history needs nothing from us. Which message
+  is pinned is one more `meetly-…` record, written through `/api/host` like any host action;
+  RealtimeKit's own "pin" is not used, because nothing limits who may call it. Deleting is
+  RealtimeKit's: this app only ever asks it to delete the caller's own message, and whether
+  Cloudflare would refuse anyone else's is its rule, not ours.
+
+## Noise suppression and background blur
+
+Both run in the browser. Nothing is sent anywhere to be processed and no service is paid for.
+The files they need are copied out of `node_modules` into `public/effects/` by
+`scripts/copy-effects.mjs` (it runs before `npm run dev` and `npm run build`; the folder is not
+committed), so they are served by this app and never fetched from someone else's CDN. Each is
+downloaded the first time its feature is switched on, not before.
+
+| | Library (licence) | What a browser downloads |
+| --- | --- | --- |
+| Noise suppression | RNNoise, through `@sapphi-red/web-noise-suppressor` (MIT; wraps `shiguredo/rnnoise-wasm`, Apache-2.0, and `xiph/rnnoise`, BSD-3-Clause) | 64 kB worklet + 157 kB wasm (about 0.13 MB compressed) |
+| Background blur | LiteRT.js, `@litertjs/core` (Apache-2.0), running MediaPipe's selfie segmentation model from `@mediapipe/selfie_segmentation` (Apache-2.0) | 0.28 MB loader + 11.1 MB wasm (3.1 MB gzipped) + 0.25 MB model |
+
+- **Noise suppression** is on unless switched off (microphone menu; More on a phone). On is two
+  layers: the browser's own `noiseSuppression`, and RNNoise on top of it. Off turns both off,
+  which is what music needs. If the filter cannot run, the browser's layer carries on alone.
+- **Blur** (None, Slight blur, Blur) is in the camera menu and on the pre-join preview, which
+  runs the same code as the call. A camera first published with blur chosen is published
+  already blurred; if blur cannot start, that camera stays off rather than going out as it is.
+  The control is absent (pre-join) or disabled with the reason (in the call) where the browser
+  cannot do it. The picture is drawn at most 30 times a second; if drawing cannot keep up the
+  picture is first made smaller, and after ten seconds under 12 frames a second blur is switched
+  off with a notification that offers to put it back.
+
+The code is in `src/lib/effects/` and knows nothing of either provider: LiveKit takes it as track
+processors, RealtimeKit as audio and video middlewares. Cloudflare's own
+`@cloudflare/realtimekit-noise-cancellation` and `-virtual-background` packages are not used:
+both fetch their runtime and models from `rtk-assets.realtime.cloudflare.com` when they start.
+
+## Chat on LiveKit
+
+LiveKit carries data and keeps none, and this app has no storage. So chat goes through
+`/api/chat` (`src/lib/chat.server.ts`): the server works out who is sending from their token and
+the room's current participants, signs the message, and hands it to the room. Clients ignore
+chat that a participant publishes directly.
+
+- **History**: a newcomer asks the participant who has been in the call longest for the messages
+  they hold, then asks the server which of those it really signed. A participant can therefore
+  leave messages out, or pass on one its author has since deleted; it cannot invent, alter or
+  re-attribute one. Up to the last 200 messages are passed on. Once everybody has left, the
+  conversation is gone.
+- **Pin**: a host action through `/api/host`. The pinned message is kept whole in the room's
+  metadata, and only a message carrying the server's signature can be put there.
+- **Delete**: your own messages only, checked by the server against the identity in the signed
+  message (or one your browser held before a reload, from its signed cookie).
+
+The smallest thing that would improve this is a per-meeting store (a Durable Object or a KV
+entry) holding the log: history would then survive everyone leaving, and deletions would be
+remembered by the server instead of by the clients that saw them.
+
+## Meetings for later
+
+"New meeting" has an arrow with "Get a link for later" and "Schedule…"; in a call, More has "Add
+to calendar…". The link is made the way an instant meeting's is, so whoever makes it is its
+host, and it never expires. Title and time go only into the calendar entry
+(`src/lib/calendar.ts`): a Google Calendar or Outlook link, or an .ics file with a ten-minute
+reminder, all in UTC. Meetly stores none of it and sends no email.
+
+On LiveKit the host's record lasts a day in an unused room, so for a meeting further off the
+person who scheduled it is host only if they are the first to arrive. On RealtimeKit it lasts
+thirty days.
 
 ## Hosts, co-hosts and who can join
 
@@ -111,7 +183,10 @@ and the host has not joined for thirty days.
 | Pre-join screen (preview, device pickers) | `src/components/PreJoin.tsx`, `src/lib/usePreviewMedia.ts` |
 | Stage, panels, toasts, shortcuts | `src/components/Conference.tsx` |
 | Tiles, grid and control bar | `src/components/Tile.tsx`, `TileGrid.tsx`, `ControlBar.tsx` |
-| Chat / people side panels | `src/components/ChatPanel.tsx`, `PeoplePanel.tsx` |
+| Chat / people side panels | `src/components/ChatPanel.tsx`, `ChatStore.tsx`, `PeoplePanel.tsx` |
+| Chat on LiveKit (signing, history, delete), saving the chat | `src/lib/chat.server.ts`, `chatSignature.server.ts`, `src/app/api/chat/route.ts`, `src/lib/chatExport.ts` |
+| Noise suppression, background blur and their saved settings | `src/lib/effects/`, `scripts/copy-effects.mjs` |
+| Calendar links and the schedule dialog | `src/lib/calendar.ts`, `src/components/ScheduleDialog.tsx` |
 | Layout modes, paging, self-view settings | `src/lib/useCallSettings.ts`, `src/components/LayoutMenu.tsx`, `FocusStage.tsx` |
 | Active-speaker debounce and stable tile order | `src/lib/useSpeakers.ts` |
 | Not streaming off-screen video | `src/lib/videoDemand.ts` |

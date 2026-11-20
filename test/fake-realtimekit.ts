@@ -110,6 +110,38 @@ export class FakeSelf extends FakeParticipant {
   refuse = false;
   devices: { audio?: { deviceId: string }; video?: { deviceId: string }; speaker?: { deviceId: string } } = {};
   setDeviceCalls: { deviceId: string; kind: string }[] = [];
+  /** RTKSelfMedia.addAudioMiddleware / addVideoMiddleware: what is installed right now. */
+  audioMiddlewares: ((context: unknown) => Promise<unknown>)[] = [];
+  videoMiddlewares: unknown[] = [];
+  /** Set to make the SDK refuse the next video middleware, as its `{ success: false }` does. */
+  refuseMiddleware = false;
+  /** Constraints asked of the running microphone track. */
+  constraintCalls: unknown[] = [];
+
+  async addAudioMiddleware(middleware: (context: unknown) => Promise<unknown>) {
+    this.audioMiddlewares.push(middleware);
+    return { success: true, message: "" };
+  }
+  async removeAudioMiddleware(middleware: unknown) {
+    this.audioMiddlewares = this.audioMiddlewares.filter((other) => other !== middleware);
+    return { success: true, message: "" };
+  }
+  async addVideoMiddleware(middleware: unknown) {
+    if (this.refuseMiddleware) return { success: false, message: "not supported" };
+    this.videoMiddlewares.push(middleware);
+    return { success: true, message: "" };
+  }
+  async removeVideoMiddleware(middleware: unknown) {
+    this.videoMiddlewares = this.videoMiddlewares.filter((other) => other !== middleware);
+    return { success: true, message: "" };
+  }
+  /** Gives the microphone a track that records what it is asked to change. */
+  withMicrophone() {
+    this.audioTrack = Object.assign(track("audio"), {
+      applyConstraints: async (constraints: unknown) => void this.constraintCalls.push(constraints),
+    });
+    return this;
+  }
 
   async enableAudio() {
     if (!this.refuse) this.setAudio(true);
@@ -203,6 +235,15 @@ export class FakeChat extends EventEmitter {
     this.messages = [...this.messages, message];
     this.emit("chatUpdate", { action: "add", message, messages: this.messages });
   }
+  /** RTKChat.deleteMessage: the message leaves `messages` and `chatUpdate` says which it was. */
+  deleted: string[] = [];
+  async deleteMessage(id: string) {
+    this.deleted.push(id);
+    const message = this.messages.find((entry) => entry.id === id);
+    if (!message) return;
+    this.messages = this.messages.filter((entry) => entry.id !== id);
+    this.emit("chatUpdate", { action: "delete", message, messages: this.messages });
+  }
   async sendTextMessage(text: string) {
     await Promise.resolve();
     if (this.failNext) {
@@ -216,7 +257,8 @@ export class FakeChat extends EventEmitter {
 export class FakeMeeting {
   self: FakeSelf;
   participants = new FakeParticipants();
-  meta = new EventEmitter();
+  /** RTKMeta, with the one property the adapter reads. */
+  meta: EventEmitter & { meetingStartedTimestamp?: Date } = new EventEmitter();
   chat: FakeChat;
   joinCalls = 0;
   leaveCalls = 0;

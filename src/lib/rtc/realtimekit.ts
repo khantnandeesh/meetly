@@ -1,8 +1,11 @@
 import type RealtimeKitClient from "@cloudflare/realtimekit";
-import type { RTKParticipant } from "@cloudflare/realtimekit";
+import type { AudioMiddleware, RTKParticipant, VideoMiddleware } from "@cloudflare/realtimekit";
+import { BlurRenderer, blurUnavailable, watchFrameRate, type BlurStrength } from "../effects/blur";
+import { createNoiseNode, noiseFilterSupported } from "../effects/noise";
 import { Notifier, RtcEmitter } from "./emitter";
 import { REACTION_MESSAGE, createReactionLimits, isReaction, postHost, type HostApi } from "./shared";
 import type {
+  BackgroundMode,
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
@@ -10,6 +13,7 @@ import type {
   JoinAccess,
   JoinChoices,
   JoinGrant,
+  LocalEffects,
   LocalMedia,
   LocalSource,
   RtcCall,
@@ -26,8 +30,40 @@ type Grant = Extract<JoinGrant, { provider: "realtimekit" }>;
 /** How the meeting object is obtained. Tests pass a stand-in; the app loads the SDK. */
 export type MeetingFactory = (options: {
   authToken: string;
-  defaults: { audio: boolean; video: boolean };
+  defaults: {
+    audio: boolean;
+    video: boolean;
+    /** How the microphone is opened. The spelling is the SDK's. */
+    mediaConfiguration: { audio: { noiseSupression: boolean; echoCancellation: boolean; autoGainControl: boolean } };
+  };
 }) => Promise<Meeting>;
+
+/** A frame painter: what `BlurRenderer` (src/lib/effects/blur.ts) looks like from here. */
+type Blur = {
+  strength: BlurStrength;
+  frames: number;
+  draw(source: CanvasImageSource, width: number, height: number, target: CanvasRenderingContext2D): void;
+};
+
+/**
+ * Noise suppression and background blur, which run in the browser and belong to no provider
+ * (src/lib/effects). Tests pass stand-ins; the app uses the real ones.
+ */
+export type Effects = {
+  blurUnavailable(): string | null;
+  createBlur(strength: BlurStrength): Promise<Blur>;
+  watchFrameRate(frames: () => number, onSlow: () => void): { stop(): void };
+  noiseSupported(): boolean;
+  createNoiseNode(context: AudioContext): Promise<AudioWorkletNode>;
+};
+
+const browserEffects: Effects = {
+  blurUnavailable: () => (typeof document === "undefined" ? "This browser can't blur the background." : blurUnavailable()),
+  createBlur: (strength) => BlurRenderer.create(strength),
+  watchFrameRate,
+  noiseSupported: noiseFilterSupported,
+  createNoiseNode,
+};
 
 /** Broadcast message type that carries a raised or lowered hand. RealtimeKit has no built-in one. */
 export const HAND_MESSAGE = "meetly-hand";
@@ -37,7 +73,7 @@ export const HAND_MESSAGE = "meetly-hand";
  * our server again, the second concerns hands, which are a courtesy between clients already, and
  * the third only chooses the wording of the goodbye screen.
  */
-/** Co-hosts or join access changed: ask the server who they are now. */
+/** Co-hosts, join access or the pinned chat message changed: ask the server what they are now. */
 export const ROLES_MESSAGE = "meetly-roles";
 /** A host lowered hands: `{ all: true }` or `{ peerIds: [...] }`. */
 export const LOWER_MESSAGE = "meetly-lower-hands";
@@ -181,7 +217,24 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private readonly choices: JoinChoices;
   private readonly factory: MeetingFactory;
   private readonly api: HostApi;
+  private readonly effects: Effects;
   private readonly limits = createReactionLimits();
+  private fx: LocalEffects;
+  private blur: Blur | null = null;
+  private blurMiddleware: VideoMiddleware | null = null;
+  private blurWatch: { stop(): void } | null = null;
+  private noiseMiddleware: AudioMiddleware | null = null;
+  /** Our filter is in the SDK's audio path right now (as opposed to having been asked for). */
+  private noiseFiltering = false;
+  /** Changes to the effects run one after another, never interleaved. */
+  private effectsQueue: Promise<void> = Promise.resolve();
+  /** Id of the pinned chat message, as our server recorded it. */
+  private pinId: string | null;
+  private pinned: RtcChatMessage | null = null;
+  /** Messages that were already there when you joined. */
+  private history = new Set<string>();
+  /** What is left of messages deleted while you were here, by id. */
+  private readonly removed = new Map<string, RtcChatMessage>();
   private cohosts: string[];
   private gate: JoinAccess;
   /** You asked to join and are in RealtimeKit's waiting room. */
@@ -221,14 +274,30 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    */
   private micWas: boolean;
 
-  constructor(grant: Grant, choices: JoinChoices, factory: MeetingFactory, api: HostApi = postHost) {
+  constructor(
+    grant: Grant,
+    choices: JoinChoices,
+    factory: MeetingFactory,
+    api: HostApi = postHost,
+    effects: Effects = browserEffects,
+  ) {
     super();
     this.grant = grant;
     this.choices = choices;
     this.factory = factory;
     this.api = api;
+    this.effects = effects;
     this.cohosts = grant.coHosts ?? [];
     this.gate = grant.access ?? "open";
+    this.pinId = grant.pin ?? null;
+    const unavailable = effects.blurUnavailable();
+    this.fx = {
+      noiseSuppression: choices.noiseSuppression !== false,
+      noiseState: "off",
+      background: unavailable ? "none" : (choices.background ?? "none"),
+      backgroundState: "off",
+      ...(unavailable ? { backgroundUnavailable: unavailable } : {}),
+    };
     this.micWas = choices.audioEnabled;
     this.self = new Person(
       true,
@@ -283,7 +352,15 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       const { audioEnabled, videoEnabled } = this.choices;
       const meeting = await this.factory({
         authToken: this.grant.authToken,
-        defaults: { audio: audioEnabled, video: videoEnabled },
+        defaults: {
+          audio: audioEnabled,
+          video: videoEnabled,
+          // The browser's own noise suppression, underneath ours. It is fixed when the
+          // microphone is opened, so it follows what was chosen before joining.
+          mediaConfiguration: {
+            audio: { noiseSupression: this.fx.noiseSuppression, echoCancellation: true, autoGainControl: true },
+          },
+        },
       });
       if (!current()) {
         await meeting.leave().catch(() => {});
@@ -300,6 +377,15 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         if (!current()) return void (await meeting.leave().catch(() => {}));
         await this.preferDevice("audioinput", microphone);
         await this.preferDevice("videoinput", camera);
+      }
+      if (this.fx.background !== "none" && videoEnabled) {
+        // Before joining, so the room never sees a frame of what was meant to be hidden. If blur
+        // cannot start, the camera goes off rather than out as it is.
+        await this.queued(() => this.syncBackground()).catch(async () => {
+          await Promise.resolve(meeting.self.disableVideo()).catch(() => {});
+          this.fail(new Error("Background blur couldn't start, so your camera was left off. Turn it on to be seen without blur."));
+        });
+        if (!current()) return void (await meeting.leave().catch(() => {}));
       }
       await meeting.join();
       if (!current()) {
@@ -371,7 +457,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const last = meeting.participants.lastActiveSpeaker;
     if (last && this.peers.has(last)) this.speaker = last;
     this.media = this.readMedia();
+    this.history = new Set(meeting.chat.messages.map((message) => message.id));
+    this.removed.clear();
     this.readChat();
+    // After joining, so that loading the filter never holds the call up.
+    void this.queued(() => this.syncNoise());
     this.applyDemand();
     this.readWaiters();
     // If the microphone never came up (no permission, no device), stop expecting it to.
@@ -419,6 +509,14 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.audioSink?.remove();
     this.audioSink = null;
     this.speaker = null;
+    // The SDK drops its middlewares with the meeting; the conversation is kept for the goodbye screen.
+    this.blurWatch?.stop();
+    this.blurWatch = null;
+    this.blur = null;
+    this.blurMiddleware = null;
+    this.noiseMiddleware = null;
+    this.noiseFiltering = false;
+    this.setFx({ noiseState: "off", backgroundState: "off" });
     this.statusChanged();
     this.rosterChanged();
     this.tilesChanged();
@@ -511,6 +609,12 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const data = await this.api({ session: this.grant.session, action: "roles" });
     const coHosts = Array.isArray(data.coHosts) ? data.coHosts.filter((id): id is string => typeof id === "string") : [];
     const access: JoinAccess = data.access === "ask" || data.access === "locked" ? data.access : "open";
+    const pin = typeof data.pin === "string" ? data.pin : null;
+    if (pin !== this.pinId) {
+      this.pinId = pin;
+      this.readChat();
+      this.emit("chat");
+    }
     if (coHosts.join() !== this.cohosts.join()) {
       this.cohosts = coHosts;
       this.emit("host");
@@ -549,6 +653,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       case "coHost":
       case "access":
       case "remove":
+      case "pin":
         await this.refreshRoles().catch(() => {});
         await this.tell(ROLES_MESSAGE);
         break;
@@ -840,32 +945,201 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.emit("device", kind);
   }
 
+  /* ----------------------------------------------------------------- effects */
+
+  localEffects(): LocalEffects {
+    return this.fx;
+  }
+
+  private setFx(patch: Partial<LocalEffects>): void {
+    const next = { ...this.fx, ...patch };
+    const keys = Object.keys(next) as (keyof LocalEffects)[];
+    if (keys.every((key) => next[key] === this.fx[key])) return;
+    this.fx = next;
+    this.emit("effects");
+  }
+
+  private queued<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.effectsQueue.then(work, work);
+    this.effectsQueue = run.then(
+      () => {},
+      () => {},
+    );
+    return run;
+  }
+
+  async setNoiseSuppression(on: boolean): Promise<void> {
+    this.setFx({ noiseSuppression: on });
+    await this.queued(() => this.syncNoise());
+  }
+
+  /**
+   * Our filter goes in as an SDK audio middleware: the SDK hands over its AudioContext and puts
+   * the node we return between the microphone and what it sends. The browser's own suppression
+   * was chosen when the microphone was opened (see connect()); a running track is asked to
+   * change it, which some browsers do and some ignore.
+   */
+  private async syncNoise(): Promise<void> {
+    const me = this.meeting?.self;
+    if (!me || !this.joined) return;
+    const want = this.fx.noiseSuppression;
+    try {
+      await me.audioTrack?.applyConstraints?.({ noiseSuppression: want });
+    } catch {
+      // It stays as it was opened.
+    }
+    try {
+      if (want && !this.noiseMiddleware && this.effects.noiseSupported()) {
+        const middleware: AudioMiddleware = async (context) => {
+          try {
+            const node = await this.effects.createNoiseNode(context);
+            this.noiseFiltering = true;
+            return node;
+          } catch {
+            // Nothing may fail inside the SDK's audio path: the sound passes through untouched.
+            this.noiseFiltering = false;
+            return context.createGain() as unknown as AudioWorkletNode;
+          } finally {
+            this.reportNoise();
+          }
+        };
+        const added = await me.addAudioMiddleware(middleware);
+        if (added?.success !== false) this.noiseMiddleware = middleware;
+      } else if (!want && this.noiseMiddleware) {
+        const middleware = this.noiseMiddleware;
+        this.noiseMiddleware = null;
+        this.noiseFiltering = false;
+        await me.removeAudioMiddleware(middleware);
+      }
+    } catch {
+      // The microphone carries on with whatever was running.
+    }
+    this.reportNoise();
+  }
+
+  private reportNoise(): void {
+    const want = this.fx.noiseSuppression;
+    this.setFx({ noiseState: !want ? "off" : this.noiseFiltering && this.noiseMiddleware ? "enhanced" : "basic" });
+  }
+
+  async setBackground(mode: BackgroundMode): Promise<void> {
+    if (mode !== "none" && this.fx.backgroundUnavailable) throw new Error(this.fx.backgroundUnavailable);
+    if (!this.meeting) throw new Error("Not connected.");
+    this.setFx({ background: mode });
+    await this.queued(() => this.syncBackground());
+  }
+
+  /**
+   * Blur goes in as an SDK video middleware: the SDK draws each camera frame on a canvas and
+   * calls us to change it in place before it is sent (and shown to you).
+   */
+  private async syncBackground(): Promise<void> {
+    const me = this.meeting?.self;
+    if (!me) return;
+    const mode = this.fx.background;
+    if (mode === "none") {
+      const middleware = this.blurMiddleware;
+      this.blurWatch?.stop();
+      this.blurWatch = null;
+      this.blur = null;
+      this.blurMiddleware = null;
+      if (middleware) await me.removeVideoMiddleware(middleware);
+      return void this.setFx({ backgroundState: "off" });
+    }
+    if (this.blur) {
+      this.blur.strength = mode;
+      return void this.setFx({ backgroundState: "on" });
+    }
+    this.setFx({ backgroundState: "starting" });
+    try {
+      const blur = await this.effects.createBlur(mode);
+      const middleware: VideoMiddleware = async () => async (canvas: HTMLCanvasElement, context: CanvasRenderingContext2D) => {
+        blur.draw(canvas, canvas.width, canvas.height, context);
+      };
+      const added = await me.addVideoMiddleware(middleware);
+      if (added?.success === false) throw new Error(added.message);
+      this.blur = blur;
+      this.blurMiddleware = middleware;
+      this.blurWatch = this.effects.watchFrameRate(
+        () => blur.frames,
+        () => this.blurTooSlow(blur),
+      );
+      this.setFx({ backgroundState: "on" });
+    } catch {
+      this.setFx({ background: "none", backgroundState: "off" });
+      throw new Error("Couldn't start background blur. Your camera is unchanged.");
+    }
+  }
+
+  /** The device cannot blur and keep a usable frame rate: blur goes, and the interface is told so it can say why. */
+  private blurTooSlow(blur: Blur): void {
+    void this.queued(async () => {
+      const mode = this.fx.background;
+      if (this.blur !== blur || mode === "none") return;
+      this.setFx({ background: "none" });
+      await this.syncBackground().catch(() => {});
+      this.emit("backgroundTooSlow", mode);
+    });
+  }
+
   /* ---------------------------------------------------------- chat and hands */
 
+  /**
+   * RealtimeKit keeps the conversation, so someone who joins late is handed it by Cloudflare.
+   * A link can be used for one call after another, though, and this call's conversation is not
+   * the last one's: anything from before this session started is left out.
+   */
   private readChat(): void {
     const meeting = this.meeting;
     if (!meeting) return;
     const me = meeting.self;
     const people = new Map<string, string>();
     for (const { peer, person } of this.peers.values()) people.set(peer.userId, person.identity);
+    const started = meeting.meta?.meetingStartedTimestamp;
+    const since = started instanceof Date && started.getTime() > 0 ? started.getTime() : 0;
     const messages: RtcChatMessage[] = [];
     for (const message of meeting.chat.messages) {
       // Images and files cannot be sent from Meetly; anything that is not plain text is skipped.
       const text = (message as { message?: unknown }).message;
       if ((message.type as string) !== "text" || typeof text !== "string") continue;
+      const timestamp = message.timeMs ?? new Date(message.time).getTime();
+      if (timestamp < since || this.removed.has(message.id)) continue;
       const own = message.userId === me.userId;
       messages.push({
         id: message.id,
-        timestamp: message.timeMs ?? new Date(message.time).getTime(),
+        timestamp,
         message: text,
         from: {
           identity: own ? this.self.identity : (people.get(message.userId) ?? message.userId),
           name: message.displayName ?? "",
           isLocal: own,
         },
+        ...(this.history.has(message.id) ? { earlier: true } : {}),
       });
     }
+    if (this.removed.size > 0) {
+      messages.push(...this.removed.values());
+      messages.sort((a, b) => a.timestamp - b.timestamp);
+    }
     this.messages = messages;
+    this.pinned = (this.pinId && messages.find((message) => message.id === this.pinId && !message.deleted)) || null;
+  }
+
+  pinnedMessage(): RtcChatMessage | null {
+    return this.pinned;
+  }
+
+  /**
+   * RealtimeKit removes the message for everyone. Whether it would also do so for a message
+   * that is not the caller's is Cloudflare's rule, not ours: nothing in the SDK or its
+   * documentation says, and this adapter never asks it to.
+   */
+  async deleteChatMessage(id: string): Promise<void> {
+    const meeting = this.meeting;
+    if (!meeting || !this.joined) throw new Error("Not connected.");
+    const message = this.messages.find((entry) => entry.id === id);
+    if (!message?.from?.isLocal || message.deleted) throw new Error("You can only delete your own messages.");
+    await meeting.chat.deleteMessage(id);
   }
 
   chatMessages(): RtcChatMessage[] {
@@ -1073,7 +1347,12 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       if (raised) this.emit("handRaised", entry.person);
     });
 
-    on(chat, "chatUpdate", () => {
+    on(chat, "chatUpdate", (update?: { action?: string; message?: { id?: unknown } }) => {
+      // A message taken back leaves the SDK's list. What it was is kept, without its text, so
+      // the conversation keeps its shape for the people who saw it.
+      const id = update?.action === "delete" ? update.message?.id : undefined;
+      const gone = typeof id === "string" ? this.messages.find((message) => message.id === id) : undefined;
+      if (gone && !gone.deleted) this.removed.set(gone.id, { ...gone, message: "", deleted: true });
       this.readChat();
       this.emit("chat");
     });
