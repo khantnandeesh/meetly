@@ -105,7 +105,7 @@ module.exports = async function webinar(browser) {
     }
   });
   H.ok("a speaker's microphone and camera are allowed", media === JSON.stringify({ microphone: true, camera: true, screenShare: false }), media);
-  for (const [name, person] of [["host", host], ["another viewer", wes]]) {
+  for (const [name, person] of [["host", host], ["other viewer", wes]]) {
     H.ok(
       `a speaker tile appears for the ${name}`,
       await H.until(async () => (await tilesOf(person)).includes(`${vicId}:camera`), 8000),
