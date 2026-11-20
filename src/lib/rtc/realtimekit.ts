@@ -883,6 +883,27 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.emit("participantLeft", entry.person);
   }
 
+  /**
+   * The SDK emptied its list of who is here. Everyone still leaves one by one, but the roster and
+   * the tiles change once: announced per person, each "roster" makes every reader rebuild a list
+   * of everyone left, which in a meeting of thousands is millions of steps in one task.
+   */
+  private removeEveryone(): void {
+    if (this.peers.size === 0) return;
+    const gone = Array.from(this.peers.values());
+    for (const entry of gone) entry.stop();
+    this.peers.clear();
+    this.receiving.clear();
+    this.roster = null;
+    this.tileList = null;
+    const hadSpeaker = this.speaker !== null;
+    this.speaker = null;
+    this.rosterChanged();
+    this.tilesChanged();
+    if (hadSpeaker) this.emit("speakers");
+    for (const entry of gone) this.emit("participantLeft", entry.person);
+  }
+
   /* ---------------------------------------------------------------- pictures */
 
   tiles(): RtcTile[] {
@@ -1639,9 +1660,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       if (this.joined) this.addPeer(peer, true);
     });
     on(participants.joined, "participantLeft", (peer: RTKParticipant) => this.removePeer(peer.id));
-    on(participants.joined, "participantsCleared", () => {
-      for (const peerId of Array.from(this.peers.keys())) this.removePeer(peerId);
-    });
+    on(participants.joined, "participantsCleared", () => this.removeEveryone());
     // Entering or leaving the active set is when a camera starts or stops being received.
     on(participants.active, "participantJoined", () => this.tilesChanged());
     on(participants.active, "participantLeft", () => this.tilesChanged());
