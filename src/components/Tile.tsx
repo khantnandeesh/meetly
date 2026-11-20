@@ -1,9 +1,9 @@
 "use client";
 
-import { Crown, Hand, MicOff, MonitorUp, Pin, PinOff, SignalLow } from "lucide-react";
+import { Crown, Hand, MicOff, MonitorUp, Pin, PinOff, SignalLow, Sparkles } from "lucide-react";
 import { memo, useEffect, useRef, useState } from "react";
 import type { Rect } from "@/lib/motion";
-import { useParticipantState, useVideoTrack } from "@/lib/rtc/react";
+import { useLocalEffects, useParticipantState, useVideoTrack } from "@/lib/rtc/react";
 import type { RtcTile, RtcVideoTrack } from "@/lib/rtc/types";
 import { HostMenu, useHost } from "./HostTools";
 import { TileReactionBadge } from "./Reactions";
@@ -161,11 +161,19 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
           ) : null}
           <span className="truncate">{isScreen ? (isLocal ? "Your screen" : `${name}'s screen`) : isLocal ? `${name} (You)` : name}</span>
           {!isScreen && hostId === participant.identity && <Crown className="size-3.5 shrink-0 text-accent" />}
+          {isLocal && !isScreen && camOn && <BlurBadge />}
           {weak && <SignalLow className="size-3.5 shrink-0 text-warn" />}
         </span>
       </div>
     </div>
   );
+}
+
+/** On your own tile: what others see of you has its background blurred. */
+function BlurBadge() {
+  const { backgroundState } = useLocalEffects();
+  if (backgroundState !== "on") return null;
+  return <Sparkles className="size-3.5 shrink-0 text-accent" data-blur-badge />;
 }
 
 /**

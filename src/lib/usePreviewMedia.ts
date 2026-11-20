@@ -35,6 +35,12 @@ export function usePreviewMedia(initial: {
   videoEnabled: boolean;
   audioDeviceId: string;
   videoDeviceId: string;
+  /**
+   * How the call will open the microphone. The preview opens it the same way: a browser asked
+   * for a microphone that is already open tends to hand back the one it has, settings and all,
+   * so the two have to agree or the call inherits the preview's.
+   */
+  noiseSuppression?: boolean;
 }) {
   const [audio, setAudio] = useState<MediaSlot>({
     enabled: initial.audioEnabled,
@@ -52,6 +58,12 @@ export function usePreviewMedia(initial: {
   const alive = useRef(true);
   const chain = useRef<Promise<void>>(Promise.resolve());
   const initialRef = useRef(initial);
+  const microphone = useRef((deviceId: string | undefined): MediaTrackConstraints => ({
+    deviceId,
+    noiseSuppression: initial.noiseSuppression !== false,
+    echoCancellation: true,
+    autoGainControl: true,
+  }));
 
   /** Jobs run strictly one after another so rapid toggles can't interleave. */
   const enqueue = useCallback((job: () => Promise<void>) => {
@@ -62,7 +74,7 @@ export function usePreviewMedia(initial: {
     if (!alive.current || (!wantAudio && !wantVideo)) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: wantAudio ? { deviceId: ids.current.audio || undefined } : false,
+        audio: wantAudio ? microphone.current(ids.current.audio || undefined) : false,
         video: wantVideo
           ? { deviceId: ids.current.video || undefined, width: { ideal: 1280 }, height: { ideal: 720 } }
           : false,
@@ -154,7 +166,7 @@ export function usePreviewMedia(initial: {
         try {
           const stream = await navigator.mediaDevices.getUserMedia(
             kind === "audio"
-              ? { audio: { deviceId } }
+              ? { audio: microphone.current(deviceId) }
               : { video: { deviceId, width: { ideal: 1280 }, height: { ideal: 720 } } },
           );
           const [track] = stream.getTracks();

@@ -2,6 +2,7 @@
 
 import {
   CircleAlert,
+  CircleGauge,
   EyeOff,
   Hand,
   MicOff,
@@ -14,6 +15,7 @@ import {
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { saveEffectSettings } from "@/lib/effects/settings";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import { useAudioBlocked, useCall, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
@@ -22,13 +24,14 @@ import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types"
 import { useCallSettings } from "@/lib/useCallSettings";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
-import { ChatPanel } from "./ChatPanel";
+import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
 import { ControlBar, type Panel } from "./ControlBar";
 import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
 import { ReactionFeed, ReactionLane } from "./Reactions";
+import { ScheduleDialog } from "./ScheduleDialog";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -249,6 +252,32 @@ function Call({ code }: { code: string }) {
     };
   }, [call, toast]);
 
+  // Blur that the device cannot keep up with is switched off by the call itself (see
+  // src/lib/effects/blur.ts). Said once, with the way back.
+  useEffect(
+    () =>
+      call.on("backgroundTooSlow", (mode) => {
+        saveEffectSettings({ background: "none" });
+        toast.push({
+          tag: "blur-slow",
+          icon: <CircleGauge className="size-5" />,
+          title: "Background blur was turned off",
+          body: "It was slowing your camera down on this device.",
+          duration: 10_000,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              call.setBackground(mode).then(
+                () => saveEffectSettings({ background: mode }),
+                () => {},
+              );
+            },
+          },
+        });
+      }),
+    [call, toast],
+  );
+
   const showPeople = useCallback(() => setPanel("people"), []);
   const hideSelf = useCallback(() => {
     updateSettings({ selfView: "hidden" });
@@ -300,6 +329,7 @@ function Call({ code }: { code: string }) {
 
   /* -------------------------------------------------------------- shortcuts */
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [scheduleOpen, setScheduleOpen] = useState(false);
   const shortcutsOn = settings.shortcuts;
   const paged = view === "tiled" && pageCount > 1;
 
@@ -487,9 +517,12 @@ function Call({ code }: { code: string }) {
                     </span>
                   )}
                 </h2>
-                <button className="icon-btn" onClick={() => closePanel(true)} aria-label={`Close ${panelTitle.toLowerCase()}`}>
-                  <X className="size-5" aria-hidden="true" />
-                </button>
+                <div className="flex items-center gap-0.5">
+                  {shown === "chat" && <SaveChatButton code={code} />}
+                  <button className="icon-btn" onClick={() => closePanel(true)} aria-label={`Close ${panelTitle.toLowerCase()}`}>
+                    <X className="size-5" aria-hidden="true" />
+                  </button>
+                </div>
               </div>
               {shown === "chat" ? (
                 <ChatPanel autoFocus={!phone} />
@@ -514,6 +547,7 @@ function Call({ code }: { code: string }) {
         onTogglePanel={togglePanel}
         onCopyLink={copyLink}
         onShowShortcuts={() => setShortcutsOpen(true)}
+        onShowSchedule={() => setScheduleOpen(true)}
         settings={settings}
         onSettings={updateSettings}
       />
@@ -524,6 +558,7 @@ function Call({ code }: { code: string }) {
         enabled={shortcutsOn}
         onEnabledChange={(shortcuts) => updateSettings({ shortcuts })}
       />
+      <ScheduleDialog code={code} open={scheduleOpen} onOpenChange={setScheduleOpen} />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
     </HostProvider>
   );
@@ -745,6 +780,8 @@ function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCop
   if (!presence.mounted) return null;
   return (
     <div
+      // On a phone notifications arrive at the top, where this card is: they are placed below it (see globals.css).
+      data-invite-card
       data-leaving={presence.leaving}
       onAnimationEnd={presence.onAnimationEnd}
       className={`anim-rise absolute z-30 w-80 max-w-[calc(100%-1.5rem)] rounded-2xl bg-[rgb(20_20_26/0.92)] p-4 shadow-[inset_0_0_0_1px_var(--border-strong),0_20px_50px_-15px_rgb(0_0_0/0.8)] backdrop-blur-md max-md:top-3 max-md:left-1/2 max-md:-translate-x-1/2 md:right-4 md:bottom-4 ${presence.leaving ? "" : "[animation-delay:400ms]"}`}

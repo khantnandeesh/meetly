@@ -20,9 +20,9 @@ function finish() {
   return failed.length ? 1 : 0;
 }
 
-function launch() {
+function launch(extra = []) {
   return chromium.launch({
-    args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required"],
+    args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", "--autoplay-policy=no-user-gesture-required", ...extra],
   });
 }
 

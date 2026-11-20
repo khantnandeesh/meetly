@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Other agents' checkouts (each with its own build output) are not this project's source.
     ".claude/**",
+    // Third-party runtime files copied out of node_modules (see scripts/copy-effects.mjs).
+    "public/effects/**",
   ]),
   {
     // The browser tests are plain CommonJS scripts, so Playwright can come from wherever Node

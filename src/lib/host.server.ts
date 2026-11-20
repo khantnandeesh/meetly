@@ -1,5 +1,6 @@
 import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { AccessToken, DataPacket_Kind, RoomServiceClient, TrackSource, type ParticipantInfo } from "livekit-server-sdk";
+import { verifyChat } from "./chatSignature.server";
 import type { Pass } from "./pass.server";
 import {
   DENIED,
@@ -49,6 +50,11 @@ export type RoomMeta = {
   access?: JoinAccess;
   /** Identities the host removed. A browser that held one of them is not let back in. */
   banned?: string[];
+  /**
+   * The pinned chat message, whole: there is nowhere else to keep it, and someone who joins
+   * later has to be able to read it. Only ever a message this server signed (see ./chat.server.ts).
+   */
+  pin?: { id: string; identity: string; name: string; ts: number; text: string };
 };
 
 /** A host token minted for a room without a host key gets this long to connect. */
@@ -92,6 +98,17 @@ export function parseRoomMeta(metadata: string | undefined): RoomMeta {
       cohosts: strings(value.cohosts),
       access: value.access === "ask" || value.access === "locked" ? value.access : "open",
       banned: strings(value.banned),
+      ...(typeof value.pin === "object" && value.pin !== null && typeof value.pin.id === "string" && typeof value.pin.text === "string"
+        ? {
+            pin: {
+              id: value.pin.id,
+              identity: String(value.pin.identity ?? ""),
+              name: String(value.pin.name ?? ""),
+              ts: Number(value.pin.ts) || 0,
+              text: value.pin.text,
+            },
+          }
+        : {}),
     };
   } catch {
     return {};
@@ -257,6 +274,33 @@ export function readCallerToken(
   }
 }
 
+/**
+ * Who is calling, for something any participant may do (chat): the token says who they are, and
+ * the room confirms they are in it right now, under which name. Null otherwise.
+ */
+export async function liveKitCaller(token: string): Promise<{ room: string; identity: string; name: string } | null> {
+  const c = config();
+  const service = roomService();
+  if (!c || !service) return null;
+  const who = readCallerToken(token, c.apiKey, c.apiSecret);
+  if (!who) return null;
+  try {
+    const person = await service.getParticipant(who.room, who.identity);
+    return { ...who, name: person.name };
+  } catch {
+    return null;
+  }
+}
+
+/** Takes the pinned message down if it is the one with this id. */
+export async function clearPinIfIs(room: string, messageId: string): Promise<void> {
+  const service = roomService();
+  if (!service) return;
+  const [existing] = await service.listRooms([room]);
+  if (!existing || parseRoomMeta(existing.metadata).pin?.id !== messageId) return;
+  await updateMeta(service, room, (current) => (current.pin?.id === messageId ? { ...current, pin: undefined } : current));
+}
+
 /** Resolves the caller from their LiveKit token and looks up what they are in their room. */
 export async function verifyCaller(token: string): Promise<Caller | null> {
   const c = config();
@@ -337,7 +381,12 @@ async function muteSource(service: RoomServiceClient, room: string, person: Part
  * Carries out a moderation request. `caller` came from a token we signed and the room's record,
  * never from the request; this is where "may they?" is answered.
  */
-export async function liveKitHostAction(caller: Caller, request: HostAction): Promise<HostActionResult> {
+export async function liveKitHostAction(
+  caller: Caller,
+  request: HostAction,
+  /** For `pin`: the message to pin, as this server signed it when it was sent. */
+  signedMessage?: unknown,
+): Promise<HostActionResult> {
   const service = roomService();
   if (!service || caller.role === "guest") return DENIED;
   if (isHostOnly(request) && caller.role !== "host") return HOST_ONLY;
@@ -412,6 +461,21 @@ export async function liveKitHostAction(caller: Caller, request: HostAction): Pr
         const next = await updateMeta(service, room, (current) => ({ ...current, access: request.access }));
         return next ? { status: 200 } : GONE;
       }
+      case "pin": {
+        if (request.messageId === null) {
+          const next = await updateMeta(service, room, (current) => ({ ...current, pin: undefined }));
+          return next ? { status: 200 } : GONE;
+        }
+        // Only what was really said in this meeting can be pinned: our own signature says so.
+        // A host cannot put words in anyone's mouth by pinning a message that was never sent.
+        const secret = process.env.LIVEKIT_API_SECRET ?? "";
+        if (!verifyChat(signedMessage, secret) || signedMessage.room !== room || signedMessage.id !== request.messageId) {
+          return { status: 400, error: "That message can't be pinned." };
+        }
+        const { id, identity, name, ts, text } = signedMessage;
+        const next = await updateMeta(service, room, (current) => ({ ...current, pin: { id, identity, name, ts, text } }));
+        return next ? { status: 200 } : GONE;
+      }
       case "end": {
         // Deleting the room disconnects everyone with "the room was closed". The record is put
         // straight back, without the co-hosts: the meeting can be used again, by the same host.
@@ -421,7 +485,7 @@ export async function liveKitHostAction(caller: Caller, request: HostAction): Pr
           await service.deleteRoom(room);
           // Anyone still asking to join is told the same thing.
           await service.deleteRoom(lobbyOf(room)).catch(() => {});
-          await createRoom(service, room, { ...current, cohosts: [] }).catch((error) =>
+          await createRoom(service, room, { ...current, cohosts: [], pin: undefined }).catch((error) =>
             console.error("Could not keep the meeting record after ending the call", error),
           );
         });

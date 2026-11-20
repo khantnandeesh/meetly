@@ -1,11 +1,13 @@
 "use client";
 
-import { Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus } from "lucide-react";
+import { CalendarPlus, ChevronDown, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus, Video } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { JoinForm } from "@/components/JoinForm";
+import { ScheduleDialog } from "@/components/ScheduleDialog";
 import { Logo } from "@/components/ui/Logo";
+import { Dropdown } from "@/components/ui/Menu";
 import { generateCode } from "@/lib/code";
 import { createMeeting } from "@/lib/rtc/provider";
 
@@ -38,6 +40,19 @@ export default function Home() {
     router.push(`/${(await createMeeting()) ?? generateCode()}`);
   }
 
+  // A meeting for later is made the same way, so the person planning it is its host. Only the
+  // link is shown; nobody is taken into the call.
+  const [planned, setPlanned] = useState<{ code: string; mode: "link" | "schedule" } | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [preparing, setPreparing] = useState(false);
+  async function plan(mode: "link" | "schedule") {
+    setPreparing(true);
+    const code = (await createMeeting()) ?? generateCode();
+    setPreparing(false);
+    setPlanned({ code, mode });
+    setPlanning(true);
+  }
+
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
@@ -62,14 +77,46 @@ export default function Home() {
             </div>
 
             <div className="flex max-w-[34rem] flex-col gap-3 sm:flex-row sm:items-start">
-              <button className="btn btn-primary" onClick={start} disabled={starting}>
-                {starting ? (
-                  <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" />
-                ) : (
-                  <Plus className="size-[1.125rem]" strokeWidth={2.5} aria-hidden="true" />
-                )}
-                New meeting
-              </button>
+              {/* One tap still starts a meeting now; the arrow holds the ways to have one later. */}
+              <div className="flex shrink-0 gap-px">
+                <button className="btn btn-primary flex-1 rounded-r-md" onClick={start} disabled={starting || preparing}>
+                  {starting ? (
+                    <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" />
+                  ) : (
+                    <Plus className="size-[1.125rem]" strokeWidth={2.5} aria-hidden="true" />
+                  )}
+                  New meeting
+                </button>
+                <Dropdown.Root>
+                  <Dropdown.Trigger
+                    className="btn btn-primary group w-11 rounded-l-md px-0"
+                    aria-label="More ways to start a meeting"
+                    disabled={starting || preparing}
+                  >
+                    {preparing ? (
+                      <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" />
+                    ) : (
+                      <ChevronDown className="size-[1.125rem] transition-transform group-aria-expanded:rotate-180" strokeWidth={2.5} aria-hidden="true" />
+                    )}
+                  </Dropdown.Trigger>
+                  <Dropdown.Portal>
+                    <Dropdown.Content align="start" sideOffset={8} collisionPadding={12} className="menu min-w-60">
+                      <Dropdown.Item className="menu-item" onSelect={start}>
+                        <Video className="size-4 text-muted" aria-hidden="true" />
+                        Start now
+                      </Dropdown.Item>
+                      <Dropdown.Item className="menu-item" onSelect={() => void plan("link")}>
+                        <Link2 className="size-4 text-muted" aria-hidden="true" />
+                        Get a link for later
+                      </Dropdown.Item>
+                      <Dropdown.Item className="menu-item" onSelect={() => void plan("schedule")}>
+                        <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
+                        Schedule…
+                      </Dropdown.Item>
+                    </Dropdown.Content>
+                  </Dropdown.Portal>
+                </Dropdown.Root>
+              </div>
               <JoinForm />
             </div>
           </section>
@@ -97,6 +144,8 @@ export default function Home() {
       <footer className="mx-auto w-full max-w-6xl px-5 pb-8 text-sm text-faint sm:px-8">
         Your camera and microphone stay off until you allow them.
       </footer>
+
+      <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />
     </div>
   );
 }

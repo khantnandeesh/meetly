@@ -6,7 +6,8 @@ import { realtimeKitHostAction } from "@/lib/rtc/server/realtimekit";
 /**
  * Moderation by the host and co-hosts (see `HostAction` in src/lib/rtc/types.ts for the list).
  *
- * LiveKit builds:     { token, action, identity?, ... }
+ * LiveKit builds:     { token, action, identity?, ... }  (pinning a chat message also sends
+ *                     `message`: the message as this server signed it)
  * RealtimeKit builds: { session, action, participantId?, ... }
  *
  * Either way the first field is what proves who is asking, and it was signed by this server.
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
   const wanted = parseHostAction(body);
   if (!wanted) return Response.json({ error: "Invalid request." }, { status: 400 });
   const caller = await verifyCaller(body.token);
-  const result = caller ? await liveKitHostAction(caller, wanted) : DENIED;
+  const result = caller ? await liveKitHostAction(caller, wanted, body.message) : DENIED;
   return result.status === 200
     ? Response.json({ ok: true })
     : Response.json({ error: result.error }, { status: result.status });

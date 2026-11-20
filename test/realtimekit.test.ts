@@ -72,7 +72,17 @@ const audioElements = () => body.children.flatMap((sink) => sink.children).filte
 test("connecting initialises the SDK with the join choices, joins, and reports connected once", async () => {
   const { call, meeting, options, statusWhileConnecting, count } = await connected();
   assert.equal(statusWhileConnecting, "connecting");
-  assert.deepEqual(options, [{ authToken: "not-a-real-token", defaults: { audio: true, video: false } }]);
+  assert.deepEqual(options, [
+    {
+      authToken: "not-a-real-token",
+      defaults: {
+        audio: true,
+        video: false,
+        // Noise suppression is on unless it was switched off; the spelling is the SDK's.
+        mediaConfiguration: { audio: { noiseSupression: true, echoCancellation: true, autoGainControl: true } },
+      },
+    },
+  ]);
   assert.equal(meeting.joinCalls, 1);
   assert.equal(call.status, "connected");
   assert.equal(call.provider, "realtimekit");

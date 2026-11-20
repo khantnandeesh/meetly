@@ -33,7 +33,9 @@ export type HostAction =
   | { action: "muteAll" | "lowerAllHands" }
   | { action: "access"; access: JoinAccess }
   | { action: "end" }
-  | { action: "coHost"; identity: string; on: boolean };
+  | { action: "coHost"; identity: string; on: boolean }
+  /** Shows one chat message above the conversation for everyone; null takes it down again. */
+  | { action: "pin"; messageId: string | null };
 
 /** Someone asking to join. `id` is what `admit` and `deny` take as `identity`. */
 export type RtcWaiter = { id: string; name: string };
@@ -92,8 +94,37 @@ export type RtcChatMessage = {
   id: string;
   /** Milliseconds since the epoch. */
   timestamp: number;
+  /** Empty once the message has been deleted. */
   message: string;
+  /** `isLocal`: you wrote it, in this browser, now or before a reload. */
   from?: { identity: string; name: string; isLocal: boolean };
+  /** Sent before you joined: history, not news. Never counted as unread or announced. */
+  earlier?: boolean;
+  /** Its author took it back. The entry stays, so the conversation keeps its shape. */
+  deleted?: boolean;
+};
+
+/** What is done to your camera picture before anyone else sees it. */
+export type BackgroundMode = "none" | "light" | "blur";
+
+/**
+ * What is being done to your microphone and camera before they are sent. All of it happens in
+ * this browser; nothing is sent anywhere to be processed.
+ */
+export type LocalEffects = {
+  /** What you asked for. */
+  noiseSuppression: boolean;
+  /**
+   * What is running: "enhanced" is our own filter on top of the browser's, "basic" the browser's
+   * alone (the filter could not start here), "off" neither.
+   */
+  noiseState: "off" | "basic" | "enhanced";
+  /** What you asked for. */
+  background: BackgroundMode;
+  /** "starting" while the model loads; "on" once what leaves this browser is blurred. */
+  backgroundState: "off" | "starting" | "on";
+  /** Why this browser cannot blur the background, when it cannot. */
+  backgroundUnavailable?: string;
 };
 
 export type RtcEvents = {
@@ -121,8 +152,12 @@ export type RtcEvents = {
   localMic: [on: boolean];
   /** The device in use for `kind` changed. */
   device: [kind: DeviceKind];
-  /** `chatMessages()` or `chatSending` changed. */
+  /** `chatMessages()`, `pinnedMessage()` or `chatSending` changed. */
   chat: [];
+  /** `localEffects()` changed. */
+  effects: [];
+  /** Blurring kept the camera under a usable frame rate, so it was switched off. `mode` is what was on. */
+  backgroundTooSlow: [mode: BackgroundMode];
   /** `hostIdentity` or `coHosts()` changed. */
   host: [];
   /** `access` changed. */
@@ -196,12 +231,25 @@ export interface RtcCall {
   /** The device id in use for `kind`, if the provider has picked or been given one. */
   activeDevice(kind: DeviceKind): string | undefined;
   setDevice(kind: DeviceKind, deviceId: string): Promise<void>;
+  /** A new object whenever `effects` fires. */
+  localEffects(): LocalEffects;
+  /** Background noise is filtered out of your microphone, or (off) it is sent as it is. Never rejects. */
+  setNoiseSuppression(on: boolean): Promise<void>;
+  /**
+   * Blurs what is behind you, camera only. Rejects with a message fit to show if it could not be
+   * started; the camera then carries on as it was.
+   */
+  setBackground(mode: BackgroundMode): Promise<void>;
 
   /* chat and hands */
-  /** A new array whenever a message arrives. */
+  /** Oldest first, including what was said before you joined. A new array whenever `chat` fires. */
   chatMessages(): RtcChatMessage[];
   readonly chatSending: boolean;
   sendChat(text: string): Promise<void>;
+  /** The message a host put above the conversation, if any. Pinning is `moderate({ action: "pin" })`. */
+  pinnedMessage(): RtcChatMessage | null;
+  /** Takes back a message of your own, for everyone. Rejects for anybody else's. */
+  deleteChatMessage(id: string): Promise<void>;
   setHandRaised(raised: boolean): Promise<void>;
   /** Shows `emoji` (one of `REACTIONS`) to everyone for a moment. Nothing is stored. */
   sendReaction(emoji: string): Promise<void>;
@@ -216,6 +264,9 @@ export type JoinChoices = {
   videoEnabled: boolean;
   audioDeviceId: string;
   videoDeviceId: string;
+  /** Start with these already applied (see `LocalEffects`). Absent means noise suppression on, no blur. */
+  noiseSuppression?: boolean;
+  background?: BackgroundMode;
 };
 
 /** What POST /api/token returns, per provider. Opaque to components. */
@@ -242,6 +293,8 @@ export type JoinGrant =
       access: JoinAccess;
       /** The app has a preset whose holders wait to be let in, so "ask to join" can be offered. */
       canAsk: boolean;
+      /** Id of the pinned chat message at the moment of joining, if any. */
+      pin?: string | null;
     };
 
 export type RtcProviderModule = {

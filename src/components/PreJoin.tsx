@@ -12,10 +12,13 @@ import {
   Mic,
   MicOff,
   RotateCw,
+  Sparkles,
   Video,
   VideoOff,
 } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { blurUnavailable } from "@/lib/effects/blur";
+import { useBackgroundPreview, useEffectSettings } from "@/lib/effects/settings";
 import { copyText } from "@/lib/hooks";
 import type { JoinAccess, JoinChoices } from "@/lib/rtc/types";
 import {
@@ -56,7 +59,8 @@ export function PreJoin({
   onCancel?: () => void;
 }) {
   const [saved, save] = useSavedChoices();
-  const { audio, video, setEnabled, setDevice, retry } = usePreviewMedia(saved);
+  const [effects, saveEffects] = useEffectSettings();
+  const { audio, video, setEnabled, setDevice, retry } = usePreviewMedia({ ...saved, noiseSuppression: effects.noiseSuppression });
   const [name, setName] = useState(saved.username);
   const [nameError, setNameError] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -67,6 +71,12 @@ export function PreJoin({
 
   const microphones = useDeviceList("audioinput", audio.track);
   const cameras = useDeviceList("videoinput", video.track);
+
+  // Background blur, chosen here or in an earlier call. Where the browser cannot do it the
+  // control is simply not offered. The preview runs the same code the call will.
+  const canBlur = useMemo(() => blurUnavailable() === null, []);
+  const background = canBlur ? effects.background : "none";
+  const preview = useBackgroundPreview(video.enabled ? video.track : undefined, background);
 
   function toggle(kind: "audio" | "video") {
     const next = !(kind === "audio" ? audio.enabled : video.enabled);
@@ -94,6 +104,8 @@ export function PreJoin({
       videoEnabled: video.enabled && !!video.track,
       audioDeviceId: audio.deviceId,
       videoDeviceId: video.deviceId,
+      noiseSuppression: effects.noiseSuppression,
+      background,
     });
   }
 
@@ -125,6 +137,9 @@ export function PreJoin({
             name={name.trim()}
             audio={audio}
             video={video}
+            shown={preview.track}
+            blur={canBlur ? { on: background !== "none", state: preview.state } : null}
+            onToggleBlur={() => saveEffects({ background: background === "none" ? "blur" : "none" })}
             onToggle={toggle}
             onRetry={retry}
           />
@@ -182,7 +197,7 @@ export function PreJoin({
                 <LoaderCircle className="anim-spin size-5 shrink-0 text-accent" aria-hidden="true" />
                 <span className="min-w-0">
                   <span className="block font-medium">Someone in the call will let you in</span>
-                  <span className="block truncate text-sm text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
+                  <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
                 </span>
               </p>
               <button type="button" className="btn btn-secondary h-13 text-base" onClick={onCancel}>
@@ -250,7 +265,7 @@ export function PreJoin({
           <p className="text-sm leading-relaxed text-faint" aria-live="polite">
             {blocked
               ? "You can still join and listen. Allow access any time to be seen and heard."
-              : `You'll join with your camera ${camOn ? "on" : "off"} and microphone ${micOn ? "on" : "off"}.`}
+              : `You'll join with your camera ${camOn ? "on" : "off"}${camOn && background !== "none" ? " (background blurred)" : ""} and microphone ${micOn ? "on" : "off"}.`}
             {mustAsk && !waiting && " People ask to join this meeting, so somebody will have to let you in."}
           </p>
         </section>
@@ -284,12 +299,20 @@ function Preview({
   name,
   audio,
   video,
+  shown,
+  blur,
+  onToggleBlur,
   onToggle,
   onRetry,
 }: {
   name: string;
   audio: MediaSlot;
   video: MediaSlot;
+  /** What the preview shows: the camera, or the camera with its background blurred. */
+  shown: MediaStreamTrack | undefined;
+  /** Background blur, where this browser can do it. */
+  blur: { on: boolean; state: "off" | "starting" | "on" | "failed" } | null;
+  onToggleBlur: () => void;
   onToggle: (kind: "audio" | "video") => void;
   onRetry: () => void;
 }) {
@@ -298,13 +321,13 @@ function Preview({
 
   useEffect(() => {
     const element = videoRef.current;
-    if (!element || !track) return;
-    element.srcObject = new MediaStream([track]);
+    if (!element || !shown) return;
+    element.srcObject = new MediaStream([shown]);
     element.play().catch(() => {});
     return () => {
       element.srcObject = null;
     };
-  }, [track]);
+  }, [shown]);
 
   const micOn = audio.enabled && !!audio.track;
   const camOn = video.enabled && !!track;
@@ -378,6 +401,16 @@ function Preview({
             </button>
           </span>
         )}
+        {camOn && blur?.on && blur.state !== "on" && (
+          <span className={`chip anim-fade ${blur.state === "failed" ? "text-warn" : ""}`} role="status" data-blur-status={blur.state}>
+            {blur.state === "failed" ? (
+              <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            ) : (
+              <LoaderCircle className="anim-spin size-3.5 shrink-0" aria-hidden="true" />
+            )}
+            {blur.state === "failed" ? "Blur couldn't start" : "Starting blur…"}
+          </span>
+        )}
       </div>
 
       <div className="absolute inset-x-0 bottom-4 flex justify-center gap-3">
@@ -397,6 +430,21 @@ function Preview({
           iconOn={<Video className="size-[1.375rem]" aria-hidden="true" />}
           iconOff={<VideoOff className="size-[1.375rem]" aria-hidden="true" />}
         />
+        {blur && (
+          <Tip label={blur.on ? "Stop blurring your background" : "Blur your background"}>
+            <button
+              type="button"
+              aria-label="Blur background"
+              aria-pressed={blur.on}
+              onClick={onToggleBlur}
+              className={`grid size-14 cursor-pointer place-items-center rounded-[1.25rem] backdrop-blur-md transition-[background-color,transform] duration-(--dur-fast) active:scale-(--scale-press) ${
+                blur.on ? "bg-accent text-accent-ink hover:bg-(--accent-hover)" : "bg-white/16 text-white hover:bg-white/26"
+              }`}
+            >
+              <Sparkles className="size-[1.375rem]" aria-hidden="true" />
+            </button>
+          </Tip>
+        )}
       </div>
     </div>
   );
