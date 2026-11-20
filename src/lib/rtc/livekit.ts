@@ -28,13 +28,12 @@ import {
   CHAT_SYNC_TOPIC,
   CHAT_TOPIC,
   REACTION_MESSAGE,
-  answerEach,
+  bulkError,
   checkNewPoll,
   createReactionLimits,
   createThrottle,
   isReaction,
   isSignedChat,
-  notAvailableYet,
   postChat,
   postHost,
   postPoll,
@@ -190,8 +189,8 @@ class LiveKitVideo implements RtcVideoTrack {
 type Pin = { id: string; identity: string; name: string; ts: number; text: string };
 
 /** The part of the meeting's record (room metadata, written by our server only) that clients show. */
-type Meta = { host: string | null; coHosts: string[]; access: JoinAccess; pin: Pin | null; polls: StoredPoll[] };
-const NO_META: Meta = { host: null, coHosts: [], access: "open", pin: null, polls: [] };
+type Meta = { host: string | null; coHosts: string[]; access: JoinAccess; pin: Pin | null; polls: StoredPoll[]; reactions: boolean };
+const NO_META: Meta = { host: null, coHosts: [], access: "open", pin: null, polls: [], reactions: true };
 
 function readPin(value: unknown): Pin | null {
   if (typeof value !== "object" || value === null) return null;
@@ -300,6 +299,8 @@ function readMeta(metadata: string | undefined): Meta {
       access: value.access === "ask" || value.access === "locked" ? value.access : "open",
       pin: readPin(value.pin),
       polls: readStoredPolls(value.polls),
+      // Our server writes `reactions: false` while they are off, and nothing otherwise.
+      reactions: value.reactions !== false,
     };
   } catch {
     return NO_META;
@@ -547,17 +548,24 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
-  /** Always true for now: there is no switch to turn reactions off yet. */
+  /** As the room's record says (see `reactions` in src/lib/host.server.ts). */
   get reactionsAllowed(): boolean {
-    return true;
+    return this.meta.reactions;
+  }
+
+  /** While reactions are off, the host and co-hosts can still send them. */
+  private maySendReactions(identity: string): boolean {
+    return this.meta.reactions || this.meta.host === identity || this.meta.coHosts.includes(identity);
   }
 
   async moderate(action: HostAction): Promise<void> {
-    if (action.action === "reactions") throw notAvailableYet(action.action);
     if (action.action === "stage") return liveKitStageAction(this.native, this.mode, this.token, action);
     if (action.action === "admitAll" || action.action === "denyAll") {
-      const verb = action.action === "admitAll" ? "admit" : "deny";
-      return answerEach(action.identities, verb, (identity) => this.moderate({ action: verb, identity }));
+      // One request however many are waiting; our server answers each of them (src/lib/host.server.ts).
+      const data = await postHost({ token: this.token, ...action });
+      const failed = strings(data.failed);
+      if (failed.length > 0) throw bulkError(action.action === "admitAll" ? "admit" : "deny", failed);
+      return;
     }
     // To pin, our server wants the message as it signed it: that is how it knows the text is
     // what was really said, and by whom.
@@ -575,6 +583,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     if (roles) this.emit("host");
     if (next.access !== last.access) this.emit("access");
     if (next.pin?.id !== last.pin?.id) this.chatChanged();
+    if (next.reactions !== last.reactions) this.emit("reactionsAllowed");
     this.readPolls();
     this.repairVotes();
     this.syncLobbyWatch();
@@ -1160,7 +1169,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   }
 
   async sendReaction(emoji: string): Promise<void> {
-    if (!isReaction(emoji) || this.native.state !== ConnectionState.Connected || !this.limits.maySend()) return;
+    if (!isReaction(emoji) || this.native.state !== ConnectionState.Connected) return;
+    if (!this.maySendReactions(this.native.localParticipant.identity) || !this.limits.maySend()) return;
     this.emit("reaction", this.local, emoji);
     await this.native.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ emoji })), {
       reliable: true,
@@ -1496,7 +1506,9 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         } catch {
           return;
         }
-        if (isReaction(emoji) && this.limits.mayReceive(sender.identity)) this.emit("reaction", this.wrap(sender), emoji);
+        // Off means off: a reaction from somebody who may not send one is dropped, whatever sent it.
+        if (!isReaction(emoji) || !this.maySendReactions(sender.identity)) return;
+        if (this.limits.mayReceive(sender.identity)) this.emit("reaction", this.wrap(sender), emoji);
       })
       .on(RoomEvent.ParticipantConnected, (participant) => {
         rosterChanged();

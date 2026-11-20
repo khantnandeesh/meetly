@@ -44,25 +44,19 @@ export function withSince(
   return waiters;
 }
 
-/**
- * Admit all and Deny all, for now one person at a time through the single-person request.
- * It carries on past a failure, then rejects once with how many people could not be answered.
- */
-export async function answerEach(
-  identities: string[],
-  verb: "admit" | "deny",
-  one: (identity: string) => Promise<void>,
-): Promise<void> {
-  let failed = 0;
-  for (const identity of identities) await one(identity).catch(() => failed++);
-  if (failed > 0) throw new Error(`Couldn't ${verb} ${failed === 1 ? "1 person" : `${failed} people`}. Try again.`);
+/** Admit all or Deny all that could not answer everyone. `failed`: who is still waiting because of it. */
+export type BulkError = Error & { failed: string[] };
+
+/** The one error for Admit all or Deny all, however many failed. The message is fit to show. */
+export function bulkError(verb: "admit" | "deny", failed: string[]): BulkError {
+  const n = failed.length;
+  return Object.assign(new Error(`Couldn't ${verb} ${n === 1 ? "1 person" : `${n} people`}. Try again.`), { failed });
 }
 
-/** A host action that neither adapter carries out yet. The message is fit to show. */
-export function notAvailableYet(action: "reactions" | "stage"): Error {
-  return new Error(
-    action === "reactions" ? "Turning reactions off isn't available yet." : "Inviting people on stage isn't available yet.",
-  );
+/** Who an Admit all or Deny all left waiting, if `error` is one; otherwise nobody. */
+export function bulkFailures(error: unknown): string[] {
+  const failed = (error as Partial<BulkError> | null)?.failed;
+  return Array.isArray(failed) ? failed.filter((id): id is string => typeof id === "string") : [];
 }
 
 /** LiveKit: topic of our server's message to someone in the lobby that carries their way in. */

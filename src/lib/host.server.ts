@@ -60,7 +60,15 @@ export type RoomMeta = {
   polls?: StoredPoll[];
   /** Set when "New webinar" made the record. It never changes for the life of the record (see ./webinar.server.ts). */
   mode?: "webinar";
+  /**
+   * The host or a co-host turned reactions off. Absent means they are allowed, which is how every
+   * meeting starts. Each browser keeps to it; nothing here can stop a modified client sending one.
+   */
+  reactions?: false;
 };
+
+/** How many people Admit all and Deny all answer at the same moment: quick for a long list, gentle on LiveKit. */
+const BULK_AT_ONCE = 8;
 
 /** A host token minted for a room without a host key gets this long to connect. */
 const CLAIM_WINDOW_MS = 60_000;
@@ -116,6 +124,7 @@ export function parseRoomMeta(metadata: string | undefined): RoomMeta {
         : {}),
       ...(Array.isArray(value.polls) && value.polls.length > 0 ? { polls: readStoredPolls(value.polls) } : {}),
       ...(value.mode === "webinar" ? { mode: "webinar" as const } : {}),
+      ...(value.reactions === false ? { reactions: false as const } : {}),
     };
   } catch {
     return {};
@@ -395,6 +404,68 @@ export async function lobbyWatchToken(caller: Caller): Promise<string | null> {
   return mintJoinToken(caller.room, caller.identity, "", "lobby-watch");
 }
 
+/** Sends someone in the lobby, and only them, their way into the meeting. */
+async function letIn(
+  service: RoomServiceClient,
+  room: string,
+  person: { identity: string; name: string },
+  /** A webinar lets people in to its audience. */
+  kind: "member" | "viewer",
+): Promise<void> {
+  const token = await mintJoinToken(room, person.identity, person.name, kind);
+  await service.sendData(lobbyOf(room), new TextEncoder().encode(JSON.stringify({ token })), DataPacket_Kind.RELIABLE, {
+    destinationIdentities: [person.identity],
+    topic: ADMIT_TOPIC,
+  });
+}
+
+/** LiveKit's answer when the room or the person in it is not there (any more). */
+const isGone = (error: unknown) => (error as { status?: number } | null)?.status === 404;
+
+/** Runs `work` on every item, at most `limit` at a time. Never rejects: `work` deals with its own failures. */
+async function inBatches<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  const lane = async () => {
+    while (next < items.length) await work(items[next++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, lane));
+}
+
+/**
+ * Admit all and Deny all: one request from the host, however many are waiting. Returns who is
+ * still waiting because answering them went wrong, in the order they were given. Anyone who is
+ * no longer in the lobby has stopped asking, which is not a failure.
+ */
+async function answerLobby(
+  service: RoomServiceClient,
+  room: string,
+  verb: "admit" | "deny",
+  identities: string[],
+  kind: "member" | "viewer",
+): Promise<string[]> {
+  let present: Map<string, ParticipantInfo>;
+  try {
+    present = new Map((await service.listParticipants(lobbyOf(room))).map((person) => [person.identity, person]));
+  } catch (error) {
+    // No lobby at all means nobody is waiting. Anything else, and nobody was answered.
+    return isGone(error) ? [] : identities;
+  }
+  const failed = new Set<string>();
+  await inBatches(
+    identities.filter((identity) => present.has(identity)),
+    BULK_AT_ONCE,
+    async (identity) => {
+      try {
+        if (verb === "admit") await letIn(service, room, present.get(identity)!, kind);
+        else await service.removeParticipant(lobbyOf(room), identity);
+      } catch (error) {
+        if (!isGone(error)) failed.add(identity);
+      }
+    },
+  );
+  return identities.filter((identity) => failed.has(identity));
+}
+
 async function muteSource(service: RoomServiceClient, room: string, person: ParticipantInfo, source: TrackSource): Promise<void> {
   const live = person.tracks.filter((track) => track.source === source && !track.muted);
   await Promise.all(live.map((track) => service.mutePublishedTrack(room, person.identity, track.sid, true)));
@@ -445,11 +516,7 @@ export async function liveKitHostAction(
         case "admit": {
           // Throws, and so answers "may have left", unless they are in the lobby right now.
           const person = await service.getParticipant(lobbyOf(room), identity);
-          const token = await mintJoinToken(room, identity, person.name, meta.mode === "webinar" ? "viewer" : "member");
-          await service.sendData(lobbyOf(room), new TextEncoder().encode(JSON.stringify({ token })), DataPacket_Kind.RELIABLE, {
-            destinationIdentities: [identity],
-            topic: ADMIT_TOPIC,
-          });
+          await letIn(service, room, person, meta.mode === "webinar" ? "viewer" : "member");
           return { status: 200 };
         }
         case "deny":
@@ -468,6 +535,21 @@ export async function liveKitHostAction(
     }
 
     switch (request.action) {
+      case "admitAll":
+      case "denyAll": {
+        const kind = meta.mode === "webinar" ? "viewer" : "member";
+        const failed = await answerLobby(service, room, request.action === "admitAll" ? "admit" : "deny", request.identities, kind);
+        return failed.length > 0 ? { status: 200, failed } : { status: 200 };
+      }
+      case "reactions": {
+        const next = await updateMeta(service, room, (current) => {
+          if ((current.reactions !== false) === request.allowed) return current;
+          const changed: RoomMeta = { ...current, reactions: false };
+          if (request.allowed) delete changed.reactions;
+          return changed;
+        });
+        return next ? { status: 200 } : GONE;
+      }
       case "muteAll": {
         const everyone = await service.listParticipants(room);
         const targets = everyone.filter((person) => !protectedIds.has(person.identity));

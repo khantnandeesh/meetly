@@ -171,6 +171,56 @@ module.exports = async function access(browser) {
   await ben2.page.getByText("The host didn't let you in").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("…denied", (await ben2.page.getByText("The host didn't let you in").count()) === 1);
 
+  /* Deny all and Admit all: one request to our server, however many are waiting */
+  const crowd = [];
+  for (let i = 1; i <= 6; i++) crowd.push(await H.client(browser));
+  const askAll = async () => {
+    for (const [i, person] of crowd.entries()) await H.press(person, url, `Knocker ${i + 1}`);
+    for (const person of crowd) await person.page.getByText("Asking to join…").waitFor({ timeout: 15000 });
+  };
+  const waitingNow = () => ada.page.evaluate(() => window.__meetly.call.waiting().length);
+  /** Every /api/host request the host's page makes while `act` runs and the list empties. */
+  const hostRequests = async (act) => {
+    const seen = [];
+    const listen = (request) => {
+      if (request.url().endsWith("/api/host")) seen.push(JSON.parse(request.postData() || "{}"));
+    };
+    ada.page.on("request", listen);
+    await act();
+    const emptied = await H.until(async () => (await waitingNow()) === 0, 15000);
+    await H.sleep(800);
+    ada.page.off("request", listen);
+    return { seen, emptied };
+  };
+  await askAll();
+  H.ok("six people are waiting", await H.until(async () => (await waitingNow()) === 6, 10000));
+  const section = H.people(ada).getByRole("region", { name: "Waiting to join" });
+  const denied = await hostRequests(() => section.getByRole("button", { name: "Deny all" }).click());
+  H.ok(
+    "Deny all with 6 waiting is exactly one request, and then nobody is waiting",
+    denied.emptied && denied.seen.length === 1 && denied.seen[0].action === "denyAll" && denied.seen[0].identities.length === 6,
+    JSON.stringify(denied.seen.map((body) => [body.action, (body.identities || []).length])),
+  );
+  H.ok("…and each of them is told", await H.until(async () => {
+    for (const person of crowd) if ((await person.page.getByText("The host didn't let you in").count()) !== 1) return false;
+    return true;
+  }, 10000));
+  for (const person of crowd) await person.page.getByRole("button", { name: "Ask again" }).click();
+  await askAll();
+  await H.until(async () => (await waitingNow()) === 6, 10000);
+  await H.shot(ada, "admit-all-six-desktop");
+  const admitted = await hostRequests(() => section.getByRole("button", { name: "Admit all" }).click());
+  H.ok(
+    "Admit all with 6 waiting is exactly one request, and then nobody is waiting",
+    admitted.emptied && admitted.seen.length === 1 && admitted.seen[0].action === "admitAll" && admitted.seen[0].identities.length === 6,
+    JSON.stringify(admitted.seen.map((body) => [body.action, (body.identities || []).length])),
+  );
+  H.ok("…and all six are in the meeting", await H.until(async () => {
+    for (const person of crowd) if (!(await H.isInCall(person))) return false;
+    return true;
+  }, 20000));
+  for (const person of crowd) await person.ctx.close();
+
   /* phone */
   const mo = await H.client(browser, { viewport: H.PHONE, scale: 2, touch: true });
   const phoneUrl = await H.createMeeting(mo);

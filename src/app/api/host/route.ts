@@ -12,6 +12,10 @@ import { liveKitStage } from "@/lib/webinar.server";
  * RealtimeKit builds: { session, action, participantId?, ... }
  *
  * Either way the first field is what proves who is asking, and it was signed by this server.
+ *
+ * Admit all and Deny all are one request however many are waiting: { action, identities: [...] }.
+ * The answer is { ok: true } even if some of them could not be answered; those are listed in
+ * `failed`, so the host can be told how many and try them again.
  * What the caller may do is looked up from the meeting's record on every request; nothing in
  * the body, and nothing a browser can write about itself, is taken as proof of a role.
  *
@@ -49,6 +53,6 @@ export async function POST(request: Request) {
   // The stage has rules of its own (anyone may step down), so it is decided apart from moderation.
   const result = !caller ? DENIED : wanted.action === "stage" ? await liveKitStage(caller, wanted) : await liveKitHostAction(caller, wanted, body.message);
   return result.status === 200
-    ? Response.json({ ok: true })
+    ? Response.json({ ok: true, ...(result.failed ? { failed: result.failed } : {}) })
     : Response.json({ error: result.error }, { status: result.status });
 }

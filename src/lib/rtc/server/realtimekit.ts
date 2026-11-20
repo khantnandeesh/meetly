@@ -54,6 +54,8 @@ const POLL_CLOSED = "meetly-poll-closed:";
 const MODE = "meetly-mode:";
 /** Polls are ended a handful at a time; past this, something other than a person is asking. */
 const MAX_CLOSED_POLLS = 40;
+/** "meetly-reactions:off": the host or a co-host turned reactions off. No statement means they are allowed. */
+const REACTIONS_OFF = "meetly-reactions:off";
 const isMarker = (p: Participant) => p.custom_participant_id.startsWith("meetly-");
 
 type Config = {
@@ -176,17 +178,6 @@ async function listParticipants(c: Config, meetingId: string): Promise<Participa
 /** The presets whose holders are the host: the meeting host's, and the webinar host's where there is one. */
 const hostPresetsOf = (c: Config) => (c.webinarHostPreset ? [c.hostPreset, c.webinarHostPreset] : [c.hostPreset]);
 
-/**
- * How many people are connected right now, from the active session (a REST call, not the
- * rate-limited `getAllJoinedPeers`). It counts everyone, the stage included: RealtimeKit says how
- * many are there, not who. Null if Cloudflare could not say.
- */
-async function liveCount(c: Config, meetingId: string): Promise<number | null> {
-  const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
-  if (!result.ok) return result.status === 404 ? 0 : null;
-  return result.data.status === "ENDED" ? 0 : (result.data.live_participants ?? null);
-}
-
 /** Whether anyone is connected right now. No session at all answers 404. */
 async function hasLiveSession(c: Config, meetingId: string): Promise<boolean> {
   const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
@@ -215,6 +206,8 @@ type MeetingRecord = {
   closedPolls: string[];
   /** A webinar's record says so; anything else is a meeting. */
   mode: CallMode;
+  /** People may send reactions. */
+  reactions: boolean;
   markers: Participant[];
 };
 
@@ -239,6 +232,7 @@ export function readRecord(participants: Participant[], hostPreset: string | rea
     pin: pins.length > 0 ? pins[pins.length - 1].custom_participant_id.slice(PIN.length) : null,
     closedPolls: Array.from(new Set(tagged(POLL_CLOSED))),
     mode: tagged(MODE).includes("webinar") ? "webinar" : "meeting",
+    reactions: !markers.some((m) => m.custom_participant_id === REACTIONS_OFF),
     markers,
   };
 }
@@ -302,6 +296,8 @@ export type RealtimeKitJoin = {
   pin: string | null;
   closedPolls: string[];
   mode: CallMode;
+  /** Reactions allowed at the moment of joining. */
+  reactions: boolean;
 };
 
 export type RealtimeKitJoinOutcome =
@@ -346,6 +342,7 @@ function grant(
     pin: record?.pin ?? null,
     closedPolls: record?.closedPolls ?? [],
     mode: webinar ? "webinar" : "meeting",
+    reactions: record?.reactions ?? true,
   };
 }
 
@@ -443,20 +440,40 @@ export async function createRealtimeKitMeeting(code: string, mode: CallMode = "m
 }
 
 /**
- * What the pre-join screen may know before asking to join. How many people are in the meeting
- * is not known: the participant records say who may join, not who is there, and asking
- * RealtimeKit who is there is rate-limited.
+ * How many people are connected to the meeting right now, from the active session's own count,
+ * or null if Cloudflare would not say. No session answers 404, which means nobody is there.
+ *
+ * This is one REST call, made once per pre-join screen, never repeated while it is open. It is
+ * not the SDK's `getAllJoinedPeers()`, which is limited to 10 calls a minute per participant.
+ */
+async function liveCount(c: Config, meetingId: string): Promise<number | null> {
+  const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
+  if (!result.ok) return result.status === 404 ? 0 : null;
+  if (result.data.status === "ENDED") return 0;
+  const count = result.data.live_participants;
+  return typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+}
+
+/**
+ * What the pre-join screen may know before asking to join. The participant records say who may
+ * join, not who is there, so how many are there comes from the active session (see `liveCount`).
  */
 export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<MeetingPeek> {
   const c = config();
   try {
     const meeting = c ? await findMeeting(c, code) : null;
-    if (!c || !meeting) return { access: "open", host: false, count: null };
-    const record = readRecord(await listParticipants(c, meeting.id), hostPresetsOf(c), c.knockPreset !== null);
+    if (!c) return { access: "open", host: false, count: null };
+    // A code nobody has used yet is an empty meeting.
+    if (!meeting) return { access: "open", host: false, count: 0 };
+    const [participants, count] = await Promise.all([
+      listParticipants(c, meeting.id),
+      liveCount(c, meeting.id).catch(() => null),
+    ]);
+    const record = readRecord(participants, hostPresetsOf(c), c.knockPreset !== null);
     return {
       access: record.access,
       host: !!pass.key && record.hosts.some((p) => p.id === pass.key),
-      count: null,
+      count,
       ...(record.mode === "webinar" ? { mode: "webinar" as const } : {}),
     };
   } catch {
@@ -466,7 +483,13 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
 
 /* --------------------------------------------------------------- moderation */
 
-export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess; pin: string | null; closedPolls: string[] };
+export type RealtimeKitRoles = {
+  coHosts: string[];
+  access: JoinAccess;
+  pin: string | null;
+  closedPolls: string[];
+  reactions: boolean;
+};
 
 /**
  * Moderation, and `roles`: the one thing here any participant may ask, since RealtimeKit has no
@@ -492,7 +515,16 @@ export async function realtimeKitHostAction(
     const me = record.people.find((p) => p.id === session.participantId);
     if (!me) return DENIED;
     if (request.action === "roles") {
-      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access, pin: record.pin, closedPolls: record.closedPolls } };
+      return {
+        status: 200,
+        data: {
+          coHosts: coHostIdentities(record),
+          access: record.access,
+          pin: record.pin,
+          closedPolls: record.closedPolls,
+          reactions: record.reactions,
+        },
+      };
     }
     const role = record.hosts.includes(me) ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
     if (role === "guest") return DENIED;
@@ -550,6 +582,20 @@ export async function realtimeKitHostAction(
     switch (request.action) {
       case "lowerAllHands":
         return { status: 200 };
+      // One request however many are waiting. As with one person, the caller's own client then
+      // answers the waiting room, and RealtimeKit checks the caller's preset for it.
+      case "admitAll":
+      case "denyAll":
+        return { status: 200 };
+      case "reactions": {
+        if (request.allowed === record.reactions) return { status: 200 };
+        if (!request.allowed) {
+          const added = await addMarker(c, session.meetingId, REACTIONS_OFF);
+          return added.ok ? { status: 200 } : UNREACHABLE;
+        }
+        const cleared = await removeMarkers(c, session.meetingId, record, (fact) => fact === REACTIONS_OFF);
+        return cleared ? { status: 200 } : UNREACHABLE;
+      }
       case "muteAll": {
         const done = await api(c, "POST", `${session_}/mute-all`, { allow_unmute: true });
         return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the meeting." };

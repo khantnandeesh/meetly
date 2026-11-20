@@ -54,7 +54,10 @@ export type MeetingPeek = {
  */
 export type HostAction =
   | { action: "mute" | "remove" | "stopCamera" | "lowerHand" | "admit" | "deny"; identity: string }
-  /** Answers everyone in `identities` (ids from `waiting()`). If some fail, it rejects once, saying how many. */
+  /**
+   * Answers everyone in `identities` (ids from `waiting()`) with one request to our server. If some
+   * fail, it rejects once, saying how many, with a `BulkError` whose `failed` lists who.
+   */
   | { action: "admitAll" | "denyAll"; identities: string[] }
   | { action: "muteAll" | "lowerAllHands" }
   | { action: "access"; access: JoinAccess }
@@ -376,7 +379,9 @@ export interface RtcCall {
   /** Shows `emoji` (one of `REACTIONS`) to everyone for a moment. Nothing is stored. */
   sendReaction(emoji: string): Promise<void>;
   /**
-   * The host lets people send reactions. Each browser keeps to it for itself; nothing on a
+   * The host lets people send reactions, as the meeting's record says; `reactionsAllowed` fires
+   * when it changes. While it is false, only the host and co-hosts can send one, and a reaction
+   * from anyone else is dropped on arrival. Each browser keeps to it for itself; nothing on a
    * server stops a modified client sending one anyway.
    */
   readonly reactionsAllowed: boolean;
@@ -442,6 +447,8 @@ export type JoinGrant =
       pin?: string | null;
       /** Ids of polls that had been ended at the moment of joining. */
       closedPolls?: string[];
+      /** Reactions allowed at the moment of joining. Absent means allowed. */
+      reactions?: boolean;
       /** Absent means "meeting". */
       mode?: CallMode;
     };

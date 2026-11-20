@@ -134,7 +134,7 @@ test("rtk: New webinar marks the meeting a webinar before its host's record exis
   assert.equal(record.hosts.length, 1);
   assert.equal(readRecord([], "meetly-host", false).mode, "meeting");
   const peek = await meetingRoute(post({ action: "peek", code: made.body.code }, made.cookie));
-  assert.deepEqual(await peek.json(), { access: "open", host: true, count: null, mode: "webinar" });
+  assert.deepEqual(await peek.json(), { access: "open", host: true, count: 0, mode: "webinar" });
 });
 
 test("rtk: the host rejoins as host on the webinar host preset; the audience gets the viewer preset and no ask to join", async () => {
