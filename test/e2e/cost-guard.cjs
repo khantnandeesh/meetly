@@ -23,6 +23,12 @@ async function createWebinar(person) {
   return `${H.BASE}/${code}`;
 }
 
+/** Joins as the webinar's host. Its controls say "Leave webinar", so `H.join` (which looks for "Leave meeting") is not used. */
+async function joinWebinar(person, url, name) {
+  await H.press(person, url, name, /^Join now$/);
+  await person.page.locator("[data-in-call]:not([inert])").waitFor({ timeout: 20000 });
+}
+
 /** What the RealtimeKit adapter does when our server says the limit is `minutes` away. */
 const warn = (person, minutes) =>
   person.page.evaluate((ms) => {
@@ -47,7 +53,7 @@ module.exports = async function costGuardSuite(browser) {
 
   const url = await createWebinar(host);
   H.ok("a webinar can be started", /\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(url), url);
-  await H.join(host, url, "Hana Host");
+  await joinWebinar(host, url, "Hana Host");
 
   // The warning: a "you" notification with the minutes left.
   await warn(host, 7);
@@ -72,7 +78,7 @@ module.exports = async function costGuardSuite(browser) {
 
   // On a phone, both endings our server can cause.
   const phoneUrl = await createWebinar(phone);
-  await H.join(phone, phoneUrl, "Pia Phone");
+  await joinWebinar(phone, phoneUrl, "Pia Phone");
   await warn(phone, 1);
   H.ok("one minute left reads as one minute", await phone.page.getByText("This webinar ends in about 1 minute (free limit).").waitFor({ timeout: 5000 }).then(() => true, () => false));
   await H.shot(phone, "cost-guard-warning-phone");
@@ -82,7 +88,7 @@ module.exports = async function costGuardSuite(browser) {
   await H.shot(phone, "cost-guard-limit-phone");
 
   await phone.page.goto(phoneUrl);
-  await H.join(phone, phoneUrl, "Pia Phone");
+  await joinWebinar(phone, phoneUrl, "Pia Phone");
   await endAs(phone, "paused");
   await phone.page.getByRole("heading", { name: "Webinars are paused right now" }).waitFor({ timeout: 8000 });
   H.ok("switched off, the screen says webinars are paused, not that the host ended it", !/host/i.test(await leaveScreen(phone).innerText()));
