@@ -101,7 +101,9 @@ function Reconnecting({ show }: { show: boolean }) {
       data-status-banner="reconnecting"
       data-leaving={presence.leaving}
       onAnimationEnd={presence.onAnimationEnd}
-      className="anim-pop chip h-9 gap-2 px-3.5 text-warn shadow-lg"
+      // In the strip over a phone's top bar it is opaque, like the notification it stands in for:
+      // the meeting code underneath must not show through.
+      className="anim-pop chip h-9 gap-2 px-3.5 text-warn shadow-lg in-data-[status-lane=strip]:h-11 in-data-[status-lane=strip]:rounded-2xl in-data-[status-lane=strip]:bg-surface-2 in-data-[status-lane=strip]:shadow-[inset_0_0_0_1px_var(--border-strong),0_16px_40px_-12px_rgb(0_0_0/0.7)]"
     >
       <WifiOff className="size-4" aria-hidden="true" />
       Connection lost. Reconnecting…
