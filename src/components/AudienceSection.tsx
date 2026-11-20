@@ -3,6 +3,7 @@
 import { ChevronLeft, ChevronRight, CircleAlert, Hand, Search, Undo2, X } from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 import { FIRST_ROWS, matchesName, ordinal } from "@/lib/hostLists";
+import { noteOwnChange } from "@/lib/listHold";
 import { useCall } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant } from "@/lib/rtc/types";
 import { useAudience } from "@/lib/useWebinar";
@@ -30,6 +31,8 @@ export function useStageAction() {
   const toast = useToast();
   return useCallback(
     (participant: RtcParticipant, on: boolean) => {
+      // Whatever lists you are reading show this person's new place at once (listHold.ts).
+      noteOwnChange(participant.identity);
       call.moderate({ action: "stage", identity: participant.identity, on }).catch((error) =>
         toast.push({
           tone: "danger",
