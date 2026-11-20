@@ -5,6 +5,7 @@ import type {
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
+  JoinAccess,
   LocalMedia,
   LocalSource,
   RtcCall,
@@ -13,6 +14,7 @@ import type {
   RtcParticipant,
   RtcTile,
   RtcVideoTrack,
+  RtcWaiter,
 } from "./types";
 
 const CallContext = createContext<RtcCall | null>(null);
@@ -119,6 +121,26 @@ export function useTiles(): RtcTile[] {
 export function useHostIdentity(): string | null {
   const call = useCall();
   return useCallValue(call, HOST, () => call.hostIdentity);
+}
+
+const ACCESS = ["access", "status"] as const;
+const WAITING = ["waiting"] as const;
+
+/** Identities of the co-hosts, as the server recorded them. */
+export function useCoHosts(): string[] {
+  const call = useCall();
+  return useCallValue(call, HOST, () => call.coHosts());
+}
+
+export function useAccess(): JoinAccess {
+  const call = useCall();
+  return useCallValue(call, ACCESS, () => call.access);
+}
+
+/** People asking to join. Empty unless you are the host or a co-host. */
+export function useWaiting(): RtcWaiter[] {
+  const call = useCall();
+  return useCallValue(call, WAITING, () => call.waiting());
 }
 
 export function useLocalMedia(): LocalMedia {

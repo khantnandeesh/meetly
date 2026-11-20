@@ -10,9 +10,11 @@ export type ToastInput = {
   icon?: React.ReactNode;
   tone?: "default" | "danger";
   action?: { label: string; onClick: () => void };
+  /** A second, quieter choice shown before `action` ("Deny" beside "Admit"). */
+  secondary?: { label: string; onClick: () => void };
   /** Toasts sharing a tag can be dismissed together. */
   tag?: string;
-  /** Milliseconds before auto-dismiss. Defaults to 4500. */
+  /** Milliseconds before auto-dismiss. Defaults to 4500. `Infinity` stays until it is answered or dismissed. */
   duration?: number;
 };
 
@@ -60,6 +62,9 @@ export function Toaster({ children }: { children: React.ReactNode }) {
   const arm = useCallback(
     (id: number, ms: number) => {
       clearTimeout(clocks.current.get(id)?.timer);
+      clocks.current.delete(id);
+      // Something that waits for an answer has no clock at all.
+      if (!Number.isFinite(ms)) return;
       const clock = { left: ms, since: Date.now(), timer: undefined as ReturnType<typeof setTimeout> | undefined };
       if (!paused.current) clock.timer = setTimeout(() => leave(id), ms);
       clocks.current.set(id, clock);
@@ -102,7 +107,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         let extra = next.filter((t) => !t.leaving).length - MAX_VISIBLE;
         commit(
           next.map((t) => {
-            if (extra <= 0 || t.leaving) return t;
+            if (extra <= 0 || t.leaving || t.duration === Infinity) return t;
             extra--;
             clearTimeout(clocks.current.get(t.id)?.timer);
             clocks.current.delete(t.id);
@@ -183,6 +188,17 @@ export function Toaster({ children }: { children: React.ReactNode }) {
                 <span className="font-medium">{toast.title}</span>
                 {toast.body && <span className="mt-0.5 line-clamp-2 block break-words text-muted">{toast.body}</span>}
               </p>
+              {toast.secondary && (
+                <button
+                  className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-muted transition-colors hover:bg-surface-3 hover:text-text"
+                  onClick={() => {
+                    toast.secondary?.onClick();
+                    remove(toast.id);
+                  }}
+                >
+                  {toast.secondary.label}
+                </button>
+              )}
               {toast.action && (
                 <button
                   className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-accent transition-colors hover:bg-surface-3"

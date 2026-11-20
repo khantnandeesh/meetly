@@ -60,6 +60,8 @@ export class FakeParticipant extends EventEmitter {
   videoTrack?: FakeTrack;
   screenShareTracks: { audio?: FakeTrack; video?: FakeTrack } = {};
   registered: unknown[] = [];
+  /** Times a host asked the SDK to stop this person's camera (RTKParticipant.disableVideo). */
+  videoStops = 0;
 
   constructor(id: string, name: string, options: { presetName?: string; customParticipantId?: string } = {}) {
     super();
@@ -74,6 +76,11 @@ export class FakeParticipant extends EventEmitter {
   }
   deregisterVideoElement(element: unknown) {
     this.registered = this.registered.filter((other) => other !== element);
+  }
+  /** RTKParticipant.disableVideo(): what a host with the permission calls on someone else. */
+  async disableVideo() {
+    this.videoStops++;
+    this.setVideo(false);
   }
   /** What the SDK does when this person's microphone goes on or off. */
   setAudio(enabled: boolean) {
@@ -95,6 +102,10 @@ export class FakeParticipant extends EventEmitter {
 
 export class FakeSelf extends FakeParticipant {
   roomJoined = false;
+  /** Self.roomState: 'init' | 'joined' | 'waitlisted' | LeaveRoomState. */
+  roomState = "init";
+  /** The few PermissionPreset getters the adapter reads. */
+  permissions = { acceptWaitingRequests: false, canDisableParticipantVideo: false };
   /** Set to make the next enable call fail the way a refused permission does: no change, no throw. */
   refuse = false;
   devices: { audio?: { deviceId: string }; video?: { deviceId: string }; speaker?: { deviceId: string } } = {};
@@ -135,6 +146,18 @@ export class FakeSelf extends FakeParticipant {
 export class FakeParticipants extends EventEmitter {
   joined = new FakeParticipantMap();
   active = new FakeParticipantMap();
+  /** Participants.waitlisted: people in the waiting room. */
+  waitlisted = new FakeParticipantMap();
+  accepted: string[] = [];
+  rejected: string[] = [];
+  acceptWaitingRoomRequest(id: string) {
+    this.accepted.push(id);
+    this.waitlisted.remove(id);
+  }
+  async rejectWaitingRoomRequest(id: string) {
+    this.rejected.push(id);
+    this.waitlisted.remove(id);
+  }
   lastActiveSpeaker = "";
   maxActiveParticipantsCount = 49;
   maxCalls: number[] = [];
@@ -197,6 +220,8 @@ export class FakeMeeting {
   chat: FakeChat;
   joinCalls = 0;
   leaveCalls = 0;
+  /** Set to make join() put you in the waiting room, as a preset with one switched on does. */
+  waitingRoom = false;
 
   constructor(self: FakeSelf) {
     this.self = self;
@@ -204,8 +229,24 @@ export class FakeMeeting {
   }
   async join() {
     this.joinCalls++;
+    if (this.waitingRoom) {
+      this.self.roomState = "waitlisted";
+      this.self.emit("waitlisted");
+      return;
+    }
+    this.letIn();
+  }
+  /** A host accepted you (or there was no waiting room). */
+  letIn() {
     this.self.roomJoined = true;
+    this.self.roomState = "joined";
     this.self.emit("roomJoined", { reconnected: false });
+  }
+  /** The SDK's `roomLeft` with any of its states: "rejected", "kicked", "ended", … */
+  leftAs(state: string) {
+    this.self.roomJoined = false;
+    this.self.roomState = state;
+    this.self.emit("roomLeft", { state });
   }
   async leave() {
     this.leaveCalls++;

@@ -1,10 +1,13 @@
 import type RealtimeKitClient from "@cloudflare/realtimekit";
 import type { RTKParticipant } from "@cloudflare/realtimekit";
 import { Notifier, RtcEmitter } from "./emitter";
+import { REACTION_MESSAGE, createReactionLimits, isReaction, postHost, type HostApi } from "./shared";
 import type {
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
+  HostAction,
+  JoinAccess,
   JoinChoices,
   JoinGrant,
   LocalMedia,
@@ -14,6 +17,7 @@ import type {
   RtcParticipant,
   RtcTile,
   RtcVideoTrack,
+  RtcWaiter,
 } from "./types";
 
 type Meeting = RealtimeKitClient;
@@ -27,6 +31,20 @@ export type MeetingFactory = (options: {
 
 /** Broadcast message type that carries a raised or lowered hand. RealtimeKit has no built-in one. */
 export const HAND_MESSAGE = "meetly-hand";
+/**
+ * Broadcasts between Meetly clients about moderation. RealtimeKit does not say who sent a
+ * broadcast, so none of these is taken as proof of anything: the first only makes clients ask
+ * our server again, the second concerns hands, which are a courtesy between clients already, and
+ * the third only chooses the wording of the goodbye screen.
+ */
+/** Co-hosts or join access changed: ask the server who they are now. */
+export const ROLES_MESSAGE = "meetly-roles";
+/** A host lowered hands: `{ all: true }` or `{ peerIds: [...] }`. */
+export const LOWER_MESSAGE = "meetly-lower-hands";
+/** The host is about to end the call for everyone. */
+export const ENDING_MESSAGE = "meetly-ending";
+/** How long after that message being disconnected counts as the call having been ended. */
+const ENDING_WINDOW_MS = 15_000;
 /** Media scores run 0 to 10; below this the connection is shown as weak. */
 export const WEAK_SCORE = 5;
 /** The SDK accepts at most this many participants in its active set, you included. */
@@ -162,6 +180,14 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private readonly grant: Grant;
   private readonly choices: JoinChoices;
   private readonly factory: MeetingFactory;
+  private readonly api: HostApi;
+  private readonly limits = createReactionLimits();
+  private cohosts: string[];
+  private gate: JoinAccess;
+  /** You asked to join and are in RealtimeKit's waiting room. */
+  private waitlisted = false;
+  private waiters: RtcWaiter[] = [];
+  private endingAt = -Infinity;
 
   private meeting: Meeting | null = null;
   private attempt = 0;
@@ -195,11 +221,14 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    */
   private micWas: boolean;
 
-  constructor(grant: Grant, choices: JoinChoices, factory: MeetingFactory) {
+  constructor(grant: Grant, choices: JoinChoices, factory: MeetingFactory, api: HostApi = postHost) {
     super();
     this.grant = grant;
     this.choices = choices;
     this.factory = factory;
+    this.api = api;
+    this.cohosts = grant.coHosts ?? [];
+    this.gate = grant.access ?? "open";
     this.micWas = choices.audioEnabled;
     this.self = new Person(
       true,
@@ -229,7 +258,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   private computeStatus(): ConnectionStatus {
     if (this.ended || this.attempt === 0) return "disconnected";
-    if (!this.joined) return "connecting";
+    if (!this.joined) return this.waitlisted ? "waiting" : "connecting";
     return this.broken.size > 0 ? "reconnecting" : "connected";
   }
 
@@ -277,7 +306,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         await meeting.leave().catch(() => {});
         return;
       }
-      this.onJoined();
+      // With a waiting room, join() can leave you outside: `roomJoined` follows once a host lets you in.
+      if (meeting.self.roomState === "waitlisted") this.onWaitlisted();
+      else this.onJoined();
     })().catch((error) => {
       if (!current()) return;
       // The call ends first, so the reason is still on screen once the "left" page is up.
@@ -324,10 +355,17 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     }
   }
 
+  private onWaitlisted(): void {
+    if (this.joined || this.waitlisted) return;
+    this.waitlisted = true;
+    this.statusChanged();
+  }
+
   private onJoined(): void {
     const meeting = this.meeting;
     if (!meeting || this.joined) return;
     this.joined = true;
+    this.waitlisted = false;
     this.broken.clear();
     for (const peer of meeting.participants.joined.toArray()) this.addPeer(peer, false);
     const last = meeting.participants.lastActiveSpeaker;
@@ -335,6 +373,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.media = this.readMedia();
     this.readChat();
     this.applyDemand();
+    this.readWaiters();
     // If the microphone never came up (no permission, no device), stop expecting it to.
     const settle = setTimeout(() => {
       this.micWas = !!meeting.self.audioEnabled;
@@ -368,6 +407,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     if (this.ended) return;
     this.ended = true;
     this.joined = false;
+    this.waitlisted = false;
+    this.waiters = [];
     this.attempt++;
     this.teardown.forEach((stop) => stop());
     this.teardown = [];
@@ -428,6 +469,109 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     if (host !== this.lastHost) {
       this.lastHost = host;
       this.emit("host");
+    }
+  }
+
+  /** As our server recorded them: at the moment of joining, and again whenever a client says they changed. */
+  coHosts(): string[] {
+    return this.cohosts;
+  }
+
+  get access(): JoinAccess {
+    return this.gate;
+  }
+
+  /**
+   * Both depend on the presets the app was given: letting people in from the waiting room and
+   * stopping a camera are done by RealtimeKit itself, for participants whose preset allows it.
+   */
+  get supports(): { askToJoin: boolean; stopCamera: boolean } {
+    const permissions = this.meeting?.self.permissions;
+    return {
+      askToJoin: !!this.grant.canAsk && !!permissions?.acceptWaitingRequests,
+      stopCamera: !!permissions?.canDisableParticipantVideo,
+    };
+  }
+
+  waiting(): RtcWaiter[] {
+    return this.waiters;
+  }
+
+  /** RealtimeKit's waiting room, as far as your preset lets you answer it. */
+  private readWaiters(): void {
+    const meeting = this.meeting;
+    const allowed = !!meeting && this.joined && !!meeting.self.permissions?.acceptWaitingRequests;
+    const next = allowed ? meeting.participants.waitlisted.toArray().map((p) => ({ id: p.id, name: p.name ?? "" })) : [];
+    if (next.length === 0 && this.waiters.length === 0) return;
+    this.waiters = next;
+    this.emit("waiting");
+  }
+
+  private async refreshRoles(): Promise<void> {
+    const data = await this.api({ session: this.grant.session, action: "roles" });
+    const coHosts = Array.isArray(data.coHosts) ? data.coHosts.filter((id): id is string => typeof id === "string") : [];
+    const access: JoinAccess = data.access === "ask" || data.access === "locked" ? data.access : "open";
+    if (coHosts.join() !== this.cohosts.join()) {
+      this.cohosts = coHosts;
+      this.emit("host");
+    }
+    if (access !== this.gate) {
+      this.gate = access;
+      this.emit("access");
+    }
+  }
+
+  private tell(type: string, payload: Record<string, unknown> = {}): Promise<void> {
+    const meeting = this.meeting;
+    if (!meeting || !this.joined) return Promise.resolve();
+    return meeting.participants.broadcastMessage(type, { ...payload, peerId: meeting.self.id }).catch(() => {});
+  }
+
+  private peerOf(identity: string): RTKParticipant | undefined {
+    for (const { peer, person } of this.peers.values()) if (person.identity === identity) return peer;
+    return undefined;
+  }
+
+  /**
+   * Our server decides whether the caller may (it reads the caller's role from the records, not
+   * from this client), and carries out what Cloudflare's REST API can do: mute, remove, mute
+   * all, end, co-hosts, access. The rest has no REST call and is done from here once the server
+   * has said yes: RealtimeKit checks the caller's preset for the waiting room and for stopping a
+   * camera; lowering hands is a message between clients, as raising one is.
+   */
+  async moderate(action: HostAction): Promise<void> {
+    const meeting = this.meeting;
+    if (!meeting || !this.joined) throw new Error("Not connected.");
+    // Sent first: afterwards there is nobody left to tell.
+    if (action.action === "end") await this.tell(ENDING_MESSAGE);
+    await this.api({ session: this.grant.session, ...action });
+    switch (action.action) {
+      case "coHost":
+      case "access":
+      case "remove":
+        await this.refreshRoles().catch(() => {});
+        await this.tell(ROLES_MESSAGE);
+        break;
+      case "lowerHand": {
+        const peer = this.peerOf(action.identity);
+        if (peer) await this.tell(LOWER_MESSAGE, { peerIds: [peer.id] });
+        break;
+      }
+      case "lowerAllHands":
+        await this.tell(LOWER_MESSAGE, { all: true });
+        break;
+      case "stopCamera": {
+        const peer = this.peerOf(action.identity);
+        if (!peer) throw new Error("That person may have already left.");
+        await peer.disableVideo();
+        break;
+      }
+      case "admit":
+        meeting.participants.acceptWaitingRoomRequest(action.identity);
+        break;
+      case "deny":
+        await meeting.participants.rejectWaitingRoomRequest(action.identity);
+        break;
     }
   }
 
@@ -762,6 +906,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     await this.sendHand(raised);
   }
 
+  async sendReaction(emoji: string): Promise<void> {
+    const meeting = this.meeting;
+    if (!isReaction(emoji) || !meeting || !this.joined || !this.limits.maySend()) return;
+    this.emit("reaction", this.self, emoji);
+    await meeting.participants.broadcastMessage(REACTION_MESSAGE, { peerId: meeting.self.id, emoji });
+  }
+
   /* ------------------------------------------------------------------ events */
 
   private onSelf(event: "videoUpdate" | "screenShareUpdate", listener: () => void): () => void {
@@ -796,10 +947,26 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       if (this.joined) this.statusChanged();
       else if (this.meeting === meeting && !this.ended) this.onJoined();
     });
+    on(self, "waitlisted", () => {
+      if (this.meeting === meeting && !this.ended) this.onWaitlisted();
+    });
     on(self, "roomLeft", ({ state }: { state: string }) => {
       // "disconnected" is the SDK losing the room while it keeps trying to get back in.
       if (state === "disconnected") return part("room", true);
-      this.finish(state === "kicked" ? "removed" : state === "left" ? "left" : "dropped");
+      // Ending the call for everyone reaches each person as being removed; the host's client
+      // says so just before (see ENDING_MESSAGE), which is what tells the two apart.
+      const ending = Date.now() - this.endingAt < ENDING_WINDOW_MS;
+      this.finish(
+        state === "rejected"
+          ? "denied"
+          : state === "ended" || (state === "kicked" && ending)
+            ? "ended"
+            : state === "kicked"
+              ? "removed"
+              : state === "left"
+                ? "left"
+                : "dropped",
+      );
     });
     on(meta, "socketConnectionUpdate", ({ state }: { state: string }) => {
       if (state === "connected") part("socket", false);
@@ -870,7 +1037,32 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       this.peers.get(peerId)?.person.changes.notify();
       this.emit("speakers");
     });
+    for (const event of ["participantJoined", "participantLeft", "participantsCleared"]) {
+      on(participants.waitlisted, event, () => this.readWaiters());
+    }
     on(participants, "broadcastedMessage", ({ type, payload }: { type: string; payload: Record<string, unknown> }) => {
+      // The SDK also hands you your own broadcasts.
+      const own = payload.peerId === self.id;
+      if (type === REACTION_MESSAGE) {
+        const sender = typeof payload.peerId === "string" ? this.peers.get(payload.peerId) : undefined;
+        if (sender && isReaction(payload.emoji) && this.limits.mayReceive(payload.peerId as string)) {
+          this.emit("reaction", sender.person, payload.emoji);
+        }
+        return;
+      }
+      if (type === ROLES_MESSAGE) {
+        if (!own) this.refreshRoles().catch(() => {});
+        return;
+      }
+      if (type === ENDING_MESSAGE) {
+        this.endingAt = Date.now();
+        return;
+      }
+      if (type === LOWER_MESSAGE) {
+        const mine = payload.all === true || (Array.isArray(payload.peerIds) && payload.peerIds.includes(self.id));
+        if (mine && this.self.hand) this.setHandRaised(false).catch(() => {});
+        return;
+      }
       if (type !== HAND_MESSAGE) return;
       const entry = typeof payload.peerId === "string" ? this.peers.get(payload.peerId) : undefined;
       const raised = payload.raised === true;

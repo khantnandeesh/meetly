@@ -1,15 +1,21 @@
-import { TrackSource } from "livekit-server-sdk";
-import { roomService, verifyHost } from "@/lib/host.server";
+import { liveKitHostAction, lobbyWatchToken, verifyCaller } from "@/lib/host.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
+import { DENIED, parseHostAction } from "@/lib/rtc/hostAction";
 import { realtimeKitHostAction } from "@/lib/rtc/server/realtimekit";
 
 /**
- * Host-only moderation: mute someone's microphone or remove them from the meeting.
+ * Moderation by the host and co-hosts (see `HostAction` in src/lib/rtc/types.ts for the list).
  *
- * LiveKit builds:     { token, action, identity }
- * RealtimeKit builds: { session, action, participantId }
+ * LiveKit builds:     { token, action, identity?, ... }
+ * RealtimeKit builds: { session, action, participantId?, ... }
  *
  * Either way the first field is what proves who is asking, and it was signed by this server.
+ * What the caller may do is looked up from the meeting's record on every request; nothing in
+ * the body, and nothing a browser can write about itself, is taken as proof of a role.
+ *
+ * RealtimeKit builds also answer { session, action: "roles" } for any participant: who the
+ * co-hosts are and who may join. LiveKit builds answer { token, action: "lobby" } for the host
+ * and co-hosts with a token to watch who is asking to join.
  */
 export async function POST(request: Request) {
   let body: Record<string, unknown>;
@@ -19,46 +25,27 @@ export async function POST(request: Request) {
   } catch {
     return Response.json({ error: "Invalid JSON body." }, { status: 400 });
   }
-  const { action } = body;
-  if (action !== "mute" && action !== "remove") {
-    return Response.json({ error: "Invalid request." }, { status: 400 });
-  }
-
   if (RTC_PROVIDER === "realtimekit") {
-    const { session, participantId } = body;
-    if (typeof session !== "string" || typeof participantId !== "string" || !participantId) {
-      return Response.json({ error: "Invalid request." }, { status: 400 });
-    }
-    const result = await realtimeKitHostAction(session, action, participantId);
+    const wanted = body.action === "roles" ? ({ action: "roles" } as const) : parseHostAction(body);
+    if (!wanted || typeof body.session !== "string") return Response.json({ error: "Invalid request." }, { status: 400 });
+    const result = await realtimeKitHostAction(body.session, wanted);
     return result.status === 200
-      ? Response.json({ ok: true })
+      ? Response.json({ ok: true, ...result.data })
       : Response.json({ error: result.error }, { status: result.status });
   }
 
-  const { token, identity } = body;
-  if (typeof token !== "string" || typeof identity !== "string") {
-    return Response.json({ error: "Invalid request." }, { status: 400 });
+  if (typeof body.token !== "string") return Response.json({ error: "Invalid request." }, { status: 400 });
+  if (body.action === "lobby") {
+    // A way to see who is asking to join (see `lobbyOf` in src/lib/host.server.ts).
+    const caller = await verifyCaller(body.token);
+    const token = caller && (await lobbyWatchToken(caller));
+    return token ? Response.json({ ok: true, token }) : Response.json({ error: DENIED.error }, { status: 403 });
   }
-
-  const host = await verifyHost(token);
-  const service = roomService();
-  if (!host || !service) {
-    return Response.json({ error: "Only the meeting host can do that." }, { status: 403 });
-  }
-  if (identity === host.identity) {
-    return Response.json({ error: "Use your own controls for that." }, { status: 400 });
-  }
-
-  try {
-    if (action === "remove") {
-      await service.removeParticipant(host.room, identity);
-    } else {
-      const target = await service.getParticipant(host.room, identity);
-      const microphones = target.tracks.filter((track) => track.source === TrackSource.MICROPHONE && !track.muted);
-      await Promise.all(microphones.map((track) => service.mutePublishedTrack(host.room, identity, track.sid, true)));
-    }
-    return Response.json({ ok: true });
-  } catch {
-    return Response.json({ error: "That person may have already left." }, { status: 404 });
-  }
+  const wanted = parseHostAction(body);
+  if (!wanted) return Response.json({ error: "Invalid request." }, { status: 400 });
+  const caller = await verifyCaller(body.token);
+  const result = caller ? await liveKitHostAction(caller, wanted) : DENIED;
+  return result.status === 200
+    ? Response.json({ ok: true })
+    : Response.json({ error: result.error }, { status: result.status });
 }

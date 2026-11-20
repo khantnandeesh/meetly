@@ -18,6 +18,12 @@ const eslintConfig = defineConfig([
     // Other agents' checkouts (each with its own build output) are not this project's source.
     ".claude/**",
   ]),
+  {
+    // The browser tests are plain CommonJS scripts, so Playwright can come from wherever Node
+    // finds it (a global install via NODE_PATH works) without being a dependency of the app.
+    files: ["test/e2e/**/*.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default eslintConfig;

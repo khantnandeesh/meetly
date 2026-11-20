@@ -1,41 +1,59 @@
 import { randomUUID } from "node:crypto";
+import { PASS_MAX_AGE_S, type Pass } from "../../pass.server";
+import { DENIED, GONE, HOST_ONLY, NOT_THE_HOST, OWN_CONTROLS, isHostOnly, type HostActionResult } from "../hostAction";
+import type { HostAction, JoinAccess } from "../types";
 import { signSession, verifySession, type Session } from "./session";
 
 /**
- * Server side of the RealtimeKit provider: Cloudflare's REST API, and the host rule.
+ * Server side of the RealtimeKit provider: Cloudflare's REST API, and the meeting's rules.
  *
- * Meeting codes map to RealtimeKit meetings by title. Whoever is let into a meeting that has no
- * host yet joins with the host preset; everyone else joins with the guest preset. A browser
- * cannot give itself a preset, so "who is host" is decided here and nowhere else.
+ * Meeting codes map to RealtimeKit meetings by title. A browser cannot give itself a preset, so
+ * "who is host" is decided here and nowhere else.
  *
- * Host rule, matching the LiveKit one in src/lib/host.server.ts:
+ * Host, matching the LiveKit rule in src/lib/host.server.ts:
  *
- * - The first person into a meeting is its host.
- * - The role is handed on only when the meeting is empty (no live session) and the last host
- *   claim is over a minute old. Never while people are in the call: otherwise a guest could wait
- *   for the host to drop and rejoin as host. The previous host's participant records are deleted
- *   at that point, which revokes their tokens.
- * - A host action is authorised by the caller's Meetly session (see ./session.ts), and the
- *   caller's participant record must still carry the host preset.
+ * - "New meeting" creates the RealtimeKit meeting and, in it, the host's participant record,
+ *   before anyone joins. The creating browser is given that record's id as its host key (a
+ *   signed cookie, see src/lib/pass.server.ts). Joining with the key re-uses the record with a
+ *   fresh token, so the host is the same participant after a reload or a rejoin.
+ * - A code somebody typed by hand has no meeting yet: the first person into it becomes host and
+ *   gets the key then.
+ * - Nobody else becomes host while that record stands. It lapses only when the meeting is empty
+ *   and its host has not joined for as long as the key's cookie lasts; the next person in then
+ *   starts afresh as host, and the old record is deleted, which revokes its token.
+ * - A host action is authorised by the caller's Meetly session (see ./session.ts), and what the
+ *   caller may do is read from the records at that moment, not from what the session says.
  *
- * Known limit: two people asking for the very first token in the same instant can both be made
- * host. If the first person never connects, the next joiner inherits the role only once the
- * claim is over a minute old.
+ * The rest of the meeting's record is kept as participant records too, because that is the only
+ * per-meeting storage RealtimeKit has: a record that nobody ever joins with, whose
+ * `custom_participant_id` states one fact ("meetly-ban:<identity>", "meetly-cohost:<id>",
+ * "meetly-access:locked"). Adding or deleting one is a single call, so two changes at once
+ * cannot overwrite each other. Their tokens are thrown away as they are made.
+ *
+ * Known limit: two people asking for the very first token of a hand-typed code in the same
+ * instant can both be made host.
  */
 
-/** A freshly minted host token gets this long to connect before the claim can be replaced. */
-const CLAIM_WINDOW_MS = 60_000;
+/** How long a host who has not joined keeps the role in an empty meeting: as long as their key. */
+const HOST_KEEP_MS = PASS_MAX_AGE_S * 1000;
 /** How long a join stays valid, for both the RealtimeKit token and our session. */
 const TOKEN_TTL_MS = 6 * 60 * 60 * 1000;
 const PAGE_SIZE = 100;
 /** Stop paging somewhere: a code that has been joined this often has bigger problems. */
 const MAX_PAGES = 20;
 
+const BAN = "meetly-ban:";
+const COHOST = "meetly-cohost:";
+const ACCESS = "meetly-access:";
+const isMarker = (p: Participant) => p.custom_participant_id.startsWith("meetly-");
+
 type Config = {
   base: string;
   apiToken: string;
   hostPreset: string;
   guestPreset: string;
+  /** Optional: a guest preset with the waiting room switched on. Without it there is no "ask to join". */
+  knockPreset: string | null;
   sessionSecret: string;
 };
 
@@ -52,6 +70,11 @@ export function missingRealtimeKitEnv(): string[] {
   return REALTIMEKIT_ENV.filter((name) => !process.env[name]);
 }
 
+/** What signs the browser's pass on RealtimeKit builds. */
+export function realtimeKitPassSecret(): string {
+  return process.env.MEETLY_SESSION_SECRET ?? "";
+}
+
 function config(): Config | null {
   if (missingRealtimeKitEnv().length > 0) return null;
   const env = process.env as unknown as Record<(typeof REALTIMEKIT_ENV)[number], string>;
@@ -60,6 +83,7 @@ function config(): Config | null {
     apiToken: env.CLOUDFLARE_API_TOKEN,
     hostPreset: env.REALTIMEKIT_HOST_PRESET,
     guestPreset: env.REALTIMEKIT_GUEST_PRESET,
+    knockPreset: process.env.REALTIMEKIT_KNOCK_PRESET || null,
     sessionSecret: env.MEETLY_SESSION_SECRET,
   };
 }
@@ -82,7 +106,13 @@ async function api<T>(c: Config, method: string, path: string, body?: unknown): 
 }
 
 type Meeting = { id: string; title: string; status?: string; created_at: string };
-type Participant = { id: string; custom_participant_id: string; preset_name: string; created_at: string };
+type Participant = {
+  id: string;
+  custom_participant_id: string;
+  preset_name: string;
+  created_at: string;
+  updated_at?: string;
+};
 type AddedParticipant = Participant & { token: string };
 
 const oldestFirst = (a: { created_at: string }, b: { created_at: string }) =>
@@ -133,16 +163,77 @@ async function hasLiveSession(c: Config, meetingId: string): Promise<boolean> {
   return result.data.status !== "ENDED" && (result.data.live_participants ?? 1) > 0;
 }
 
-/** Decides whether the next person in becomes host, clearing out a stale host if so. */
-async function claimHostIfFirst(c: Config, meeting: Meeting, created: boolean): Promise<boolean> {
-  if (created) return true;
+/* ---------------------------------------------------------------- the record */
+
+type MeetingRecord = {
+  /** Real people's records (not markers). */
+  people: Participant[];
+  hosts: Participant[];
+  /** Record ids of co-hosts. */
+  coHostIds: Set<string>;
+  /** Identities the host removed. */
+  banned: Set<string>;
+  access: JoinAccess;
+  markers: Participant[];
+};
+
+/** Reads the meeting's record out of its participant list. Exported for tests. */
+export function readRecord(participants: Participant[], hostPreset: string, canAsk: boolean): MeetingRecord {
+  const markers = participants.filter(isMarker);
+  const people = participants.filter((p) => !isMarker(p));
+  const tagged = (prefix: string) =>
+    markers.filter((m) => m.custom_participant_id.startsWith(prefix)).map((m) => m.custom_participant_id.slice(prefix.length));
+  const stated = tagged(ACCESS);
+  // The stricter statement wins if two were ever written at once.
+  const access: JoinAccess = stated.includes("locked") ? "locked" : stated.includes("ask") && canAsk ? "ask" : "open";
+  return {
+    people,
+    hosts: people.filter((p) => p.preset_name === hostPreset),
+    coHostIds: new Set(tagged(COHOST)),
+    banned: new Set(tagged(BAN)),
+    access,
+    markers,
+  };
+}
+
+function addMarker(c: Config, meetingId: string, fact: string): Promise<ApiResult<AddedParticipant>> {
+  return api<AddedParticipant>(c, "POST", `/meetings/${meetingId}/participants`, {
+    name: "Meetly record",
+    preset_name: c.guestPreset,
+    custom_participant_id: fact,
+  });
+}
+
+/** Deletes the matching statements. False if any of them is still standing afterwards. */
+async function removeMarkers(c: Config, meetingId: string, record: MeetingRecord, matches: (fact: string) => boolean): Promise<boolean> {
+  const gone = record.markers.filter((m) => matches(m.custom_participant_id));
+  const results = await Promise.all(
+    gone.map((m) =>
+      api(c, "DELETE", `/meetings/${meetingId}/participants/${m.id}`).then(
+        // Already gone is as good as deleted.
+        (result) => result.ok || result.status === 404,
+        () => false,
+      ),
+    ),
+  );
+  return results.every(Boolean);
+}
+
+const UNREACHABLE = { status: 502, error: "Could not reach the meeting service. Try again." } as const;
+
+const coHostIdentities = (record: MeetingRecord) =>
+  record.people.filter((p) => record.coHostIds.has(p.id)).map((p) => p.custom_participant_id);
+
+/* ------------------------------------------------------------------ joining */
+
+/** Decides whether the next person in becomes host, clearing out a lapsed host if so. */
+async function claimHostIfFirst(c: Config, meeting: Meeting, record: MeetingRecord): Promise<boolean> {
   try {
-    const [participants, live] = await Promise.all([listParticipants(c, meeting.id), hasLiveSession(c, meeting.id)]);
-    const hosts = participants.filter((p) => p.preset_name === c.hostPreset);
-    if (hosts.length === 0) return !live;
-    const claimedAt = Math.max(...hosts.map((p) => Date.parse(p.created_at)));
-    if (live || Date.now() - claimedAt < CLAIM_WINDOW_MS) return false;
-    await Promise.all(hosts.map((p) => api(c, "DELETE", `/meetings/${meeting.id}/participants/${p.id}`).catch(() => {})));
+    const live = await hasLiveSession(c, meeting.id);
+    if (record.hosts.length === 0) return !live;
+    const lastSeen = Math.max(...record.hosts.map((p) => Date.parse(p.updated_at ?? p.created_at)));
+    if (live || Date.now() - lastSeen < HOST_KEEP_MS) return false;
+    await Promise.all(record.hosts.map((p) => api(c, "DELETE", `/meetings/${meeting.id}/participants/${p.id}`).catch(() => {})));
     return true;
   } catch (error) {
     // Joining must not depend on this: when in doubt, a guest.
@@ -158,77 +249,240 @@ export type RealtimeKitJoin = {
   meetingId: string;
   role: "host" | "guest";
   hostPreset: string;
+  coHosts: string[];
+  access: JoinAccess;
+  canAsk: boolean;
 };
 
-/** Lets `name` into the meeting for `code`. Throws if Cloudflare cannot be reached or refuses. */
-export async function issueRealtimeKitJoin(code: string, name: string): Promise<RealtimeKitJoin> {
-  const c = config();
-  if (!c) throw new Error(`Server is missing ${missingRealtimeKitEnv().join(", ")}.`);
-  const { meeting, created } = await findOrCreateMeeting(c, code);
-  const host = await claimHostIfFirst(c, meeting, created);
-  const role = host ? "host" : "guest";
-  // Identity is always minted server-side so a client can't impersonate another participant.
-  const identity = `m-${randomUUID()}`;
-  const expires = Date.now() + TOKEN_TTL_MS;
-  const added = await api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
-    name,
-    preset_name: host ? c.hostPreset : c.guestPreset,
-    custom_participant_id: identity,
-    token: { expires_on: new Date(expires).toISOString() },
-  });
-  if (!added.ok) throw new Error(`RealtimeKit would not add the participant (${added.status}).`);
+export type RealtimeKitJoinOutcome =
+  | { refused: "removed" | "locked" }
+  | {
+      refused?: undefined;
+      join: RealtimeKitJoin;
+      /** What every client knows this person as; noted in the browser's pass. */
+      identity: string;
+      /** Set when this join made the browser host: the key to keep in its pass. */
+      key?: string;
+    };
+
+function grant(
+  c: Config,
+  meeting: Meeting,
+  record: MeetingRecord | null,
+  person: { id: string; identity: string; token: string },
+  role: "host" | "guest",
+  expires: number,
+): RealtimeKitJoin {
   const session: Session = {
     meetingId: meeting.id,
-    participantId: added.data.id,
-    identity,
+    participantId: person.id,
+    identity: person.identity,
     role,
     exp: Math.floor(expires / 1000),
   };
   return {
-    authToken: added.data.token,
+    authToken: person.token,
     session: signSession(session, c.sessionSecret),
-    participantId: added.data.id,
+    participantId: person.id,
     meetingId: meeting.id,
     role,
     hostPreset: c.hostPreset,
+    coHosts: record ? coHostIdentities(record) : [],
+    access: record?.access ?? "open",
+    canAsk: c.knockPreset !== null,
   };
 }
 
-export type HostActionResult = { status: 200 } | { status: 400 | 403 | 404; error: string };
+/**
+ * Lets `name` into the meeting for `code`, or says why not. `pass` is what the browser's signed
+ * cookie says about it. Throws if Cloudflare cannot be reached or refuses.
+ */
+export async function issueRealtimeKitJoin(code: string, name: string, pass: Pass): Promise<RealtimeKitJoinOutcome> {
+  const c = config();
+  if (!c) throw new Error(`Server is missing ${missingRealtimeKitEnv().join(", ")}.`);
+  const { meeting, created } = await findOrCreateMeeting(c, code);
+  const record = readRecord(created ? [] : await listParticipants(c, meeting.id), c.hostPreset, c.knockPreset !== null);
+  const expires = Date.now() + TOKEN_TTL_MS;
+
+  // The host coming back: the same participant, with a fresh token and today's name.
+  const mine = pass.key ? record.hosts.find((p) => p.id === pass.key) : undefined;
+  if (mine) {
+    const base = `/meetings/${meeting.id}/participants/${mine.id}`;
+    // Renaming also marks the record as used, which is what keeps the role from lapsing.
+    await api(c, "PATCH", base, { name }).catch(() => {});
+    const fresh = await api<{ token: string }>(c, "POST", `${base}/token`);
+    if (!fresh.ok) throw new Error(`RealtimeKit would not renew the host's token (${fresh.status}).`);
+    const identity = mine.custom_participant_id;
+    return { join: grant(c, meeting, record, { id: mine.id, identity, token: fresh.data.token }, "host", expires), identity };
+  }
+
+  const host = created || (await claimHostIfFirst(c, meeting, record));
+  if (!host) {
+    if (pass.ids.some((id) => record.banned.has(id))) return { refused: "removed" };
+    if (record.access === "locked") return { refused: "locked" };
+  }
+  const role = host ? "host" : "guest";
+  // Identity is always minted server-side so a client can't impersonate another participant.
+  const identity = `m-${randomUUID()}`;
+  const preset = host ? c.hostPreset : record.access === "ask" && c.knockPreset ? c.knockPreset : c.guestPreset;
+  const added = await api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
+    name,
+    preset_name: preset,
+    custom_participant_id: identity,
+    token: { expires_on: new Date(expires).toISOString() },
+  });
+  if (!added.ok) throw new Error(`RealtimeKit would not add the participant (${added.status}).`);
+  return {
+    join: grant(c, meeting, record, { id: added.data.id, identity, token: added.data.token }, role, expires),
+    identity,
+    key: host ? added.data.id : undefined,
+  };
+}
 
 /**
- * Host-only moderation. `target` is the identity the host's browser knows the person by.
- * Everything about the caller comes from their signed session, nothing from the request.
+ * Creates the meeting for a brand-new code together with its host's record, and returns the host
+ * key for the browser that asked. Null if the code is already in use or Cloudflare could not be
+ * reached: the meeting still works, by the first-person-in rule.
+ */
+export async function createRealtimeKitMeeting(code: string): Promise<{ key: string; identity: string } | null> {
+  const c = config();
+  if (!c) return null;
+  try {
+    const { meeting, created } = await findOrCreateMeeting(c, code);
+    if (!created) return null;
+    const identity = `m-${randomUUID()}`;
+    const added = await api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
+      name: "Host",
+      preset_name: c.hostPreset,
+      custom_participant_id: identity,
+    });
+    return added.ok ? { key: added.data.id, identity } : null;
+  } catch (error) {
+    console.error("Could not create the RealtimeKit meeting", error);
+    return null;
+  }
+}
+
+/** What the pre-join screen may know before asking to join. */
+export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<{ access: JoinAccess; host: boolean }> {
+  const c = config();
+  try {
+    const meeting = c ? await findMeeting(c, code) : null;
+    if (!c || !meeting) return { access: "open", host: false };
+    const record = readRecord(await listParticipants(c, meeting.id), c.hostPreset, c.knockPreset !== null);
+    return { access: record.access, host: !!pass.key && record.hosts.some((p) => p.id === pass.key) };
+  } catch {
+    return { access: "open", host: false };
+  }
+}
+
+/* --------------------------------------------------------------- moderation */
+
+export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess };
+
+/**
+ * Moderation, and `roles`: the one thing here any participant may ask, since RealtimeKit has no
+ * way for our server to tell clients who the co-hosts are.
+ *
+ * Everything about the caller comes from their signed session and the records, nothing from the
+ * request. Some requests are only authorised here and then carried out by the caller's own
+ * client, because RealtimeKit has no REST call for them: letting someone in from the waiting
+ * room and stopping a camera are enforced by RealtimeKit against the caller's preset; lowering
+ * a hand is a courtesy between clients, as raising one is.
  */
 export async function realtimeKitHostAction(
   sessionToken: unknown,
-  action: "mute" | "remove",
-  target: string,
-): Promise<HostActionResult> {
-  const denied: HostActionResult = { status: 403, error: "Only the meeting host can do that." };
-  const gone: HostActionResult = { status: 404, error: "That person may have already left." };
+  request: HostAction | { action: "roles" },
+): Promise<HostActionResult & { data?: RealtimeKitRoles }> {
   const c = config();
-  if (!c) return denied;
+  if (!c) return DENIED;
   const session = verifySession(sessionToken, c.sessionSecret);
-  if (!session || session.role !== "host") return denied;
-  if (target === session.identity || target === session.participantId) {
-    return { status: 400, error: "Use your own controls for that." };
-  }
+  if (!session) return DENIED;
   try {
-    // The signature proves what we said when they joined; this proves it is still true (the
-    // record is deleted when the role is handed on).
-    const caller = await api<Participant>(c, "GET", `/meetings/${session.meetingId}/participants/${session.participantId}`);
-    if (!caller.ok || caller.data.preset_name !== c.hostPreset) return denied;
-    // The moderation endpoints take RealtimeKit's own participant ids, so look the person up.
-    const everyone = await listParticipants(c, session.meetingId);
-    const person = everyone.find((p) => p.custom_participant_id === target || p.id === target);
-    if (!person) return gone;
-    const path = action === "remove" ? "kick" : "mute";
-    const done = await api(c, "POST", `/meetings/${session.meetingId}/active-session/${path}`, {
-      participant_ids: [person.id],
-    });
-    return done.ok ? { status: 200 } : gone;
+    // The signature proves what we said when they joined; the records say what is true now.
+    const record = readRecord(await listParticipants(c, session.meetingId), c.hostPreset, c.knockPreset !== null);
+    const me = record.people.find((p) => p.id === session.participantId);
+    if (!me) return DENIED;
+    if (request.action === "roles") {
+      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access } };
+    }
+    const role = me.preset_name === c.hostPreset ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
+    if (role === "guest") return DENIED;
+    if (isHostOnly(request) && role !== "host") return HOST_ONLY;
+    const session_ = `/meetings/${session.meetingId}/active-session`;
+
+    if ("identity" in request) {
+      const target = request.identity;
+      if (target === session.identity || target === session.participantId) return OWN_CONTROLS;
+      // The moderation endpoints take RealtimeKit's own participant ids, so look the person up.
+      const person = record.people.find((p) => p.custom_participant_id === target || p.id === target);
+      if (person?.preset_name === c.hostPreset) return NOT_THE_HOST;
+      switch (request.action) {
+        case "admit":
+        case "deny":
+        case "stopCamera":
+        case "lowerHand":
+          return { status: 200 };
+        case "mute": {
+          if (!person) return GONE;
+          const done = await api(c, "POST", `${session_}/mute`, { participant_ids: [person.id] });
+          return done.ok ? { status: 200 } : GONE;
+        }
+        case "remove": {
+          if (!person) return GONE;
+          // Noted first, so that a browser that held this identity is refused from this moment.
+          const banned = await addMarker(c, session.meetingId, `${BAN}${person.custom_participant_id}`);
+          if (!banned.ok) return UNREACHABLE;
+          const kicked = await api(c, "POST", `${session_}/kick`, { participant_ids: [person.id] });
+          // Whether or not they were connected, the record goes, which revokes their token.
+          await api(c, "DELETE", `/meetings/${session.meetingId}/participants/${person.id}`).catch(() => {});
+          await removeMarkers(c, session.meetingId, record, (fact) => fact === `${COHOST}${person.id}`);
+          return kicked.ok ? { status: 200 } : GONE;
+        }
+        case "coHost": {
+          if (!person) return GONE;
+          if (!request.on) {
+            const removed = await removeMarkers(c, session.meetingId, record, (fact) => fact === `${COHOST}${person.id}`);
+            return removed ? { status: 200 } : UNREACHABLE;
+          }
+          if (record.coHostIds.has(person.id)) return { status: 200 };
+          const added = await addMarker(c, session.meetingId, `${COHOST}${person.id}`);
+          return added.ok ? { status: 200 } : UNREACHABLE;
+        }
+      }
+    }
+
+    switch (request.action) {
+      case "lowerAllHands":
+        return { status: 200 };
+      case "muteAll": {
+        const done = await api(c, "POST", `${session_}/mute-all`, { allow_unmute: true });
+        return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the call." };
+      }
+      case "end": {
+        const done = await api(c, "POST", `${session_}/kick-all`);
+        return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the call." };
+      }
+      case "access": {
+        if (request.access === "ask" && !c.knockPreset) {
+          return { status: 400, error: "Asking to join is not set up for this app." };
+        }
+        // The new statement is written before the old one is removed: never open by accident.
+        if (request.access !== "open" && record.access !== request.access) {
+          const added = await addMarker(c, session.meetingId, `${ACCESS}${request.access}`);
+          if (!added.ok) return UNREACHABLE;
+        }
+        const cleared = await removeMarkers(
+          c,
+          session.meetingId,
+          record,
+          (fact) => fact.startsWith(ACCESS) && fact !== `${ACCESS}${request.access}`,
+        );
+        return cleared ? { status: 200 } : UNREACHABLE;
+      }
+    }
+    return { status: 400, error: "Invalid request." };
   } catch {
-    return gone;
+    return GONE;
   }
 }

@@ -113,6 +113,11 @@ export function playChatMessageSound(): void {
   else sounds.skipped("message", "busy-chat");
 }
 
+/** Somebody new is asking to join. Call where the host's notification is raised. */
+export function playKnockSound(): void {
+  sounds.play("knock");
+}
+
 /** The call is over for you (you left, were removed, or it dropped for good). */
 export function playCallEndedSound(): void {
   sounds.play("ended");

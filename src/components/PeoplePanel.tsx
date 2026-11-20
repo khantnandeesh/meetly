@@ -1,10 +1,12 @@
 "use client";
 
-import { Hand, Mic, MicOff, Search, VideoOff, X } from "lucide-react";
+import { Check, ChevronDown, DoorOpen, Ellipsis, Hand, Link2, Lock, Mic, MicOff, PhoneOff, Search, VideoOff, X } from "lucide-react";
 import { memo, useMemo, useState } from "react";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant } from "@/lib/rtc/types";
-import { HostMenu, useHost } from "./HostTools";
+import { ACCESS_LABELS, HostMenu, useHost } from "./HostTools";
+import { Dropdown } from "./ui/Menu";
+import type { JoinAccess } from "@/lib/rtc/types";
 import { useCopied } from "@/lib/hooks";
 import { useBox } from "./Stage";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -110,7 +112,9 @@ export function PeoplePanel({
         <p className="sr-only" role="status">
           {query ? `${matches} ${matches === 1 ? "person matches" : "people match"}` : ""}
         </p>
+        <ModeratorBar anyHands={participants.some((p) => p.handRaised)} />
       </div>
+      <WaitingList />
 
       <div
         ref={boxRef}
@@ -162,18 +166,17 @@ const PersonRow = memo(function PersonRow({
   participant: RtcParticipant;
   hand: boolean;
 }) {
-  const { hostId, isHost } = useHost();
-  const { name: rawName, speaking, micOn, camOn } = useParticipantState(participant);
+  const { hostId, coHosts, canModerate } = useHost();
+  const { name: rawName, speaking, micOn, camOn, handRaised } = useParticipantState(participant);
   const name = rawName || "Guest";
+  const role = hostId === participant.identity ? "Host" : coHosts.includes(participant.identity) ? "Co-host" : null;
   return (
     <div className="group/row flex h-full items-center gap-3 rounded-xl px-3 hover:bg-surface-2/60">
       <Avatar name={name} seed={participant.identity} speaking={speaking && micOn} />
       <span className="min-w-0 flex-1">
         <span className="block truncate text-[0.9375rem] font-medium">{name}</span>
-        {(participant.isLocal || hostId === participant.identity) && (
-          <span className="block text-xs text-muted">
-            {[participant.isLocal && "You", hostId === participant.identity && "Host"].filter(Boolean).join(" · ")}
-          </span>
+        {(participant.isLocal || role) && (
+          <span className="block text-xs text-muted">{[participant.isLocal && "You", role].filter(Boolean).join(" · ")}</span>
         )}
       </span>
       <span className="flex shrink-0 items-center gap-1">
@@ -206,9 +209,123 @@ const PersonRow = memo(function PersonRow({
           <span className="sr-only">{micOn ? "Microphone on" : "Muted"}</span>
         </span>
         {/* The host's menu trails the row; your own row keeps the column so the icons line up. */}
-        <HostMenu participant={participant} micOn={micOn} variant="row" />
-        {isHost && participant.isLocal && <span className="size-8 pointer-coarse:size-11" aria-hidden="true" />}
+        <HostMenu participant={participant} micOn={micOn} camOn={camOn} handRaised={handRaised} variant="row" />
+        {canModerate && (participant.isLocal || hostId === participant.identity) && (
+          <span className="size-8 pointer-coarse:size-11" aria-hidden="true" />
+        )}
       </span>
     </div>
   );
 });
+
+const ACCESS_ICONS: Record<JoinAccess, typeof Lock> = { open: Link2, ask: DoorOpen, locked: Lock };
+
+/** Host and co-hosts only: who can join, mute everyone, and the rarer things in a menu. */
+function ModeratorBar({ anyHands }: { anyHands: boolean }) {
+  const { canModerate, isHost, access, supports, setAccess, muteAll, lowerAllHands, askEnd } = useHost();
+  if (!canModerate) return null;
+  const AccessIcon = ACCESS_ICONS[access];
+  const choices = (Object.keys(ACCESS_LABELS) as JoinAccess[]).filter((choice) => choice !== "ask" || supports.askToJoin);
+  return (
+    <div className="flex flex-wrap gap-2">
+      <Dropdown.Root>
+        <Dropdown.Trigger
+          aria-label={`Who can join: ${ACCESS_LABELS[access].label}`}
+          className="group inline-flex h-11 min-w-0 basis-full cursor-pointer items-center gap-2 rounded-xl bg-surface-2 px-3 text-left text-sm font-medium transition-colors hover:bg-surface-3"
+        >
+          <AccessIcon className={`size-4 shrink-0 ${access === "open" ? "text-muted" : "text-accent"}`} aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate">{ACCESS_LABELS[access].label}</span>
+          <ChevronDown className="size-4 shrink-0 text-muted transition-transform group-aria-expanded:rotate-180" aria-hidden="true" />
+        </Dropdown.Trigger>
+        <Dropdown.Portal>
+          <Dropdown.Content align="start" sideOffset={6} collisionPadding={12} className="menu w-72">
+            <Dropdown.Label className="menu-label">Who can join</Dropdown.Label>
+            <Dropdown.RadioGroup value={access} onValueChange={(value) => setAccess(value as JoinAccess)}>
+              {choices.map((choice) => (
+                <Dropdown.RadioItem key={choice} value={choice} className="menu-item pr-10">
+                  <span className="min-w-0">
+                    <span className="block font-medium">{ACCESS_LABELS[choice].label}</span>
+                    <span className="block text-xs text-muted">{ACCESS_LABELS[choice].hint}</span>
+                  </span>
+                  <Dropdown.ItemIndicator className="absolute right-3 text-accent">
+                    <Check className="size-4" aria-hidden="true" />
+                  </Dropdown.ItemIndicator>
+                </Dropdown.RadioItem>
+              ))}
+            </Dropdown.RadioGroup>
+          </Dropdown.Content>
+        </Dropdown.Portal>
+      </Dropdown.Root>
+      <button className="btn btn-secondary h-11 flex-1 rounded-xl px-3 text-sm" onClick={muteAll}>
+        <MicOff className="size-4" aria-hidden="true" />
+        Mute all
+      </button>
+      <Dropdown.Root>
+        <Dropdown.Trigger className="icon-btn size-11 bg-surface-2" aria-label="More actions for everyone">
+          <Ellipsis className="size-[1.125rem]" />
+        </Dropdown.Trigger>
+        <Dropdown.Portal>
+          <Dropdown.Content align="end" sideOffset={6} collisionPadding={12} className="menu">
+            <Dropdown.Item className="menu-item" disabled={!anyHands} onSelect={lowerAllHands}>
+              <Hand className="size-4 text-muted" aria-hidden="true" />
+              Lower all hands
+            </Dropdown.Item>
+            {isHost && (
+              <>
+                <div className="menu-sep" />
+                <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
+                  <PhoneOff className="size-4" aria-hidden="true" />
+                  End call for everyone
+                </Dropdown.Item>
+              </>
+            )}
+          </Dropdown.Content>
+        </Dropdown.Portal>
+      </Dropdown.Root>
+    </div>
+  );
+}
+
+/** People asking to join, above everyone who is in. Only the host and co-hosts are told about them. */
+function WaitingList() {
+  const { canModerate, waiting, admit, deny, admitAll } = useHost();
+  if (!canModerate || waiting.length === 0) return null;
+  return (
+    <section
+      aria-label="Waiting to join"
+      className="anim-fade mx-3 mb-1 rounded-2xl bg-[color-mix(in_srgb,var(--accent)_9%,var(--surface-2))] p-1.5"
+    >
+      <div className="flex h-9 items-center justify-between gap-2 pr-1 pl-2.5">
+        <h3 className="eyebrow flex gap-2 text-muted">
+          Waiting to join
+          <span className="tracking-normal tabular-nums">{waiting.length}</span>
+        </h3>
+        {waiting.length > 1 && (
+          <button
+            className="h-8 cursor-pointer rounded-lg px-2.5 text-sm font-semibold text-accent transition-colors hover:bg-surface-3"
+            onClick={admitAll}
+          >
+            Admit all
+          </button>
+        )}
+      </div>
+      <ul className="scroll-quiet max-h-44 overflow-y-auto">
+        {waiting.map((person) => {
+          const name = person.name || "Guest";
+          return (
+            <li key={person.id} className="flex h-13 items-center gap-3 pr-1 pl-2.5">
+              <Avatar name={name} seed={person.id} />
+              <span className="min-w-0 flex-1 truncate text-[0.9375rem] font-medium">{name}</span>
+              <button className="btn btn-quiet h-9 rounded-lg px-3 text-sm" aria-label={`Deny ${name}`} onClick={() => deny(person)}>
+                Deny
+              </button>
+              <button className="btn btn-primary h-9 rounded-lg px-3 text-sm" aria-label={`Admit ${name}`} onClick={() => admit(person)}>
+                Admit
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}

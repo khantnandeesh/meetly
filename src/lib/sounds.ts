@@ -56,7 +56,8 @@ export type SoundName =
   | "shareStart"
   | "shareStop"
   | "mutedByHost"
-  | "connectionLost";
+  | "connectionLost"
+  | "knock";
 
 export type SoundSpec = {
   notes: Note[];
@@ -101,6 +102,16 @@ export const SOUNDS: Record<SoundName, SoundSpec> = {
     important: true,
     minGapMs: 1500,
     meaning: "The host muted your microphone",
+  },
+
+  // Somebody at the door: the same note twice, mid-register, like knuckles. It asks the host
+  // for an answer, so it is one of the sounds that "important only" keeps.
+  knock: {
+    notes: [note(E5, 0, 0.36, 0.028), note(E5, 0.12, 0.4, 0.04)],
+    length: 0.32,
+    important: true,
+    minGapMs: 4000,
+    meaning: "Someone is asking to join (host and co-hosts only)",
   },
 
   // People: low, two notes, a fourth apart.
