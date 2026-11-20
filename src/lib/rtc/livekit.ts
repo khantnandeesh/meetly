@@ -363,7 +363,10 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   private waiters: RtcWaiter[] = [];
   /** When this browser first saw each person in `waiters` asking. */
   private readonly knocks = new Map<string, number>();
-  readonly supports = { askToJoin: true, stopCamera: true, polls: true, createPolls: true } as const;
+  /** On LiveKit our server changes who may publish, so the stage is the host's and co-hosts' in any webinar. */
+  get supports() {
+    return { askToJoin: true, stopCamera: true, polls: true, createPolls: true, stage: this.mode === "webinar" };
+  }
   private fx: LocalEffects;
   private noise: NoiseProcessor | null = null;
   private blur: BlurProcessor | null = null;

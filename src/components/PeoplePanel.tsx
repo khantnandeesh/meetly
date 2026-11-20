@@ -23,6 +23,7 @@ import { handQueue } from "@/lib/handQueue";
 import { BULK_CONFIRM, FIRST_ROWS, matchesName, oldestFirst, ordinal, people, waitingFor, type Departure } from "@/lib/hostLists";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
+import { AudienceSection, AudienceView } from "./AudienceSection";
 import { ACCESS_LABELS, HostMenu, useHost } from "./HostTools";
 import { Dropdown } from "./ui/Menu";
 import type { JoinAccess } from "@/lib/rtc/types";
@@ -70,6 +71,7 @@ export function PeoplePanel({
 
   if (peopleView === "waiting" && !emptied) return <WaitingView onBack={back} />;
   if (peopleView === "hands" && !emptied) return <HandsView hands={hands} onBack={back} />;
+  if (peopleView === "audience") return <AudienceView onBack={back} />;
   return <MainView participants={participants} hands={hands} code={code} onCopyLink={onCopyLink} cameFrom={cameFrom} />;
 }
 
@@ -171,6 +173,8 @@ function MainView({
         <div ref={aboveRef}>
           {!searching && <WaitingSection />}
           {!searching && <HandsSection hands={hands} />}
+          {/* Webinars: who is watching, for the host and co-hosts only. */}
+          {!searching && <AudienceSection />}
         </div>
         {matches === 0 ? (
           <p className="px-6 pt-10 text-center text-sm leading-relaxed text-muted">Nobody here is called “{query.trim()}”.</p>

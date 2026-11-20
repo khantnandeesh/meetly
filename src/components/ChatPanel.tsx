@@ -246,7 +246,14 @@ export function SaveChatButton({ code }: { code: string }) {
   );
 }
 
-export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
+export function ChatPanel({
+  autoFocus,
+  readOnly = false,
+}: {
+  autoFocus: boolean;
+  /** A webinar's audience reads the conversation but does not write in it. */
+  readOnly?: boolean;
+}) {
   const call = useCall();
   const toast = useToast();
   const { canModerate } = useHost();
@@ -414,6 +421,11 @@ export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
         )}
       </div>
 
+      {readOnly ? (
+        <p data-chat-read-only className="border-t border-border px-5 py-4 pb-[max(1rem,env(safe-area-inset-bottom))] text-center text-sm text-muted">
+          Only the people on stage can send messages.
+        </p>
+      ) : (
       <form onSubmit={submit} className="border-t border-border p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
         {failed && (
           <p role="alert" className="px-1 pb-2 text-sm text-danger-text">
@@ -456,6 +468,7 @@ export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
           </button>
         </div>
       </form>
+      )}
     </>
   );
 }

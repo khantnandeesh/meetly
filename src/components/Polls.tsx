@@ -67,6 +67,16 @@ export function PollsSection() {
   );
 }
 
+/**
+ * Webinars: who voted for what would name the audience, and only the host and co-hosts are
+ * shown who is watching. Everyone else sees the counts.
+ */
+function useVotersPrivate(): boolean {
+  const call = useCall();
+  const { canModerate } = useHost();
+  return call.mode === "webinar" && !canModerate;
+}
+
 function Options({
   poll,
   showResults,
@@ -78,7 +88,8 @@ function Options({
   pending?: number | null;
   onVote?: (option: number) => void;
 }) {
-  const names = !poll.anonymous && poll.total <= NAMES_UP_TO;
+  const votersPrivate = useVotersPrivate();
+  const names = !poll.anonymous && poll.total <= NAMES_UP_TO && !votersPrivate;
   return (
     <ul className="flex flex-col gap-1.5">
       {poll.options.map((option, index) => {
@@ -143,6 +154,7 @@ function PollCard({ poll, canModerate }: { poll: RtcPoll; canModerate: boolean }
   const [pending, setPending] = useState<number | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [ending, setEnding] = useState(false);
+  const votersPrivate = useVotersPrivate();
   // Whoever can end the poll needs to see how it is going; everyone else sees it once they have voted.
   const showResults = poll.voted || canModerate;
 
@@ -187,7 +199,7 @@ function PollCard({ poll, canModerate }: { poll: RtcPoll; canModerate: boolean }
         <p className="text-[0.9375rem] leading-snug font-semibold break-words">{poll.question}</p>
         <p className="text-xs text-muted">
           {poll.createdBy ? `${poll.createdBy} asked` : "Poll"}
-          {poll.anonymous ? " · votes are anonymous" : " · votes are shown by name"}
+          {poll.anonymous ? " · votes are anonymous" : votersPrivate ? " · the host sees who chose what" : " · votes are shown by name"}
         </p>
       </div>
       <Options poll={poll} showResults={showResults} pending={pending} onVote={poll.voted ? undefined : vote} />

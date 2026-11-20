@@ -18,6 +18,7 @@ import { FIRST_ROWS, people, recordJoin, recordLeave, type Departure } from "@/l
 import { useAccess, useCall, useCoHosts, useHostIdentity, useReactionsAllowed, useWaiting } from "@/lib/rtc/react";
 import { bulkFailures } from "@/lib/rtc/shared";
 import { displayName, type HostAction, type JoinAccess, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
+import { BackToAudienceItem } from "./AudienceSection";
 import { Dropdown } from "./ui/Menu";
 import { useToast } from "./ui/Toaster";
 
@@ -64,7 +65,7 @@ type HostState = {
   departures: readonly Departure[];
 };
 
-export type PeopleView = "main" | "waiting" | "hands";
+export type PeopleView = "main" | "waiting" | "hands" | "audience";
 
 const nothing = () => {};
 const HostContext = createContext<HostState>({
@@ -441,6 +442,7 @@ export function HostMenu({
               {isCoHost ? "Remove as co-host" : "Make co-host"}
             </Dropdown.Item>
           )}
+          <BackToAudienceItem participant={participant} />
           <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant, variant)}>
             <UserX className="size-4" aria-hidden="true" />

@@ -21,7 +21,7 @@ import { miniTile } from "@/lib/miniTile";
 import { handQueue } from "@/lib/handQueue";
 import { crowdSentence } from "@/lib/notices";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
+import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useTiles, useWaiting } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
@@ -29,6 +29,7 @@ import { useCallSettings } from "@/lib/useCallSettings";
 import { useMiniWindow } from "@/lib/usePip";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
+import { useHandsShown, useStageParticipants, useWatching } from "@/lib/useWebinar";
 import { CallQualityDialog, DataSaverBadge, WeakConnectionNotice } from "./CallQuality";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
@@ -40,6 +41,8 @@ import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { OnStageBar } from "./StageInvite";
+import { ViewerCall } from "./ViewerCall";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -57,7 +60,7 @@ type OpenPanel = Exclude<Panel, null>;
 export function Conference(props: { code: string }) {
   return (
     <ChatStore>
-      <Call {...props} />
+      <CallOrAudience {...props} />
     </ChatStore>
   );
 }
@@ -120,12 +123,14 @@ function Call({ code }: { code: string }) {
   /* ------------------------------------------------------------ participants */
   // Speaking and mute changes are handled by the tiles and rows themselves, so the whole call
   // does not re-render every time somebody talks.
-  const participants = useParticipants();
+  // Webinars: the stage, People and the layout are about who is on stage; the audience has its
+  // own section in People (see AudienceSection.tsx). In a meeting this is everyone.
+  const participants = useStageParticipants();
   const localParticipant = call.local;
   // A hand going up or down is a roster change, so this is current on every render.
   const handRaised = localParticipant.handRaised;
-  // In the order they went up: the hands button names whoever asked first.
-  const raisedHands = handQueue(participants);
+  // In the order they went up (the audience's too, for the host): the hands button names whoever asked first.
+  const raisedHands = handQueue(useHandsShown());
 
   /* ------------------------------------------------------------------ layout */
   const tracks = useTiles();
@@ -297,6 +302,8 @@ function Call({ code }: { code: string }) {
       return {
         announce(p: RtcParticipant) {
           if (call.remoteIds().length + 1 > ROSTER_TOAST_LIMIT || peopleOpen.current) return;
+          // A webinar's audience comes and goes unannounced: the Audience count is enough.
+          if (p.role === "viewer") return;
           // A lull starts a new count; until then the notification on screen keeps counting.
           if (Date.now() - lastAt > 5000) names = [];
           lastAt = Date.now();
@@ -391,7 +398,7 @@ function Call({ code }: { code: string }) {
   // The invite card steps aside while somebody is asking to join (only hosts are told of them).
   const knocking = useWaiting().length;
   const cornerLift =
-    participants.length === 1 && knocking === 0
+    call.participants().length === 1 && knocking === 0
       ? 9.25 // the invite card
       : view === "tiled" && pageCount > 1
         ? floatSelf
@@ -501,7 +508,8 @@ function Call({ code }: { code: string }) {
   /* ------------------------------------------------------------------ render */
   const connecting = connection === "connecting";
   const reconnecting = connection === "reconnecting";
-  const alone = participants.length === 1 && !connecting;
+  // Webinars: the audience counts here. A host with people watching is not alone.
+  const alone = call.participants().length === 1 && !connecting;
   const leaving = panel === null && shown !== null;
   const panelTitle = shown === "chat" ? "Chat" : "People";
 
@@ -679,6 +687,7 @@ function Call({ code }: { code: string }) {
       <CallQualityDialog open={qualityOpen} onOpenChange={setQualityOpen} />
       <ChatToasts open={panel === "chat"} onReply={openChat} />
       <PollToasts open={panel === "chat"} onShow={openChat} />
+      <OnStageBar />
       </MiniProvider>
     </HostProvider>
   );
@@ -943,4 +952,14 @@ function AudioUnlock() {
       Turn on sound
     </button>
   );
+}
+
+/* ---------------------------------------------------------------- webinars */
+
+/**
+ * A webinar's audience has a screen of its own (ViewerCall.tsx): no microphone, camera or tile.
+ * Everyone else, and anyone the host brings on stage, has the meeting's.
+ */
+function CallOrAudience(props: { code: string }) {
+  return useWatching() ? <ViewerCall {...props} /> : <Call {...props} />;
 }

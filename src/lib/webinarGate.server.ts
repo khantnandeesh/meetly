@@ -1,4 +1,4 @@
-import { viewerCap } from "./rtc/stage";
+import { WEBINAR_FULL_MESSAGE, viewerCap } from "./rtc/stage";
 
 /**
  * Every check someone passes before joining a webinar, on either provider, in one place. The
@@ -15,7 +15,7 @@ export type WebinarRefusal = { reason: "full"; message: string };
 export const WEBINAR_FULL: WebinarRefusal = {
   reason: "full",
   // Not an error: the webinar is going well. Said as it is, with what the person can do about it.
-  message: "This webinar is full. Try again in a few minutes.",
+  message: WEBINAR_FULL_MESSAGE,
 };
 
 export type WebinarJoin = {

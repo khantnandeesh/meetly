@@ -707,7 +707,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * Both depend on the presets the app was given: letting people in from the waiting room and
    * stopping a camera are done by RealtimeKit itself, for participants whose preset allows it.
    */
-  get supports(): { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean } {
+  get supports(): { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean; stage: boolean } {
     const permissions = this.meeting?.self.permissions;
     return {
       askToJoin: !!this.grant.canAsk && !!permissions?.acceptWaitingRequests,
@@ -715,6 +715,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       // RealtimeKit's own polls: each preset says whether its holders see them, vote and start them.
       polls: !!permissions?.polls?.canView,
       createPolls: !!permissions?.polls?.canCreate,
+      // Co-hosts hold the audience's preset, which cannot change the stage: in practice, the host.
+      stage: this.mode === "webinar" && !!permissions?.acceptStageRequests,
     };
   }
 
@@ -870,7 +872,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       }),
       () => !!peer.audioEnabled && (this.voice ? this.voice.speaking(peer.id) : this.speaker === peer.id),
       () => this.lastHost,
-      { mode: this.mode, status: () => peer.stageStatus },
+      {
+        mode: this.mode,
+        status: () => peer.stageStatus,
+        invited: () => this.mode === "webinar" && peer.stageStatus === "ACCEPTED_TO_JOIN_STAGE" && peer.presetName !== this.grant.hostPreset,
+      },
     );
     person.camera = new RemoteCamera(peer);
     person.screen = new DirectVideo(

@@ -8,8 +8,8 @@ import { POST as tokenRoute } from "../src/app/api/token/route";
 import { createCall as createLiveKitCall } from "../src/lib/rtc/livekit";
 import { RealtimeKitCall, type MeetingFactory } from "../src/lib/rtc/realtimekit";
 import type { HostApi } from "../src/lib/rtc/shared";
-import { DEFAULT_VIEWER_CAP, STAGE_ATTRIBUTE, STAGE_INVITED, viewerCap } from "../src/lib/rtc/stage";
-import type { JoinChoices, JoinGrant, RtcCall } from "../src/lib/rtc/types";
+import { DEFAULT_VIEWER_CAP, STAGE_ATTRIBUTE, STAGE_INVITED, audienceOrder, viewerCap } from "../src/lib/rtc/stage";
+import type { JoinChoices, JoinGrant, RtcCall, RtcParticipant } from "../src/lib/rtc/types";
 import { WEBINAR_FULL, webinarGate } from "../src/lib/webinarGate.server";
 import { FakeLiveKitServer } from "./fake-livekit-server";
 import { FakeMeeting, FakeParticipant, FakeSelf, installDom } from "./fake-realtimekit";
@@ -419,4 +419,43 @@ test("rtk: in a meeting the stage is never touched and everyone is a speaker", a
   assert.equal(call.local.role, "speaker");
   assert.equal(call.participant("m-g")?.role, "speaker");
   assert.equal(meeting.stage.joinCalls, 0);
+});
+
+/* ------------------------------------------------------- for the interface */
+
+test("supports.stage: any webinar on LiveKit; on RealtimeKit only where the preset can change the stage", async () => {
+  const lkWebinar = createLiveKitCall({ provider: "livekit", token: "t", serverUrl: "ws://127.0.0.1:1", mode: "webinar" }, choices);
+  const lkMeeting = createLiveKitCall({ provider: "livekit", token: "t", serverUrl: "ws://127.0.0.1:1" }, choices);
+  assert.deepEqual([lkWebinar.supports.stage, lkMeeting.supports.stage], [true, false]);
+  const host = await rtkWebinar({ host: true });
+  const coHost = await rtkWebinar({ canStage: false });
+  assert.deepEqual([host.call.supports.stage, coHost.call.supports.stage], [true, false]);
+});
+
+test("rtk: the host is shown who has an invitation out, and it clears when they answer", async () => {
+  const { call, meeting } = await rtkWebinar({ host: true });
+  const vic = meeting.arrive(new FakeParticipant("v", "Vic", { presetName: "meetly-webinar-viewer" }));
+  assert.equal(call.participant("m-v")?.stageInvite, false);
+  vic.setStage("ACCEPTED_TO_JOIN_STAGE");
+  assert.deepEqual([call.participant("m-v")?.stageInvite, call.participant("m-v")?.role], [true, "viewer"]);
+  vic.setStage("ON_STAGE");
+  assert.deepEqual([call.participant("m-v")?.stageInvite, call.participant("m-v")?.role], [false, "speaker"]);
+});
+
+test("livekit: someone else's invitation is seen too, from their permissions and mark", () => {
+  const { call, local, serverSets } = liveKitWebinar();
+  serverSets(true, STAGE_INVITED);
+  // The local participant stands in for anyone: the same reading applies to every participant.
+  assert.equal(call.participant(local.identity)?.stageInvite, true);
+});
+
+test("the audience is listed with raised hands first, in the order they went up, then A–Z", () => {
+  const person = (name: string, handRaised = false) => ({ identity: `m-${name}`, name, handRaised }) as unknown as RtcParticipant;
+  const zed = person("Zed");
+  const amy = person("Amy");
+  const bo = person("Bo", true);
+  const cy = person("Cy", true);
+  // Bo's hand went up first; Cy's after.
+  assert.deepEqual(audienceOrder([zed, bo, amy]).map((p) => p.name), ["Bo", "Amy", "Zed"]);
+  assert.deepEqual(audienceOrder([zed, cy, bo, amy]).map((p) => p.name), ["Bo", "Cy", "Amy", "Zed"]);
 });

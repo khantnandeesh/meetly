@@ -8,13 +8,14 @@ import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
 import { NOTICE } from "@/lib/rtc/shared";
-import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
+import type { CallMode, ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { deviceClass, lengthBucket, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
 import { PreJoin, PreJoinSkeleton } from "./PreJoin";
 import { ScheduleDialog } from "./ScheduleDialog";
+import { ViewerPreJoin } from "./ViewerPreJoin";
 import { Logo } from "./ui/Logo";
 import { useToast } from "./ui/Toaster";
 
@@ -66,18 +67,31 @@ export function Meeting({ code }: { code: string }) {
     });
   }, [currentCall]);
   /** Who may join, and whether this browser is the host. Asked each time the pre-join screen is up. */
-  const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean } | null>(null);
+  const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean; mode?: CallMode } | null>(null);
+  /**
+   * The first answer has come (or could not). Until then neither pre-join is drawn: a webinar's
+   * audience must never be asked for a camera, and which screen it is depends on the answer.
+   */
+  const [peeked, setPeeked] = useState(false);
 
   useEffect(() => {
     if (stage !== "prejoin") return;
     let current = true;
+    // A server that does not answer in time leaves the meeting's own screen, as before webinars.
+    const fallback = setTimeout(() => setPeeked(true), 4000);
     void peekMeeting(code).then((answer) => {
-      if (current && answer) setSeen(answer);
+      clearTimeout(fallback);
+      if (!current) return;
+      if (answer) setSeen(answer);
+      setPeeked(true);
     });
     return () => {
       current = false;
+      clearTimeout(fallback);
     };
   }, [code, stage]);
+  // A webinar's audience joins without devices (see ViewerPreJoin); its host as to any meeting.
+  const watching = seen?.mode === "webinar" && !seen.host;
 
   async function join(choices: JoinChoices) {
     // Still inside the click that joins: the only moment a browser lets audio be switched on.
@@ -164,16 +178,30 @@ export function Meeting({ code }: { code: string }) {
               if (ready && event.target === event.currentTarget) setCovered(false);
             }}
           >
-            <PreJoin
-              code={code}
-              joining={joining || inCall}
-              waiting={waiting}
-              access={seen?.access ?? "open"}
-              isHost={seen?.host ?? false}
-              error={error}
-              onJoin={join}
-              onCancel={backToPreJoin}
-            />
+            {!peeked ? (
+              <PreJoinSkeleton />
+            ) : watching ? (
+              <ViewerPreJoin
+                code={code}
+                joining={joining || inCall}
+                waiting={waiting}
+                access={seen.access}
+                error={error}
+                onJoin={join}
+                onCancel={backToPreJoin}
+              />
+            ) : (
+              <PreJoin
+                code={code}
+                joining={joining || inCall}
+                waiting={waiting}
+                access={seen?.access ?? "open"}
+                isHost={seen?.host ?? false}
+                error={error}
+                onJoin={join}
+                onCancel={backToPreJoin}
+              />
+            )}
           </div>
         ) : (
           <PreJoinSkeleton />

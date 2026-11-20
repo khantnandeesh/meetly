@@ -490,7 +490,7 @@ test("stopping a camera is done by the SDK on that participant, after the server
 
 test("what depends on presets is offered only when the preset allows it", async () => {
   const plain = await connected({ selfPreset: "meetly-host", grant: { role: "host" } });
-  assert.deepEqual(plain.call.supports, { askToJoin: false, stopCamera: false, polls: false, createPolls: false });
+  assert.deepEqual(plain.call.supports, { askToJoin: false, stopCamera: false, polls: false, createPolls: false, stage: false });
   const able = await connected({
     selfPreset: "meetly-host",
     grant: { role: "host", canAsk: true },
@@ -498,7 +498,7 @@ test("what depends on presets is offered only when the preset allows it", async 
       meeting.self.permissions = { acceptWaitingRequests: true, canDisableParticipantVideo: true };
     },
   });
-  assert.deepEqual(able.call.supports, { askToJoin: true, stopCamera: true, polls: false, createPolls: false });
+  assert.deepEqual(able.call.supports, { askToJoin: true, stopCamera: true, polls: false, createPolls: false, stage: false });
   // The host may accept, but the app has no preset that makes anyone wait: still not offered.
   const noPreset = await connected({
     before: (meeting) => {

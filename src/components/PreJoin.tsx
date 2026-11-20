@@ -295,7 +295,7 @@ const PROBLEM_COPY: Record<MediaProblem, (what: string) => { title: string; body
   }),
 };
 
-function Preview({
+export function Preview({
   name,
   audio,
   video,
