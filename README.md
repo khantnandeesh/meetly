@@ -288,7 +288,127 @@ and the host has not joined for thirty days.
 
 Media never touches this app: browsers connect straight to the provider with a short-lived token.
 
-## Deploy
+## Deploying
+
+Production is the Cloudflare Worker `meetly` at https://meet.nandeesh.dev, built with
+[`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare) from the `cloudflare-deploy`
+branch. That branch is `main` plus the Workers files: `wrangler.jsonc`, `open-next.config.ts`
+and `.env.production` (`NEXT_PUBLIC_RTC_PROVIDER=realtimekit`). GitHub Actions does the rest.
+**To release, merge `main` into `cloudflare-deploy` and push** (or merge a pull request from
+`main` into `cloudflare-deploy`).
+
+### What runs when
+
+| When | Workflow | What it does |
+| --- | --- | --- |
+| A pull request, or a push to any branch except `cloudflare-deploy` | **CI** (`.github/workflows/ci.yml`) | `npm ci`; `next typegen` and `tsc --noEmit`; lint; `npm test`; `next build` once with `NEXT_PUBLIC_RTC_PROVIDER=livekit` and once with `realtimekit`; all twelve browser-test suites (`node test/e2e/run.cjs`) in Chromium against a LiveKit build and the official `livekit-server` release run with `--dev`. If the browser tests fail, their screenshots and the server logs are attached to the run as an artifact. A newer push to the same branch or pull request cancels the run it replaces. |
+| A push to `cloudflare-deploy`, or **Actions → Deploy → Run workflow** on `cloudflare-deploy` | **Deploy** (`deploy.yml`) | The same CI jobs. Only if all of them pass: in the `production` environment, `npx opennextjs-cloudflare build`, `npx opennextjs-cloudflare deploy`, then a smoke test of https://meet.nandeesh.dev. The run's summary shows the URL and the new Worker version id. |
+| **Actions → Rollback → Run workflow** | **Rollback** (`rollback.yml`) | Lists the Worker's recent deployments and versions, or puts an earlier version back (see below). |
+
+- Deploys never overlap, and a rollback never overlaps a deploy. A deploy that arrives while
+  another is running waits; if two are waiting, only the newer one runs, so an older commit is
+  never deployed over a newer one.
+- The deploy is `opennextjs-cloudflare deploy`, never plain `wrangler deploy`: the former fills
+  the page cache first, and without it every page returns 500.
+- The smoke test (`scripts/smoke-test.mjs`, which you can also run yourself with
+  `node scripts/smoke-test.mjs https://meet.nandeesh.dev`) waits until the home page is served
+  by the build just deployed, then checks that the home page, a meeting page and one of its
+  scripts return 200 with the expected content, and that `/api/meeting` answers a "peek" for a
+  random code (200) and refuses a malformed one (400). It never asks for a token or joins a
+  call, so it never creates a RealtimeKit participant. If it fails, the new version is live:
+  look at the log and roll back if the site is broken.
+- The Worker's own secrets (`CLOUDFLARE_API_TOKEN` with the Realtime permission, and
+  `MEETLY_SESSION_SECRET`) stay on the Worker and are kept by every deploy. The workflows never
+  set, read or print them.
+- The workflow files reach `cloudflare-deploy` the same way as everything else: with the next
+  merge of `main`. Until then a push to `cloudflare-deploy` deploys nothing.
+
+### One-time setup
+
+1. **Create a Cloudflare API token for deploying.** This is a different token from the Worker's
+   own `CLOUDFLARE_API_TOKEN` secret (that one only needs Realtime). In the Cloudflare dashboard:
+   **Manage account → Account API tokens → Create Token**; under **Permission policies** open
+   the **Custom** dropdown and select **Edit Cloudflare Workers** ([Cloudflare: GitHub
+   Actions][cf-gha]). That template grants ([Cloudflare: API token templates][cf-templates]):
+
+   | Permission | Scope | Why Meetly needs it |
+   | --- | --- | --- |
+   | Workers Scripts: Edit (in the new roles, Workers **Editor**) | Account | Upload the Worker and its static assets, deploy versions, roll back ([Cloudflare: Workers roles][cf-roles]) |
+   | Workers Routes: Edit | Zone `nandeesh.dev` | `wrangler.jsonc` attaches the custom domain `meet.nandeesh.dev`; adding or changing a Custom Domain needs this on the zone ([Cloudflare: Routes and Custom Domains][cf-routes]) |
+   | Account Settings: Read | Account | Read-only; part of the template. Keep it |
+   | User Details: Read, Memberships: Read | User | Read-only; part of the template. Keep them if the form offers them |
+   | Workers Tail: Read | Account | Not needed to deploy; harmless (`wrangler tail`) |
+   | Workers KV Storage: Edit, Workers R2 Storage: Edit | Account | Not needed: Meetly has no KV or R2 binding. You can delete these two rows |
+
+   Then scope it: **Account Resources → Include → your account** only, and **Zone Resources →
+   Include → Specific zone → nandeesh.dev**. Give the Workers permission for the whole account,
+   not just the `meetly` Worker: Custom Domains do not support per-Worker roles yet
+   ([Cloudflare: Workers roles, Limitations][cf-roles]).
+2. **Add two secrets to GitHub:** the repository's **Settings → Secrets and variables → Actions
+   → New repository secret**:
+   - `CLOUDFLARE_API_TOKEN`: the token from step 1.
+   - `CLOUDFLARE_ACCOUNT_ID`: the account id (the dashboard's account home page, or the
+     `account_id` in `wrangler.jsonc` on `cloudflare-deploy`).
+
+   Enter them only in GitHub's form; never paste them anywhere else. (Stricter, optional: add
+   them under **Settings → Environments → production → Environment secrets** instead; only the
+   deploy and rollback jobs, which run in that environment, can then read them.)
+3. **Optional: require approval.** The `production` environment appears under **Settings →
+   Environments** after the first deploy run (or create it there yourself). Turn on **Required
+   reviewers** and add yourself: every deploy and rollback then waits for a click. Under
+   **Deployment branches and tags** you can also allow only `cloudflare-deploy`.
+
+### Approving a deploy
+
+With required reviewers on, a deploy run stops at **Deploy to Cloudflare** once CI has passed,
+showing "Waiting for review". Open the run (Actions → Deploy), press **Review deployments**,
+tick `production` and **Approve and deploy** (or **Reject**). Nothing reaches Cloudflare before
+that.
+
+### Rolling back
+
+Cloudflare keeps every uploaded version of the Worker (the latest 100, and anything newer than
+30 days), and a rollback switches production back to one of them at once, without a rebuild
+([Cloudflare: Rollbacks][cf-rollbacks]).
+
+- **From GitHub:** Actions → **Rollback** → Run workflow. `list` shows the recent deployments
+  and versions and changes nothing. `rollback` with the version left empty goes back to the
+  version before the current one; with a version id (from `list`, a Deploy run's summary, or
+  the dashboard) it goes back to that one. It then runs the smoke test.
+- **From the dashboard:** Workers & Pages → `meetly` → **Deployments** → the version's **⋯** →
+  **Rollback**.
+- **From a terminal** (on `cloudflare-deploy`, after `npx wrangler login`):
+  `npx wrangler deployments list`, `npx wrangler versions list`, then
+  `npx wrangler rollback [<version-id>] --message "why"`
+  ([Wrangler: rollback][wrangler-rollback]).
+
+A rollback does not change the code: the next push to `cloudflare-deploy` deploys whatever is
+there, so revert or fix the bad commit on `main` and merge it across. If one of the Worker's
+secrets was changed after the older version was deployed, Wrangler asks for confirmation (the
+workflow confirms); the run's log says so. Pages opened before a rollback may still ask for the
+newer version's scripts until they are reloaded ([Cloudflare: Version skew][cf-skew]).
+
+### Preview deploys for pull requests
+
+Not set up, on purpose. `npx opennextjs-cloudflare upload` (`wrangler versions upload`) would
+upload a version without deploying it, but a version's URL "runs one uploaded version against
+your production resources" ([Cloudflare: Version URLs][cf-version-urls]): with Meetly's Worker
+secrets, anyone with a preview link could create billed RealtimeKit meetings and participants.
+Preview URLs are also switched off for this Worker (`"preview_urls": false` in
+`wrangler.jsonc`), pull requests target `main`, which has no Workers configuration, and pull
+requests from forks get no secrets. Cloudflare's Previews, which have their own secrets and
+bindings, would be the way to add them later.
+
+[cf-gha]: https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/
+[cf-templates]: https://developers.cloudflare.com/fundamentals/api/reference/template/
+[cf-roles]: https://developers.cloudflare.com/workers/authorization/workers/
+[cf-routes]: https://developers.cloudflare.com/workers/authorization/workers/#routes-and-custom-domains
+[cf-rollbacks]: https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/
+[cf-skew]: https://developers.cloudflare.com/workers/versions-and-deployments/version-skew/
+[cf-version-urls]: https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/
+[wrangler-rollback]: https://developers.cloudflare.com/workers/wrangler/commands/workers/#rollback
+
+## Other hosts
 
 Any Node host works (Vercel is the simplest). Set `NEXT_PUBLIC_RTC_PROVIDER` and that
 provider's variables (see above) on the host, for the build as well as at run time. The site

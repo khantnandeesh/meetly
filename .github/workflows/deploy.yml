@@ -1,0 +1,135 @@
+# Deploys the cloudflare-deploy branch to the `meetly` Cloudflare Worker (meet.nandeesh.dev).
+#
+# Runs on every push to cloudflare-deploy, or by hand (Actions → Deploy → Run workflow, branch
+# cloudflare-deploy). The CI jobs run first, and the Worker is deployed only if all of them pass.
+# The deploy job uses the `production` environment: add required reviewers to it in Settings →
+# Environments to make every deploy wait for an approval.
+#
+# Worker secrets (CLOUDFLARE_API_TOKEN for RealtimeKit, MEETLY_SESSION_SECRET) live on the Worker
+# and are kept by every deploy; nothing here sets or reads them. The GitHub secrets
+# CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are only for Wrangler to deploy.
+name: Deploy
+
+on:
+  push:
+    branches:
+      - cloudflare-deploy
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One production change at a time, shared with rollback.yml. A run that arrives while another
+# is going waits; if a newer one arrives too, the waiting one is dropped and the newest goes next,
+# so an older commit can never be deployed over a newer one.
+concurrency:
+  group: production-cloudflare
+  cancel-in-progress: false
+
+env:
+  PRODUCTION_URL: https://meet.nandeesh.dev
+
+jobs:
+  checks:
+    name: CI
+    # Only the Workers branch holds wrangler.jsonc; a run started from any other branch does nothing.
+    if: github.ref == 'refs/heads/cloudflare-deploy'
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to Cloudflare
+    needs: checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: production
+      url: https://meet.nandeesh.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Check the deploy setup
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          for file in wrangler.jsonc open-next.config.ts .env.production; do
+            [ -f "$file" ] || { echo "::error::$file is missing: deploy from the cloudflare-deploy branch."; exit 1; }
+          done
+          grep -qx 'NEXT_PUBLIC_RTC_PROVIDER=realtimekit' .env.production \
+            || { echo "::error::.env.production must say NEXT_PUBLIC_RTC_PROVIDER=realtimekit for production."; exit 1; }
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "::error::The GitHub secret CLOUDFLARE_API_TOKEN is not set (README → Deploying)."; exit 1; }
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "::error::The GitHub secret CLOUDFLARE_ACCOUNT_ID is not set (README → Deploying)."; exit 1; }
+
+      - run: npm ci
+
+      # Builds .open-next/ (runs `npm run build`, which reads .env.production). No credentials.
+      - name: Build (opennextjs-cloudflare build)
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npx opennextjs-cloudflare build
+
+      # Not plain `wrangler deploy`: opennextjs-cloudflare deploy fills the page cache first, and
+      # without it every page returns 500.
+      - name: Deploy (opennextjs-cloudflare deploy)
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.ndjson
+        run: |
+          set -euo pipefail
+          npx opennextjs-cloudflare deploy
+          # Wrangler's machine-readable record of the deploy: the new version and where it went.
+          # shellcheck disable=SC2016 # the single-quoted text is JavaScript, not shell
+          node -e '
+            const fs = require("node:fs");
+            const lines = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+            const deploy = lines.filter((l) => l.type === "deploy").pop() || {};
+            const out = [`version_id=${deploy.version_id || ""}`, `targets=${(deploy.targets || []).join(" ")}`];
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
+          ' "$WRANGLER_OUTPUT_FILE_PATH"
+          echo "build_id=$(cat .next/BUILD_ID)" >> "$GITHUB_OUTPUT"
+
+      # Home page, a meeting page, a static script and /api/meeting. Waits until the home page
+      # comes from the build just deployed. Never joins a call or creates a RealtimeKit participant.
+      - name: Smoke test ${{ env.PRODUCTION_URL }}
+        env:
+          EXPECT_BUILD_ID: ${{ steps.deploy.outputs.build_id }}
+        run: node scripts/smoke-test.mjs "$PRODUCTION_URL"
+
+      - name: Summary
+        if: always()
+        env:
+          OUTCOME_DEPLOY: ${{ steps.deploy.outcome }}
+          VERSION_ID: ${{ steps.deploy.outputs.version_id }}
+          TARGETS: ${{ steps.deploy.outputs.targets }}
+          BUILD_ID: ${{ steps.deploy.outputs.build_id }}
+          OUTCOME_SMOKE: ${{ job.status }}
+        run: |
+          {
+            echo "## Deploy to Cloudflare"
+            echo
+            if [ "$OUTCOME_DEPLOY" = "success" ]; then
+              echo "Deployed to **$PRODUCTION_URL**"
+            else
+              echo "Deploy step: **$OUTCOME_DEPLOY**. If it failed, its log shows whether Wrangler got as far as deploying a version."
+            fi
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Worker version | \`${VERSION_ID:-unknown}\` |"
+            echo "| Next.js build | \`${BUILD_ID:-unknown}\` |"
+            echo "| Targets | ${TARGETS:-unknown} |"
+            echo "| Job status | $OUTCOME_SMOKE |"
+            echo
+            echo "To roll back: Actions → **Rollback** → Run workflow (empty version = the one before), or"
+            echo "\`npx wrangler rollback --name meetly\`. See README → Deploying."
+          } >> "$GITHUB_STEP_SUMMARY"
