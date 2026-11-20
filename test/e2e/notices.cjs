@@ -258,9 +258,9 @@ function overlaps(sample) {
 }
 
 /** A host in a fresh meeting, with the simulated crowd and the samplers. `init` runs in the page before the app does. */
-async function hostWith(browser, { viewport = H.DESKTOP, scale = 1, init } = {}) {
-  const person = await H.client(browser, { viewport, scale, touch: viewport.width < 768 });
-  if (init) await person.ctx.addInitScript(init);
+async function hostWith(browser, { viewport = H.DESKTOP, scale = 1, touch = viewport.width < 768, init, initArg } = {}) {
+  const person = await H.client(browser, { viewport, scale, touch });
+  if (init) await person.ctx.addInitScript(init, initArg);
   const url = await H.createMeeting(person);
   await H.join(person, url, "Hana Host");
   await H.sleep(2800);
@@ -695,6 +695,96 @@ async function placement(browser) {
     H.ok("C8: ...the chat button still counts them", label === "Chat, 2 unread", label);
     await a.ctx.close();
   }
+
+  await shortScreens(browser);
+}
+
+/** Every visible notification's box, and the screen's size. */
+const boxes = (person) =>
+  person.page.evaluate(() => ({
+    width: window.innerWidth,
+    height: window.innerHeight,
+    toasts: [...document.querySelectorAll("[data-toast]:not([data-leaving='true'])")].map((t) => {
+      const r = t.getBoundingClientRect();
+      return { title: t.querySelector(".toast-title")?.textContent || "", top: r.top, bottom: r.bottom, left: r.left, right: r.right };
+    }),
+  }));
+const onScreen = ({ width, height, toasts }) => toasts.every((t) => t.left >= 0 && t.right <= width && t.top >= 0 && t.bottom <= height);
+
+/** A phone held sideways (844 x 390), and side panels on narrow large screens (E4's C15 measurement). */
+async function shortScreens(browser) {
+  const LANDSCAPE = { width: 844, height: 390 };
+  // A long notice: a title that would wrap and a body, the kind that ran off the top.
+  const long = () =>
+    window.__meetlyToast.push({
+      priority: "you",
+      title: "Background blur was turned off because it was slowing down your camera",
+      body: "It was slowing down your camera. Turn it back on from the video settings when your device is less busy.",
+      duration: 6000,
+    });
+
+  // At 844 x 390, a mixed flood with the weak-connection banner up and the self-view floating.
+  {
+    const a = await hostWith(browser, { viewport: LANDSCAPE, touch: true, init: () => localStorage.setItem("meetly:call-settings", JSON.stringify({ selfView: "float" })) });
+    await a.page.evaluate(() => window.__sim.join(3));
+    await a.page.evaluate(() => window.__sim.poor(true));
+    H.ok("short screen: the weak-connection banner is up", await H.until(async () => (await a.page.locator("[data-weak-connection]:not([data-leaving='true'])").count()) === 1, 15000));
+    await a.page.evaluate(() => window.__samples.reset());
+    const start = Date.now();
+    let step = 0;
+    while (Date.now() - start < 5000) {
+      await a.page.evaluate((i) => {
+        const s = window.__sim;
+        s.queue.arrive(1);
+        s.chat(1);
+        s.join(2);
+        if (i % 4 === 1) s.mutedByHost();
+      }, step);
+      if (step % 5 === 2) await a.page.evaluate(long);
+      step++;
+      await H.sleep(200);
+    }
+    await H.sleep(600);
+    const samples = await a.page.evaluate(() => window.__samples.take());
+    const offTop = samples.filter((s) => s.toasts.some((t) => t.top < 0));
+    const overBanner = samples.filter((s) => s.toasts.some((t) => s.banners.some((b) => intersects(t, b))));
+    const most = Math.max(...samples.map((s) => s.toasts.length));
+    H.ok("short screen: one notification at a time", most === 1, `at most ${most}`);
+    H.ok("short screen: no notification crosses the top of the screen, in 30 samples or more", samples.length >= 30 && offTop.length === 0, `${samples.length} samples; ${JSON.stringify(offTop[0] || "")}`);
+    H.ok("short screen: no notification covers the status banner", overBanner.length === 0, JSON.stringify(overBanner[0] || ""));
+    H.ok("short screen: no chat preview interrupts", samples.every((s) => !s.toasts.some((t) => t.title === "Sam Sender")));
+    await H.shot(a, "short-screen-flood");
+    await a.ctx.close();
+  }
+
+  // With People or Chat open, every notice stays on screen: sideways phone, tablet, desktop.
+  for (const viewport of [LANDSCAPE, { width: 768, height: 1024 }, { width: 1440, height: 900 }]) {
+    const size = `${viewport.width}x${viewport.height}`;
+    for (const layout of ["sidebar", "auto"]) {
+      const a = await hostWith(browser, { viewport, init: (l) => localStorage.setItem("meetly:call-settings", JSON.stringify({ layout: l, selfView: "float" })), initArg: layout });
+      await a.page.evaluate(() => window.__sim.join(4));
+      await H.sleep(500);
+      const results = [];
+      for (const panel of ["People", "Chat"]) {
+        if (panel === "People") await H.openPeople(a);
+        else await a.page.locator("#toggle-chat").click();
+        await a.page.locator(`aside[aria-label="${panel}"]`).waitFor();
+        await H.sleep(600);
+        await a.page.evaluate(long);
+        await a.page.evaluate(() => window.__sim.mutedByHost());
+        await H.sleep(900);
+        results.push({ panel, ...(await boxes(a)) });
+      }
+      H.ok(
+        `${size} ${layout}: with People or Chat open, every notification is on screen`,
+        results.every((r) => r.toasts.length > 0 && onScreen(r)),
+        JSON.stringify(results.map((r) => [r.panel, r.toasts.map((t) => [Math.round(t.left), Math.round(t.top), Math.round(t.right), Math.round(t.bottom)])])),
+      );
+      await H.shot(a, `panel-open-${size}-${layout}`);
+      await a.ctx.close();
+    }
+  }
 }
 module.exports.placement = placement;
 module.exports.hostWith = hostWith;
+module.exports.shortScreens = shortScreens;

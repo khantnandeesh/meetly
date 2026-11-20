@@ -29,8 +29,8 @@ export type ToastInput = {
   /** A second, quieter choice shown before `action` ("Deny" beside "Admit"). */
   secondary?: { label: string; onClick: () => void };
   /**
-   * The one answer offered in the one-line strip over a phone's top bar (a sheet is open), where
-   * two do not fit. Defaults to `action`; `secondary` is never shown there.
+   * The one answer offered when notifications are one line (a phone sheet is open, or the screen
+   * is short), where two do not fit. Defaults to `action`; `secondary` is never shown then.
    */
   compactAction?: { label: string; onClick: () => void };
   /** Called when the person closes it with its ×, and only then (not when it times out or is answered). */
@@ -49,8 +49,10 @@ type Waiting = { toast: Toast; until: number };
 
 /** How the screen around the notifications is set out right now, for the rules in notices.ts. */
 export type ToastSurface = NoticeMode & {
-  /** Only the title line fits (a phone with a sheet open): bodies are left out. */
+  /** Only the title line fits (a phone with a sheet open, a short screen): bodies are left out. */
   compact?: boolean;
+  /** The one line sits over a phone's top bar, above an open sheet (see globals.css). */
+  strip?: boolean;
 };
 
 type ToastApi = {
@@ -72,6 +74,7 @@ export function useToast(): ToastApi {
 export function Toaster({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [compact, setCompact] = useState(false);
+  const [strip, setStrip] = useState(false);
   const nextId = useRef(1);
   const regionRef = useRef<HTMLDivElement>(null);
   const mode = useRef<NoticeMode>(DESKTOP_MODE);
@@ -269,8 +272,9 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         commit([]);
       },
       setSurface(surface) {
-        const { compact: tight = false, ...next } = surface;
+        const { compact: tight = false, strip: overBar = false, ...next } = surface;
         setCompact(tight);
+        setStrip(overBar);
         surfaceRef.current = next;
         refit();
       },
@@ -350,6 +354,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         role="region"
         aria-label="Notifications"
         data-compact={compact || undefined}
+        data-strip={strip || undefined}
         onPointerEnter={pause}
         onPointerLeave={resume}
         onFocus={pause}
@@ -358,7 +363,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
       >
         <div role="status" aria-live="polite" className="contents">
           {toasts.map((toast) => {
-            // In the one-line strip there is room for one answer (see `compactAction`).
+            // On one line there is room for one answer (see `compactAction`).
             const action = compact ? (toast.compactAction ?? toast.action) : toast.action;
             const secondary = compact ? undefined : toast.secondary;
             return (

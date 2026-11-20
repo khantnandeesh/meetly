@@ -180,9 +180,23 @@ test("status lane: on a phone the banner counts toward the two", () => {
   assert.deepEqual(laneSurface(true, false, null), DESKTOP_MODE);
   assert.deepEqual(laneSurface(true, false, "weak"), { max: 1, info: true });
   // A sheet open: the one line, unless Reconnecting or Turn on sound has taken it.
-  assert.deepEqual(laneSurface(true, true, null), { max: 1, info: false, compact: true });
-  assert.deepEqual(laneSurface(true, true, "reconnecting"), { max: 0, info: false, compact: true });
-  assert.deepEqual(laneSurface(true, true, "sound"), { max: 0, info: false, compact: true });
+  assert.deepEqual(laneSurface(true, true, null), { max: 1, info: false, compact: true, strip: true });
+  assert.deepEqual(laneSurface(true, true, "reconnecting"), { max: 0, info: false, compact: true, strip: true });
+  assert.deepEqual(laneSurface(true, true, "sound"), { max: 0, info: false, compact: true, strip: true });
+});
+
+test("status lane: a short screen (a phone held sideways) gets one line, where notifications normally go", () => {
+  // 844 x 390: the large-screen layout, but one notification, one line, only what concerns you.
+  assert.deepEqual(laneSurface(false, false, null, true), { max: 1, info: false, compact: true });
+  assert.deepEqual(laneSurface(false, false, "weak", true), { max: 1, info: false, compact: true });
+  // A phone-width short screen without a sheet: the same, below the banner, not over the top bar.
+  assert.deepEqual(laneSurface(true, false, "weak", true), { max: 1, info: false, compact: true });
+  // With a sheet open the strip rules still apply.
+  assert.deepEqual(laneSurface(true, true, "reconnecting", true), { max: 0, info: false, compact: true, strip: true });
+  // A chat preview never interrupts there; a request to join does.
+  const mode = laneSurface(false, false, null, true);
+  assert.equal(place([], n(1, "info"), mode).kind, "drop");
+  assert.equal(place([], n(2, "action"), mode).kind, "show");
 });
 
 test("status lane: weak, then a knock, then a chat message on a phone: banner, knock, no chat", () => {

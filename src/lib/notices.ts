@@ -182,9 +182,21 @@ export function statusBanner(state: { reconnecting: boolean; soundBlocked: boole
  * phone sheet open there is one line over the top bar: Reconnecting or Turn on sound takes it
  * (nothing else matters while you can't hear or be heard), a weak connection gives way to the
  * sheet, and otherwise the one line is for what concerns you.
+ *
+ * A short screen (under 30rem tall: a phone held sideways) is a phone too, whatever its width:
+ * two cards, or one with a body, would run off the top or over the banner. It gets one
+ * notification, one line, and only what concerns you, where notifications normally go.
+ *
+ * `compact` is the one-line look; `strip` puts it over a phone's top bar (a sheet is open).
  */
-export function laneSurface(phone: boolean, sheetOpen: boolean, banner: StatusBanner | null): NoticeMode & { compact?: boolean } {
-  if (phone && sheetOpen) return { max: banner === "reconnecting" || banner === "sound" ? 0 : 1, info: false, compact: true };
+export function laneSurface(
+  phone: boolean,
+  sheetOpen: boolean,
+  banner: StatusBanner | null,
+  short = false,
+): NoticeMode & { compact?: boolean; strip?: boolean } {
+  if (phone && sheetOpen) return { max: banner === "reconnecting" || banner === "sound" ? 0 : 1, info: false, compact: true, strip: true };
+  if (short) return { max: 1, info: false, compact: true };
   if (phone && banner) return { max: 1, info: true };
   return DESKTOP_MODE;
 }

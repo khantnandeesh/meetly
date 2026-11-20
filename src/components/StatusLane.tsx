@@ -2,7 +2,7 @@
 
 import { Volume2, WifiOff } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { usePresence } from "@/lib/hooks";
+import { useMediaQuery, usePresence } from "@/lib/hooks";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import { laneSurface, statusBanner } from "@/lib/notices";
 import { useAudioBlocked, useCall, useConnectionStatus } from "@/lib/rtc/react";
@@ -30,12 +30,14 @@ export function StatusLane({ phone, sheetOpen }: { phone: boolean; sheetOpen: bo
   // Under a sheet the stage is covered: only what stops you hearing or being heard is shown.
   const shown = strip && banner === "weak" ? null : banner;
 
-  // How many notifications the screen can take (src/lib/notices.ts).
-  const surface = laneSurface(phone, sheetOpen, shown);
-  const { max, info, compact } = surface;
+  // How many notifications the screen can take (src/lib/notices.ts). A phone held sideways is
+  // still a phone: under 30rem tall, one line (the same height rule as globals.css).
+  const short = useMediaQuery("(height < 30rem)");
+  const surface = laneSurface(phone, sheetOpen, shown, short);
+  const { max, info, compact, strip: overBar } = surface;
   useEffect(() => {
-    toast.setSurface({ max, info, compact });
-  }, [max, info, compact, toast]);
+    toast.setSurface({ max, info, compact, strip: overBar });
+  }, [max, info, compact, overBar, toast]);
   useEffect(() => () => toast.setSurface({ max: 2, info: true }), [toast]);
 
   // On a phone, notifications start 8px below the banner. Set in the same frame the banner
