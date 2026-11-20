@@ -19,6 +19,7 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { blurUnavailable } from "@/lib/effects/blur";
 import { useBackgroundPreview, useEffectSettings } from "@/lib/effects/settings";
+import { fullCount } from "@/lib/counts";
 import { copyText } from "@/lib/hooks";
 import type { JoinAccess, JoinChoices } from "@/lib/rtc/types";
 import {
@@ -35,12 +36,16 @@ import { DeviceRadioGroup, Dropdown, deviceLabel } from "./ui/Menu";
 import { Tip } from "./ui/Tip";
 import { useToast } from "./ui/Toaster";
 
+/** With more than this many people already in the meeting, you join with the microphone off. */
+const MUTE_JOINERS_ABOVE = 5;
+
 export function PreJoin({
   code,
   joining,
   waiting = false,
   access = "open",
   isHost = false,
+  peopleHere = null,
   error,
   onJoin,
   onCancel,
@@ -53,6 +58,8 @@ export function PreJoin({
   access?: JoinAccess;
   /** This browser holds the meeting's host key. */
   isHost?: boolean;
+  /** How many people are in the meeting now, or null where the provider can't say. */
+  peopleHere?: number | null;
   error: string | null;
   onJoin: (choices: JoinChoices) => void;
   /** Stop asking to join. */
@@ -78,8 +85,23 @@ export function PreJoin({
   const background = canBlur ? effects.background : "none";
   const preview = useBackgroundPreview(video.enabled ? video.track : undefined, background);
 
+  // Walking into a meeting that is already under way with the microphone on puts your room into
+  // theirs. With more than five people there, the microphone starts off and the screen says why.
+  // The person's own choice wins: once they touch the microphone here, it is theirs. This is the
+  // pre-join screen only; nobody is ever muted after they have connected. Where the provider
+  // can't say how many are there (null), nothing changes.
+  const [micChosen, setMicChosen] = useState(false);
+  const crowd = peopleHere !== null && peopleHere > MUTE_JOINERS_ABOVE ? peopleHere : null;
+  const joinMuted = crowd !== null && !micChosen;
+  const audioOn = audio.enabled;
+  useEffect(() => {
+    // Not while joining: by then the choice has been handed to the call.
+    if (joinMuted && audioOn && !joining && !waiting) setEnabled("audio", false);
+  }, [joinMuted, audioOn, joining, waiting, setEnabled]);
+
   function toggle(kind: "audio" | "video") {
     const next = !(kind === "audio" ? audio.enabled : video.enabled);
+    if (kind === "audio") setMicChosen(true);
     setEnabled(kind, next);
     save(kind === "audio" ? { audioEnabled: next } : { videoEnabled: next });
   }
@@ -265,7 +287,9 @@ export function PreJoin({
           <p className="text-sm leading-relaxed text-faint" aria-live="polite">
             {blocked
               ? "You can still join and listen. Allow access any time to be seen and heard."
-              : `You'll join with your camera ${camOn ? "on" : "off"}${camOn && background !== "none" ? " (background blurred)" : ""} and microphone ${micOn ? "on" : "off"}.`}
+              : crowd !== null && joinMuted && !micOn
+                ? `You'll join muted. ${fullCount(crowd)} people are here.`
+                : `You'll join with your camera ${camOn ? "on" : "off"}${camOn && background !== "none" ? " (background blurred)" : ""} and microphone ${micOn ? "on" : "off"}.`}
             {mustAsk && !waiting && " Someone in the meeting has to let you in."}
           </p>
         </section>

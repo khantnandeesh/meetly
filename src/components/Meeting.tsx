@@ -4,11 +4,12 @@ import { CalendarPlus, CircleAlert, DoorClosed, Download, Home, LogOut, PhoneOff
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { saveChat } from "@/lib/chatExport";
+import { fullCount } from "@/lib/counts";
 import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
 import { NOTICE } from "@/lib/rtc/shared";
-import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
+import type { ConnectionStatus, DisconnectReason, JoinChoices, MeetingPeek, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { deviceClass, lengthBucket, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { playCallEndedSound } from "@/lib/useSounds";
@@ -65,8 +66,11 @@ export function Meeting({ code }: { code: string }) {
       mostPeople.current = Math.max(mostPeople.current, currentCall.participants().length);
     });
   }, [currentCall]);
-  /** Who may join, and whether this browser is the host. Asked each time the pre-join screen is up. */
-  const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean } | null>(null);
+  /**
+   * Who may join, whether this browser is the host, and how many people are in already (null
+   * where the provider can't say). Asked each time the pre-join screen is up.
+   */
+  const [seen, setSeen] = useState<MeetingPeek | null>(null);
 
   useEffect(() => {
     if (stage !== "prejoin") return;
@@ -170,6 +174,7 @@ export function Meeting({ code }: { code: string }) {
               waiting={waiting}
               access={seen?.access ?? "open"}
               isHost={seen?.host ?? false}
+              peopleHere={seen?.count ?? null}
               error={error}
               onJoin={join}
               onCancel={backToPreJoin}
@@ -208,7 +213,7 @@ function LeftScreen({
   onRejoin: () => void;
 }) {
   const { minutes, reason, byYou, host, chat, pinned, people } = departure;
-  const canSaveChat = chat.some((message) => !message.deleted);
+  const said = chat.filter((message) => !message.deleted).length;
   const { icon: Icon, title, note } = ENDINGS[reason];
   const [planning, setPlanning] = useState(false);
   // Someone the host turned away is shown the way out first; coming back is the quieter option,
@@ -227,11 +232,14 @@ function LeftScreen({
       <header className="mx-auto flex w-full max-w-6xl px-5 py-5 sm:px-8">
         <Logo />
       </header>
-      <main className="anim-rise mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center gap-8 px-5 pb-28 text-center">
-        <span className="grid size-16 place-items-center rounded-3xl bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)]">
+      {/* One column, top to bottom: what happened, the two ways on, what can still be kept, and
+          only then the question about the call. On a phone it starts at the top, so the rating is
+          on screen without scrolling; on a large screen it sits in the middle. */}
+      <main className="anim-rise mx-auto flex w-full max-w-[34rem] flex-1 flex-col items-center gap-[1.125rem] px-4 pt-2 pb-10 text-center sm:justify-center sm:gap-6 sm:pb-28">
+        <span className="grid size-16 shrink-0 place-items-center rounded-3xl bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)]">
           <Icon className="size-7" aria-hidden="true" />
         </span>
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2.5">
           <h1 className="font-display text-4xl leading-[1.05] font-semibold tracking-[-0.02em] sm:text-5xl">
             {byYou ? "You ended the meeting" : title}
           </h1>
@@ -240,7 +248,8 @@ function LeftScreen({
             {minutes >= 1 && ` · ${minutes} min`}
           </p>
         </div>
-        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-center">
+        {/* Exactly two ways on (one for someone who was removed): leaving, or coming back. */}
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:justify-center" data-leave-actions>
           {homeFirst && home}
           {reason !== "removed" && (
             <button className={`btn ${homeFirst ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!homeFirst}>
@@ -249,26 +258,78 @@ function LeftScreen({
             </button>
           )}
           {!homeFirst && home}
-          {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
-              who sends it. It keeps this link, so the host stays the host. */}
-          {host && (
-            <button className="btn btn-quiet" onClick={() => setPlanning(true)}>
-              <CalendarPlus className="size-[1.125rem]" aria-hidden="true" />
-              Schedule a follow-up
-            </button>
-          )}
-          {canSaveChat && (
-            <button className="btn btn-quiet" onClick={() => saveChat(code, chat, pinned)}>
-              <Download className="size-[1.125rem]" aria-hidden="true" />
-              Save chat
-            </button>
-          )}
         </div>
+        {(said > 0 || host) && (
+          // Keeping things is a different decision from where to go next, so it gets its own shape.
+          <section
+            aria-label="Keep from this meeting"
+            className="w-full divide-y divide-border rounded-[1.25rem] bg-surface p-1.5 text-left shadow-[inset_0_0_0_1px_var(--border)]"
+            data-keep
+          >
+            {/* First, because it is the only thing that is lost when this page closes. */}
+            {said > 0 && (
+              <KeepRow
+                icon={Download}
+                title="Save the chat"
+                help={`${said === 1 ? "1 message" : `${fullCount(said)} messages`}. It's gone once you close this page.`}
+                action="Save"
+                actionLabel="Save chat"
+                onAction={() => saveChat(code, chat, pinned)}
+              />
+            )}
+            {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
+                who sends it. It keeps this link, so the host stays the host. */}
+            {host && (
+              <KeepRow
+                icon={CalendarPlus}
+                title="Schedule a follow-up"
+                help="Same link. Add it to your calendar."
+                action="Schedule"
+                actionLabel="Schedule a follow-up"
+                onAction={() => setPlanning(true)}
+              />
+            )}
+          </section>
+        )}
         {host && <ScheduleDialog code={code} mode="follow-up" open={planning} onOpenChange={setPlanning} />}
         <p className="text-sm text-faint">{byYou ? "Everyone has left the meeting. The link still works." : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
         {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>
+    </div>
+  );
+}
+
+/** One thing that can be kept from the meeting: what it is, a line on why, and a quiet button. */
+function KeepRow({
+  icon: Icon,
+  title,
+  help,
+  action,
+  actionLabel,
+  onAction,
+}: {
+  icon: typeof Download;
+  title: string;
+  help: string;
+  /** The button's visible word. */
+  action: string;
+  /** The button's full name, for screen readers and voice control; it starts with `action`. */
+  actionLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-3 pr-3 pl-2.5 sm:gap-3.5 sm:pl-3.5" data-keep-row>
+      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-accent">
+        <Icon className="size-5" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[0.9375rem] font-semibold">{title}</span>
+        <span className="mt-0.5 block text-[0.8125rem] text-muted">{help}</span>
+      </span>
+      <button className="btn btn-secondary h-11 rounded-xl px-3.5 text-sm" onClick={onAction} aria-label={actionLabel}>
+        {action}
+      </button>
     </div>
   );
 }
@@ -288,7 +349,7 @@ function CallRating({ minutes, people }: { minutes: number; people: number }) {
     setRated(true);
   };
   return (
-    <div data-call-rating className="flex min-h-11 flex-wrap items-center justify-center gap-x-3 gap-y-2 border-t border-border pt-6 text-sm text-muted">
+    <div data-call-rating className="flex min-h-11 w-full flex-wrap items-center justify-center gap-x-3 gap-y-2 border-t border-border pt-6 text-sm text-muted max-sm:[&>p]:w-full">
       {rated ? (
         <p role="status" className="anim-fade">
           Thanks.

@@ -269,7 +269,10 @@ module.exports = async function schedule(browser) {
   await ada.page.keyboard.press("Escape");
   await H.leaveButton(ada).click();
   await ada.page.getByText("You left the meeting").waitFor();
-  await ada.page.getByRole("button", { name: "Schedule a follow-up" }).click();
+  // It is a row of the "Keep from this meeting" card, not one of the two buttons for leaving.
+  const keep = ada.page.getByRole("region", { name: "Keep from this meeting" });
+  H.ok("the follow-up is offered in the card of things to keep, as Schedule", (await keep.getByRole("button", { name: "Schedule a follow-up" }).innerText()).trim() === "Schedule");
+  await keep.getByRole("button", { name: "Schedule a follow-up" }).click();
   await dialog(ada).waitFor();
   H.ok(
     "after the meeting, the host can schedule a follow-up on the same link",

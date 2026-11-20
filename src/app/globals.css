@@ -623,6 +623,24 @@ body {
   }
 }
 
+/*
+ * The phone's top bar and bottom sheet, with a top safe-area inset (a home-screen app, or a
+ * phone in landscape: the app sets viewportFit "cover"). The top bar starts at
+ * max(0.5rem, inset) and is 2.75rem tall; the sheet starts half a rem under it, so it never
+ * covers the bar. The one compact notification allowed while a sheet is open sits over the bar
+ * from max(0.25rem, inset), and is capped so it ends a quarter rem above the sheet: the sheet's
+ * drag handle, title and close button stay uncovered.
+ */
+:root {
+  --sheet-top: calc(max(0.5rem, env(safe-area-inset-top)) + 3.25rem);
+}
+@media (width < 48rem) {
+  .toast-region[data-compact] .toast {
+    max-height: calc(var(--sheet-top) - max(0.25rem, env(safe-area-inset-top)) - 0.25rem);
+    overflow: hidden;
+  }
+}
+
 .dialog-overlay {
   animation: fade-in var(--dur-base) ease-out backwards;
 }
