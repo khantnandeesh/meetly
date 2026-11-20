@@ -5,9 +5,9 @@ import { TILE_LIMITS, type CallSettings, type LayoutMode, type SelfView } from "
 import { Dropdown } from "./ui/Menu";
 
 const LAYOUTS: { value: LayoutMode; label: string; hint: string; icon: React.ReactNode }[] = [
-  { value: "auto", label: "Auto", hint: "Grid for small calls, speaker for big ones", icon: <Sparkles className="size-4" /> },
+  { value: "auto", label: "Auto", hint: "Grid for small meetings, speaker view for large ones", icon: <Sparkles className="size-4" /> },
   { value: "tiled", label: "Tiled", hint: "Everyone the same size, in pages", icon: <LayoutGrid className="size-4" /> },
-  { value: "spotlight", label: "Spotlight", hint: "Only whoever is speaking", icon: <RectangleHorizontal className="size-4" /> },
+  { value: "spotlight", label: "Spotlight", hint: "Only the person speaking", icon: <RectangleHorizontal className="size-4" /> },
   { value: "sidebar", label: "Sidebar", hint: "Speaker large, others alongside", icon: <PanelRight className="size-4" /> },
 ];
 

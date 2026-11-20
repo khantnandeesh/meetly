@@ -351,8 +351,8 @@ test("your own microphone, camera and screen go through the SDK and are reported
 test("a device that would not start rejects, so the interface can say so", async () => {
   const { call, self } = await connected();
   self.refuse = true;
-  await assert.rejects(call.setEnabled("camera", true), /Could not start your camera/);
-  await assert.rejects(call.setEnabled("screen_share", true), /Could not start your screen share/);
+  await assert.rejects(call.setEnabled("camera", true), /Couldn't start your camera/);
+  await assert.rejects(call.setEnabled("screen_share", true), /Couldn't start sharing your screen/);
 });
 
 test("someone sharing a screen adds a tile and is announced; stopping removes it", async () => {

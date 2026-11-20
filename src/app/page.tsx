@@ -13,19 +13,19 @@ import { createMeeting } from "@/lib/rtc/provider";
 
 const FEATURES = [
   {
-    icon: Link2,
-    title: "One link, no sign-up",
-    body: "Every meeting is a short link. Anyone who has it joins straight from their browser.",
+    icon: CalendarPlus,
+    title: "Plan ahead",
+    body: "Get a link now for a meeting later, and add it to your calendar.",
   },
   {
     icon: MonitorUp,
     title: "Share your screen",
-    body: "Present a tab, a window or everything. The layout refocuses around what you share.",
+    body: "On a computer, share a tab, a window or your whole screen.",
   },
   {
     icon: MessagesSquare,
-    title: "Chat and raise hands",
-    body: "Side messages and a visible hand queue keep bigger calls orderly.",
+    title: "Chat and raise a hand",
+    body: "Message everyone in the meeting, or raise a hand when you want to speak.",
   },
 ];
 
@@ -57,10 +57,6 @@ export default function Home() {
     <div className="backdrop-glow flex flex-1 flex-col">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
         <Logo />
-        <span className="hidden items-center gap-2 text-sm text-muted sm:flex">
-          <span className="size-1.5 rounded-full bg-accent" aria-hidden="true" />
-          Free, and nothing to install
-        </span>
       </header>
 
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col justify-center gap-16 px-5 pt-8 pb-16 sm:px-8 lg:gap-20">
@@ -68,11 +64,10 @@ export default function Home() {
           <section className="anim-rise flex flex-col gap-8">
             <div className="flex flex-col gap-5">
               <h1 className="font-display text-[clamp(2.5rem,6vw,4.25rem)] leading-[1.02] font-semibold tracking-[-0.03em] text-balance">
-                Video meetings, <span className="text-accent">one link</span> away
+                Video meetings with <span className="text-accent">no sign-up</span>
               </h1>
               <p className="max-w-[34rem] text-lg leading-relaxed text-pretty text-muted">
-                Start a meeting and send the link. Nobody needs an account or an app — they open it and
-                they&apos;re in.
+                Start a meeting and send the link. People join from their browser, with no account and no app.
               </p>
             </div>
 
@@ -140,10 +135,6 @@ export default function Home() {
           ))}
         </ul>
       </main>
-
-      <footer className="mx-auto w-full max-w-6xl px-5 pb-8 text-sm text-faint sm:px-8">
-        Your camera and microphone stay off until you allow them.
-      </footer>
 
       <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />
     </div>

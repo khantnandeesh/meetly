@@ -1,4 +1,4 @@
-// "How was the call?" on the screen you see after leaving: one tap, and nothing sent anywhere.
+// "How were the sound and video?" on the screen you see after leaving: one tap, and nothing sent anywhere.
 const H = require("./lib.cjs");
 
 const rating = (person) => person.page.locator("[data-call-rating]");
@@ -24,10 +24,10 @@ module.exports = async function ratingSuite(browser) {
     });
   }
 
-  await guest.page.getByRole("button", { name: "Leave call" }).tap();
+  await guest.page.getByRole("button", { name: "Leave meeting" }).tap();
   await guest.page.getByText("You left the meeting").waitFor();
   await rating(guest).waitFor();
-  H.ok("the leave screen asks how the call was, with two answers", /How was the call\?/.test(await rating(guest).innerText()) && (await rating(guest).getByRole("button").count()) === 2);
+  H.ok("the leave screen asks how the call was, with two answers", /How were the sound and video\?/.test(await rating(guest).innerText()) && (await rating(guest).getByRole("button").count()) === 2);
   const sizes = await rating(guest).getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
   H.ok("on a 390 px phone it fits and the answers are at least 44 px tall", (await H.noOverflow(guest)) && sizes.every((height) => height >= 44), sizes.join());
   await H.shot(guest, "rating-phone");
@@ -40,7 +40,7 @@ module.exports = async function ratingSuite(browser) {
   H.ok("answering sends nothing: no request, no beacon", requests.length === 0 && (await guest.page.evaluate(() => window.__beacons)) === 0, requests.join(", "));
   H.ok("and keeps nothing in the browser", (await stored()) === before);
 
-  await host.page.locator("[data-in-call]").getByRole("button", { name: "Leave call" }).first().click();
+  await host.page.locator("[data-in-call]").getByRole("button", { name: "Leave meeting" }).first().click();
   await host.page.getByText("You left the meeting").waitFor();
   await H.shot(host, "rating-desktop");
   requests.length = 0;

@@ -24,7 +24,7 @@ module.exports = async function hostTools(browser) {
   /* mute all */
   await H.openPeople(ada);
   await H.shot(ada, "host-people-panel-desktop");
-  await ada.page.getByRole("button", { name: "Mute all" }).click();
+  await ada.page.getByRole("button", { name: "Mute everyone" }).click();
   await micOff(ben).waitFor({ timeout: 8000 }).catch(() => {});
   await micOff(cy).waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("mute all reaches every guest", (await micOff(ben).count()) === 1 && (await micOff(cy).count()) === 1);
@@ -88,9 +88,9 @@ module.exports = async function hostTools(browser) {
 
   // The co-host removes someone; that person cannot walk back in.
   await menuFor(ben, "Cy Twombly");
-  await ben.page.getByRole("menuitem", { name: "Remove from call" }).click();
+  await ben.page.getByRole("menuitem", { name: "Remove from meeting" }).click();
   await H.shot(ben, "remove-dialog-desktop");
-  await ben.page.getByRole("button", { name: "Remove", exact: true }).click();
+  await ben.page.getByRole("button", { name: "Remove from meeting", exact: true }).click();
   await cy.page.getByText("The host removed you").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("a co-host can remove someone", (await cy.page.getByText("The host removed you").count()) === 1);
   await H.shot(cy, "removed-screen-desktop");
@@ -118,10 +118,10 @@ module.exports = async function hostTools(browser) {
   await H.closePeople(ada);
   await ada.page.getByRole("button", { name: "More ways to leave" }).click();
   await H.shot(ada, "leave-menu-desktop");
-  await ada.page.getByRole("menuitem", { name: "End call for everyone" }).click();
-  await ada.page.getByRole("dialog").getByText("End the call for everyone?").waitFor();
+  await ada.page.getByRole("menuitem", { name: "End meeting for everyone" }).click();
+  await ada.page.getByRole("dialog").getByText("End the meeting for everyone?").waitFor();
   await H.shot(ada, "end-dialog-desktop");
-  await ada.page.getByRole("button", { name: "End call", exact: true }).click();
+  await ada.page.getByRole("button", { name: "End meeting", exact: true }).click();
   await ben.page.getByText("The host ended the meeting").waitFor({ timeout: 8000 }).catch(() => {});
   await dee.page.getByText("The host ended the meeting").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("ending the call reaches every client", (await ben.page.getByText("The host ended the meeting").count()) === 1 && (await dee.page.getByText("The host ended the meeting").count()) === 1);
@@ -146,20 +146,20 @@ module.exports = async function hostTools(browser) {
   await H.sleep(1500);
   await H.openPeople(mo);
   await H.shot(mo, "host-people-panel-phone");
-  H.ok("phone: the people sheet holds the host's tools without overflowing", (await mo.page.getByRole("button", { name: "Mute all" }).count()) === 1 && (await H.noOverflow(mo)));
+  H.ok("phone: the people sheet holds the host's tools without overflowing", (await mo.page.getByRole("button", { name: "Mute everyone" }).count()) === 1 && (await H.noOverflow(mo)));
   await mo.page.getByRole("list", { name: "Participants" }).getByRole("button", { name: "Host controls for Pat Guest" }).click();
   await H.shot(mo, "host-menu-phone");
   await mo.page.getByRole("menuitem", { name: "Mute microphone" }).click();
   H.ok("phone: muting from the sheet's menu works", await H.until(async () => (await micOff(pat).count()) === 1, 6000));
   await H.closePeople(mo);
   await mo.page.getByRole("button", { name: "More options" }).click();
-  const endItem = mo.page.getByRole("menuitem", { name: "End call for everyone" });
+  const endItem = mo.page.getByRole("menuitem", { name: "End meeting for everyone" });
   await endItem.scrollIntoViewIfNeeded();
   await H.shot(mo, "more-menu-end-phone");
-  H.ok("phone: End call for everyone is in the More menu", (await endItem.count()) === 1);
+  H.ok("phone: End meeting for everyone is in the More menu", (await endItem.count()) === 1);
   await endItem.click();
   await H.shot(mo, "end-dialog-phone");
-  await mo.page.getByRole("button", { name: "End call", exact: true }).click();
+  await mo.page.getByRole("button", { name: "End meeting", exact: true }).click();
   H.ok("phone: ending from the More menu ends it for the guest", await H.until(async () => (await pat.page.getByText("The host ended the meeting").count()) === 1, 8000));
   await H.shot(mo, "ended-screen-host-phone");
 

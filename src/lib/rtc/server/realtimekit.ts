@@ -233,7 +233,7 @@ async function removeMarkers(c: Config, meetingId: string, record: MeetingRecord
   return results.every(Boolean);
 }
 
-const UNREACHABLE = { status: 502, error: "Could not reach the meeting service. Try again." } as const;
+const UNREACHABLE = { status: 502, error: "Couldn't connect to the meeting. Try again in a moment." } as const;
 
 const coHostIdentities = (record: MeetingRecord) =>
   record.people.filter((p) => record.coHostIds.has(p.id)).map((p) => p.custom_participant_id);
@@ -475,11 +475,11 @@ export async function realtimeKitHostAction(
         return { status: 200 };
       case "muteAll": {
         const done = await api(c, "POST", `${session_}/mute-all`, { allow_unmute: true });
-        return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the call." };
+        return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the meeting." };
       }
       case "end": {
         const done = await api(c, "POST", `${session_}/kick-all`);
-        return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the call." };
+        return done.ok ? { status: 200 } : { status: 404, error: "Nobody is in the meeting." };
       }
       case "pin": {
         // Only the id is kept: every client reads the message itself from RealtimeKit's chat,
@@ -510,7 +510,7 @@ export async function realtimeKitHostAction(
       }
       case "access": {
         if (request.access === "ask" && !c.knockPreset) {
-          return { status: 400, error: "Asking to join is not set up for this app." };
+          return { status: 400, error: "Ask to join isn't available for this meeting." };
         }
         // The new statement is written before the old one is removed: never open by accident.
         if (request.access !== "open" && record.access !== request.access) {

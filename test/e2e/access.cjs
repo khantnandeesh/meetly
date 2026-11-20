@@ -47,7 +47,7 @@ module.exports = async function access(browser) {
   const knocksBefore = await knocks(ada);
   await H.press(dee, url, "Dee Knocker");
   await dee.page.getByText("Asking to join…").waitFor({ timeout: 10000 }).catch(() => {});
-  H.ok("after asking they wait, and are told so", (await dee.page.getByText("Someone in the call will let you in").count()) === 1);
+  H.ok("after asking they wait, and are told so", (await dee.page.getByText("Someone in the meeting will let you in").count()) === 1);
   await H.shot(dee, "waiting-screen-desktop");
   await ada.page.getByText("Dee Knocker wants to join").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("the host is asked, with the answer on the notification", (await ada.page.locator("[data-toast]").filter({ hasText: "Dee Knocker wants to join" }).getByRole("button", { name: "Admit" }).count()) === 1);
@@ -142,10 +142,10 @@ module.exports = async function access(browser) {
   /* removing someone, and making people ask from then on */
   await H.openPeople(ada);
   await ada.page.getByRole("list", { name: "Participants" }).getByRole("button", { name: "Host controls for Ben Okri" }).click();
-  await ada.page.getByRole("menuitem", { name: "Remove from call" }).click();
+  await ada.page.getByRole("menuitem", { name: "Remove from meeting" }).click();
   await ada.page.getByText("Make new people ask to join").click();
   await H.shot(ada, "remove-dialog-ask-desktop");
-  await ada.page.getByRole("button", { name: "Remove", exact: true }).click();
+  await ada.page.getByRole("button", { name: "Remove from meeting", exact: true }).click();
   await ben.page.getByText("The host removed you").waitFor({ timeout: 8000 });
   H.ok("remove with 'make people ask': the meeting now asks", await H.until(async () => (await ada.page.getByRole("button", { name: "Who can join: People ask to join" }).count()) === 1, 8000));
   await ben.page.goto(url);

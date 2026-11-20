@@ -10,7 +10,7 @@ export const SHORTCUTS = [
   { key: "R", action: "Open reactions, then 1 to 6 to send one" },
   { key: "C", action: "Open or close chat" },
   { key: "P", action: "Show or hide people" },
-  { key: "← →", action: "Previous or next gallery page" },
+  { key: "← →", action: "Previous or next page" },
   { key: "Esc", action: "Close the open panel" },
   { key: "?", action: "Show this list" },
 ];
@@ -58,7 +58,7 @@ export function ShortcutsDialog({
           <label className="flex cursor-pointer items-center justify-between gap-4 border-t border-border bg-surface-2/60 px-6 py-4">
             <span>
               <span className="block text-[0.9375rem] font-medium">Single-key shortcuts</span>
-              <span className="block text-sm text-muted">Turn off if they clash with your tools.</span>
+              <span className="block text-sm text-muted">Turn off if they get in the way of other tools.</span>
             </span>
             <input
               type="checkbox"

@@ -7,6 +7,7 @@ import { saveChat } from "@/lib/chatExport";
 import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
+import { NOTICE } from "@/lib/rtc/shared";
 import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { deviceClass, lengthBucket, sendUsageEvent, sizeBucket } from "@/lib/usage";
@@ -88,7 +89,7 @@ export function Meeting({ code }: { code: string }) {
       setCovered(true);
       setStage("joined");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not join the meeting.");
+      setError(e instanceof Error ? e.message : "Couldn't join the meeting. Check your connection and try again.");
     } finally {
       setJoining(false);
     }
@@ -135,7 +136,8 @@ export function Meeting({ code }: { code: string }) {
           onError={(e) =>
             toast.push({
               title: "Something went wrong",
-              body: e.message,
+              // Only our own sentences are shown; anything else is the provider's, and not for reading.
+              body: e.name === NOTICE ? e.message : "If it keeps happening, leave and rejoin the meeting.",
               tone: "danger",
               icon: <CircleAlert className="size-5" />,
               duration: 8000,
@@ -189,7 +191,7 @@ const ENDINGS: Record<DisconnectReason, { icon: typeof LogOut; title: string; no
     title: "The host didn't let you in",
     note: "If that was a mistake, ask again or check with whoever sent you the link.",
   },
-  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link works again if the host starts a new call." },
+  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link still works if people want to meet again." },
 };
 
 function LeftScreen({
@@ -227,9 +229,9 @@ function LeftScreen({
             {byYou ? "You ended the meeting" : title}
           </h1>
           <p className="text-lg text-muted">
-            {reason === "dropped" ? "The connection to the call was lost. " : ""}
+            {reason === "dropped" ? "Your connection to the meeting was lost. " : ""}
             <span className="font-mono text-[0.9em]">{code}</span>
-            {minutes >= 1 && ` · ${minutes} min in the call`}
+            {minutes >= 1 && ` · ${minutes} min`}
           </p>
         </div>
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
@@ -248,7 +250,7 @@ function LeftScreen({
             </button>
           )}
         </div>
-        <p className="text-sm text-faint">{byYou ? "Everyone was disconnected. The link still works." : note}</p>
+        <p className="text-sm text-faint">{byYou ? "Everyone has left the meeting. The link still works." : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
         {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>
@@ -278,7 +280,7 @@ function CallRating({ minutes, people }: { minutes: number; people: number }) {
         </p>
       ) : (
         <>
-          <p id={label}>How was the call?</p>
+          <p id={label}>How were the sound and video?</p>
           <div role="group" aria-labelledby={label} className="flex gap-2">
             <button className="btn btn-secondary h-11 rounded-xl px-4 text-sm" onClick={() => rate("good")}>
               <ThumbsUp className="size-4" aria-hidden="true" />

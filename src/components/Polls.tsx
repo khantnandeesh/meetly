@@ -351,7 +351,7 @@ function NewPollDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
                   }}
                 >
                   <Plus className="size-4" aria-hidden="true" />
-                  Add an option
+                  Add option
                 </button>
               )}
             </fieldset>
@@ -379,7 +379,6 @@ function NewPollDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o
                 {sending && <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" />}
                 Start poll
               </button>
-              <p className="text-center text-sm text-faint">Everyone in the call can vote once. You can end it at any time.</p>
             </div>
           </form>
         </Dialog.Content>

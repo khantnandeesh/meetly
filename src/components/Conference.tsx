@@ -338,10 +338,10 @@ function Call({ code }: { code: string }) {
           tag: "blur-slow",
           icon: <CircleGauge className="size-5" />,
           title: "Background blur was turned off",
-          body: "It was slowing your camera down on this device.",
+          body: "It was slowing down your camera.",
           duration: 10_000,
           action: {
-            label: "Undo",
+            label: "Turn back on",
             onClick: () => {
               call.setBackground(mode).then(
                 () => saveEffectSettings({ background: mode }),
@@ -359,16 +359,16 @@ function Call({ code }: { code: string }) {
     updateSettings({ selfView: "hidden" });
     toast.push({
       icon: <EyeOff className="size-5" />,
-      title: "Your video is hidden from you",
+      title: "Your own video is hidden",
       body: "Others can still see you.",
-      action: { label: "Undo", onClick: () => updateSettings({ selfView: "float" }) },
+      action: { label: "Show", onClick: () => updateSettings({ selfView: "float" }) },
     });
   }, [toast, updateSettings]);
 
   // Copying confirms on the button that was pressed (see useCopied); only a failure needs a toast.
   const copyLink = useCallback(async () => {
     const ok = await copyText(`${window.location.origin}/${code}`);
-    if (!ok) toast.push({ icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link" });
+    if (!ok) toast.push({ icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link", body: "Copy it from the address bar instead." });
     return ok;
   }, [code, toast]);
   const headerCopy = useCopied(copyLink);
@@ -513,11 +513,12 @@ function Call({ code }: { code: string }) {
               id="toggle-people"
               onClick={() => togglePanel("people")}
               aria-expanded={panel === "people"}
-              aria-label="Show everyone"
               className="relative inline-flex h-11 shrink-0 cursor-pointer items-center gap-2 rounded-xl bg-surface-2 px-3.5 text-sm font-semibold tabular-nums active:bg-surface-3"
             >
               <Users className="size-[1.125rem]" aria-hidden="true" />
+              <span className="sr-only">People, </span>
               {participants.length}
+              <span className="sr-only"> in the meeting</span>
               <WaitingCount />
             </button>
           </div>
@@ -611,7 +612,7 @@ function Call({ code }: { code: string }) {
                   {shown === "people" && (
                     <span className="font-sans text-sm font-medium text-muted tabular-nums">
                       {participants.length}
-                      <span className="sr-only"> in the call</span>
+                      <span className="sr-only"> in the meeting</span>
                     </span>
                   )}
                 </h2>
@@ -752,9 +753,9 @@ function FloatingSelf({
       >
         <Tile trackRef={shown} className="aspect-video w-full max-md:aspect-[3/4]">
           <div className="tile-actions absolute top-1.5 right-1.5 z-30">
-            <Tip label="Hide your video from yourself" side="left">
+            <Tip label="Hide your own video" side="left">
               <button
-                aria-label="Hide self view"
+                aria-label="Hide your own video"
                 onClick={onHide}
                 className="grid size-9 cursor-pointer place-items-center rounded-lg bg-[rgb(11_11_15/0.72)] text-text backdrop-blur-md hover:bg-[rgb(40_40_52/0.9)] pointer-coarse:size-11"
               >
@@ -834,6 +835,7 @@ function WaitingCount() {
       className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
       data-waiting-count
     >
+      <span className="sr-only">, </span>
       {waiting.length > 9 ? "9+" : waiting.length}
       <span className="sr-only"> waiting to join</span>
     </span>
@@ -917,7 +919,7 @@ function AudioUnlock() {
   return (
     <button onClick={() => call.startAudio().catch(() => {})} className="btn btn-primary anim-pop pointer-events-auto h-11 rounded-xl shadow-lg">
       <Volume2 className="size-[1.125rem]" aria-hidden="true" />
-      Tap to hear others
+      Turn on sound
     </button>
   );
 }

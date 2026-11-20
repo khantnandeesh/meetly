@@ -31,7 +31,7 @@ async function startPoll(person, question, options, { named = false } = {}) {
   await dialog.waitFor();
   await dialog.getByLabel("Question").fill(question);
   for (let index = 0; index < options.length; index++) {
-    if (index >= 2) await dialog.getByRole("button", { name: "Add an option" }).click();
+    if (index >= 2) await dialog.getByRole("button", { name: "Add option" }).click();
     await dialog.getByLabel(`Option ${index + 1}`, { exact: true }).fill(options[index]);
   }
   if (named) await dialog.getByText("Anonymous votes", { exact: true }).click();
@@ -66,7 +66,7 @@ module.exports = async function pollsSuite(browser) {
   const oneOption = await pollApi(host, { token: host.token, action: "create", question: "Lunch?", options: ["Pizza"] });
   H.ok("and by the server (400)", oneOption.status === 400, JSON.stringify(oneOption));
   await empty.getByLabel("Option 2", { exact: true }).fill("Sushi");
-  await empty.getByRole("button", { name: "Add an option" }).click();
+  await empty.getByRole("button", { name: "Add option" }).click();
   await empty.getByLabel("Option 3", { exact: true }).fill("Salad");
   await empty.getByRole("button", { name: "Start poll" }).click();
   await empty.waitFor({ state: "detached" });

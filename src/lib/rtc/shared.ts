@@ -8,12 +8,17 @@ import { POLL_LIMITS, REACTIONS, type NewPoll } from "./types";
 /** Posts to /api/host. Rejects with the server's message, which is fit to show. */
 export type HostApi = (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
+/** A request that could not be made says so in words, not as the browser's own "Failed to fetch". */
+async function post(url: string, body: unknown): Promise<Response> {
+  try {
+    return await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  } catch {
+    throw new Error("Check your connection and try again.");
+  }
+}
+
 export const postHost: HostApi = async (body) => {
-  const response = await fetch("/api/host", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await post("/api/host", body);
   const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok) throw new Error(typeof data?.error === "string" ? data.error : "That didn't work. Try again.");
   return data ?? {};
@@ -99,11 +104,7 @@ export function isSignedChat(value: unknown): value is SignedChat {
 
 /** Posts to /api/chat. Rejects with the server's message, which is fit to show. */
 export async function postChat(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fetch("/api/chat", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await post("/api/chat", body);
   const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok) throw new Error(typeof data?.error === "string" ? data.error : "That didn't send. Try again.");
   return data ?? {};
@@ -220,12 +221,14 @@ export function tally(poll: StoredPoll): number[] {
 
 /** Posts to /api/poll (LiveKit builds). Rejects with the server's message, which is fit to show. */
 export async function postPoll(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const response = await fetch("/api/poll", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await post("/api/poll", body);
   const data = (await response.json().catch(() => null)) as Record<string, unknown> | null;
   if (!response.ok) throw new Error(typeof data?.error === "string" ? data.error : "That didn't work. Try again.");
   return data ?? {};
+}
+
+/** An error whose message was written for the person in the meeting, and can be shown to them as it is. */
+export const NOTICE = "MeetlyNotice";
+export function notice(message: string): Error {
+  return Object.assign(new Error(message), { name: NOTICE });
 }

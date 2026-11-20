@@ -158,8 +158,8 @@ export function ControlBar({
   );
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
-    <Tip label="Leave call">
-      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave call" onClick={() => call.disconnect().catch(() => {})}>
+    <Tip label="Leave meeting">
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave meeting" onClick={() => call.disconnect().catch(() => {})}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
@@ -208,7 +208,7 @@ export function ControlBar({
           <DataSaverSwitch />
           <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
             <Gauge className="size-4 text-muted" aria-hidden="true" />
-            Call quality…
+            Connection quality…
           </Dropdown.Item>
           {phone ? (
             <>
@@ -221,7 +221,7 @@ export function ControlBar({
                   <div className="menu-sep" />
                   <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                     <PhoneOff className="size-4" aria-hidden="true" />
-                    End call for everyone
+                    End meeting for everyone
                   </Dropdown.Item>
                 </>
               )}
@@ -241,7 +241,7 @@ export function ControlBar({
   if (phone) {
     return (
       <footer className="px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Call controls">
+        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Meeting controls">
           {micButton}
           {camButton}
           {reactButton}
@@ -277,7 +277,7 @@ export function ControlBar({
         <DataSaverBadge onOpen={onShowQuality} />
       </div>
 
-      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Call controls">
+      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Meeting controls">
         <div className="ctrl-split">
           {micButton}
           <DeviceMenu label="Audio settings" kinds={["audioinput", "audiooutput"]} off={!mic.enabled} />
@@ -314,11 +314,11 @@ export function ControlBar({
                 <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu">
                   <Dropdown.Item className="menu-item" onSelect={() => call.disconnect().catch(() => {})}>
                     <LogOut className="size-4 text-muted" aria-hidden="true" />
-                    Leave call
+                    Leave meeting
                   </Dropdown.Item>
                   <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                     <PhoneOff className="size-4" aria-hidden="true" />
-                    End call for everyone
+                    End meeting for everyone
                   </Dropdown.Item>
                 </Dropdown.Content>
               </Dropdown.Portal>
@@ -348,17 +348,19 @@ export function ControlBar({
             id="toggle-people"
             className="ctrl px-3.5"
             aria-expanded={panel === "people"}
-            aria-label="Show everyone"
             onClick={() => onTogglePanel("people")}
           >
-            <Users className="size-5" />
+            <Users className="size-5" aria-hidden="true" />
+            <span className="sr-only">People, </span>
             <span className="text-sm font-semibold tabular-nums">{headcount}</span>
+            <span className="sr-only"> in the meeting</span>
             {waiting.length > 0 && (
               // Stays for as long as somebody is waiting; the notification is what announces them.
               <span
                 className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
                 data-waiting-count
               >
+                <span className="sr-only">, </span>
                 {waiting.length > 9 ? "9+" : waiting.length}
                 <span className="sr-only"> waiting to join</span>
               </span>
@@ -469,9 +471,7 @@ function NoiseSwitch() {
       <AudioLines className="size-4 shrink-0 text-muted" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span className="block font-medium">Noise suppression</span>
-        <span className="block text-xs text-muted">
-          {on ? "Removes background noise, on this device" : "Off: sent as it is, which suits music"}
-        </span>
+        <span className="block text-xs text-muted">Turn off when you play music</span>
       </span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
@@ -493,7 +493,7 @@ function DataSaverSwitch() {
       <Leaf className="size-4 shrink-0 text-muted" aria-hidden="true" />
       <span className="min-w-0 flex-1">
         <span className="block font-medium">Use less data</span>
-        <span className="block text-xs text-muted">{on ? "Smaller camera, fewer pictures" : "For a weak or metered connection"}</span>
+        <span className="block text-xs text-muted">For a slow or limited connection</span>
       </span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
@@ -559,8 +559,8 @@ function BackgroundGroup() {
               </Dropdown.RadioItem>
             ))}
           </Dropdown.RadioGroup>
-          <p className="px-3 pt-0.5 pb-1.5 text-xs text-muted" role="status">
-            {backgroundState === "starting" ? "Starting…" : "Blurred on this device, before anything is sent."}
+          <p className="sr-only" role="status">
+            {backgroundState === "starting" ? "Starting blur…" : ""}
           </p>
         </>
       )}
@@ -569,9 +569,9 @@ function BackgroundGroup() {
 }
 
 const SOUND_LEVELS: { value: SoundLevel; label: string; hint: string; preview: SoundName }[] = [
-  { value: "all", label: "All sounds", hint: "People joining, hands, chat, your mic", preview: "joined" },
-  { value: "important", label: "Important only", hint: "Connection, call ended, muted by host", preview: "connected" },
-  { value: "off", label: "Off", hint: "No interface sounds", preview: "micOff" },
+  { value: "all", label: "All sounds", hint: "People joining, raised hands, chat, your microphone", preview: "joined" },
+  { value: "important", label: "Important only", hint: "Connection problems, meeting ended, muted by the host", preview: "connected" },
+  { value: "off", label: "Off", hint: "You still hear people", preview: "micOff" },
 ];
 
 /** How much the interface itself is heard. Choosing a level plays an example of it. */

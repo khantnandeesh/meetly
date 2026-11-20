@@ -87,7 +87,7 @@ What differs in a RealtimeKit call:
 - Clients learn about co-hosts and the lock by asking our server when another client says they
   changed, since the server cannot push to them. Lowering hands and "the host ended the call"
   (as opposed to "removed you") are messages between clients, as raised hands are.
-- "Mute all" uses Cloudflare's mute-all call, which makes no exception for the host or co-hosts.
+- "Mute everyone" uses Cloudflare's mute-all call, which makes no exception for the host or co-hosts.
 - Chat is RealtimeKit's own, kept by Cloudflare, so history needs nothing from us. Which message
   is pinned is one more `meetly-…` record, written through `/api/host` like any host action;
   RealtimeKit's own "pin" is not used, because nothing limits who may call it. Deleting is
@@ -206,7 +206,7 @@ seconds after things improve, is not repeated for two minutes after that, and no
 being dismissed (`src/lib/callHealth.ts`). No toast, no sound. "Poor" is the provider's judgement:
 LiveKit's connection quality for you, or RealtimeKit's media scores for what you send.
 
-More → "Call quality…" shows the same judgement in a word, what is being sent and received, the
+More → "Connection quality…" shows the same judgement in a word, what is being sent and received, the
 switch, and "Copy diagnostics". Everything in it is about this browser and stays there.
 
 "Use less data" is never switched on for you. While it is on your camera is captured at 640 × 360
@@ -217,7 +217,7 @@ touched. A leaf in the bar (the top bar on a phone) shows it is on.
 
 ## Usage counts and the rating
 
-The screen you see after leaving asks "How was the call?" with two buttons, and a few features
+The screen you see after leaving asks "How were the sound and video?" with two buttons, and a few features
 report that they were used. All of it goes to `sendUsageEvent` in `src/lib/usage.ts`, which today
 does nothing: Meetly has no storage and no analytics service, so no request is made and nothing
 is kept. The event's shape is fixed there (a feature name or a rating, and coarse buckets for

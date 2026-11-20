@@ -30,7 +30,7 @@ function copyStyles(from: Document, to: Document): void {
   }
   to.documentElement.lang = from.documentElement.lang;
   to.documentElement.className = from.documentElement.className;
-  to.title = "Meetly call";
+  to.title = "Meetly";
 }
 
 export type MiniWindow = {

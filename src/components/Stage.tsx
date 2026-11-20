@@ -415,7 +415,7 @@ export function Stage({
                 className="h-9 cursor-pointer rounded-xl bg-danger px-3 font-semibold text-white transition-colors hover:bg-(--danger-hover)"
                 onClick={() => call.setEnabled("screen_share", false).catch(() => {})}
               >
-                Stop
+                Stop sharing
               </button>
             </div>
           </div>
@@ -423,7 +423,7 @@ export function Stage({
       </div>
 
       {paged && (
-        <nav className="anim-fade flex h-11 shrink-0 items-center justify-center gap-1 text-sm text-muted" aria-label="Gallery pages">
+        <nav className="anim-fade flex h-11 shrink-0 items-center justify-center gap-1 text-sm text-muted" aria-label="Pages">
           <Tip label="Previous page" shortcut="←">
             <button
               className="icon-btn disabled:pointer-events-none disabled:opacity-35 pointer-coarse:size-11"

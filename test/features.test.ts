@@ -633,6 +633,6 @@ test("moderating before the call is connected is refused without asking anyone",
     requests.push(body);
     return {};
   });
-  await assert.rejects(call.moderate({ action: "muteAll" }), /Not connected/);
+  await assert.rejects(call.moderate({ action: "muteAll" }), /not connected/);
   assert.equal(requests.length, 0);
 });

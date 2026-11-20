@@ -121,7 +121,7 @@ module.exports = async function schedule(browser) {
   H.ok("…and Copy link confirms in place", await H.until(async () => (await dialog(ada).locator("[data-meeting-link]").innerText()).includes("Copied"), 3000));
   H.ok(
     "the calendar form is one step away",
-    (await dialog(ada).getByLabel("Date").count()) === 0 && (await dialog(ada).getByRole("button", { name: "Add it to a calendar…" }).count()) === 1,
+    (await dialog(ada).getByLabel("Date").count()) === 0 && (await dialog(ada).getByRole("button", { name: "Add to calendar…" }).count()) === 1,
   );
   await ada.page.keyboard.press("Escape");
   await dialog(ada).waitFor({ state: "detached" });
@@ -237,7 +237,7 @@ module.exports = async function schedule(browser) {
   await dialog(ada).getByLabel("Date").fill("2020-01-01");
   const alert = dialog(ada).getByRole("alert");
   await alert.waitFor({ timeout: 3000 }).catch(() => {});
-  H.ok("a past date is refused inline", (await alert.innerText().catch(() => "")).includes("already passed"));
+  H.ok("a past date is refused inline", (await alert.innerText().catch(() => "")).includes("has passed"));
   H.ok(
     "…and nothing can be added to a calendar until it is fixed",
     (await dialog(ada).locator('a[aria-disabled="true"]').count()) === 3 &&

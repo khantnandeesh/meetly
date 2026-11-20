@@ -89,7 +89,7 @@ module.exports = async function hostSurvives(browser) {
   await H.shot(ada, "host-after-reload-desktop");
 
   // The host leaves entirely; whoever is left, and whoever rejoins, is still not host.
-  await ada.page.getByRole("button", { name: "Leave call" }).click();
+  await ada.page.getByRole("button", { name: "Leave meeting" }).click();
   await ada.page.getByText("You left the meeting").waitFor();
   await ben.page.reload();
   await H.join(ben, url, "Ben Guest");
