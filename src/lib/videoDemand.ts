@@ -6,7 +6,7 @@ import type { RtcCall, RtcTile } from "./rtc/types";
 /**
  * Only cameras that are on screen should cost bandwidth.
  *
- * The stage reports which remote cameras it is showing; how that turns into less video on the
+ * The stage reports whose pictures it is showing; how that turns into less video on the
  * wire is the provider's business:
  *
  * - LiveKit stays subscribed to everything and pauses what no element is showing (adaptive
@@ -18,10 +18,10 @@ import type { RtcCall, RtcTile } from "./rtc/types";
  * Audio is never touched: everyone is always heard.
  */
 export function useVideoDemand(call: RtcCall, onScreen: RtcTile[]): void {
-  const visible = onScreen
-    .filter((tile) => tile.source === "camera" && !tile.participant.isLocal)
-    .map((tile) => tile.participant.identity)
-    .join("\n");
+  // People, not tiles: someone whose camera and screen are both showing is one stream source.
+  const visible = Array.from(
+    new Set(onScreen.filter((tile) => !tile.participant.isLocal).map((tile) => tile.participant.identity)),
+  ).join("\n");
   useEffect(() => {
     call.setVideoDemand(visible ? visible.split("\n") : []);
   }, [call, visible]);

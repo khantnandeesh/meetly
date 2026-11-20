@@ -36,6 +36,14 @@ export const MAX_ACTIVE = 24;
  * and the stage picks who is visible; a little headroom keeps the two from disagreeing.
  */
 export const DEMAND_HEADROOM = 2;
+/** How long after connecting a microphone that was asked for is given to start. */
+const MIC_SETTLE_MS = 3000;
+
+/** How long the SDK is given to start the microphone and camera before a device is switched. */
+const STARTUP_MEDIA_MS = 5000;
+
+/** A specific device, as opposed to "whatever the browser's default is". */
+const isChoice = (deviceId: string) => !!deviceId && deviceId !== "default";
 
 const SDK_KIND = { audioinput: "audio", videoinput: "video", audiooutput: "speaker" } as const;
 
@@ -180,12 +188,19 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private readonly sounds = new Map<string, HTMLAudioElement>();
   private audioSink: HTMLElement | null = null;
   private teardown: (() => void)[] = [];
+  /**
+   * What your microphone was last reported as. It starts as what you asked for on the pre-join
+   * screen: the SDK may still be starting the microphone when the call connects, and that first
+   * "on" is not you (or the host) toggling anything.
+   */
+  private micWas: boolean;
 
   constructor(grant: Grant, choices: JoinChoices, factory: MeetingFactory) {
     super();
     this.grant = grant;
     this.choices = choices;
     this.factory = factory;
+    this.micWas = choices.audioEnabled;
     this.self = new Person(
       true,
       () => {
@@ -246,9 +261,17 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         return;
       }
       this.meeting = meeting;
-      await this.preferDevice("audioinput", audioEnabled ? this.choices.audioDeviceId : "");
-      await this.preferDevice("videoinput", videoEnabled ? this.choices.videoDeviceId : "");
       this.listen(meeting);
+      const microphone = audioEnabled ? this.choices.audioDeviceId : "";
+      const camera = videoEnabled ? this.choices.videoDeviceId : "";
+      if (isChoice(microphone) || isChoice(camera)) {
+        // init() returns before the SDK has started the microphone and camera, and switching
+        // device while it is still doing so leaves the microphone off. So: let it finish first.
+        await this.startupMedia(meeting, current);
+        if (!current()) return void (await meeting.leave().catch(() => {}));
+        await this.preferDevice("audioinput", microphone);
+        await this.preferDevice("videoinput", camera);
+      }
       await meeting.join();
       if (!current()) {
         await meeting.leave().catch(() => {});
@@ -257,8 +280,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       this.onJoined();
     })().catch((error) => {
       if (!current()) return;
-      this.fail(error);
+      // The call ends first, so the reason is still on screen once the "left" page is up.
       this.finish("dropped");
+      this.fail(error);
     });
   }
 
@@ -276,9 +300,20 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.finish("left");
   }
 
+  /** Resolves once the devices asked for on the pre-join screen are running, or after a while. */
+  private async startupMedia(meeting: Meeting, current: () => boolean): Promise<void> {
+    const { audioEnabled, videoEnabled } = this.choices;
+    const deadline = Date.now() + STARTUP_MEDIA_MS;
+    // The SDK announces none of this with an event, so it is polled.
+    while (current() && Date.now() < deadline) {
+      if ((!audioEnabled || meeting.self.audioEnabled) && (!videoEnabled || meeting.self.videoEnabled)) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+
   /** The device chosen before joining. A missing or renamed device is not worth failing over. */
   private async preferDevice(kind: DeviceKind, deviceId: string): Promise<void> {
-    if (!deviceId || deviceId === "default" || !this.meeting) return;
+    if (!isChoice(deviceId) || !this.meeting) return;
     try {
       const self = this.meeting.self;
       if (self.getCurrentDevices()[SDK_KIND[kind]]?.deviceId === deviceId) return;
@@ -300,12 +335,33 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.media = this.readMedia();
     this.readChat();
     this.applyDemand();
+    // If the microphone never came up (no permission, no device), stop expecting it to.
+    const settle = setTimeout(() => {
+      this.micWas = !!meeting.self.audioEnabled;
+      this.mediaSettled();
+    }, MIC_SETTLE_MS);
+    (settle as { unref?: () => void }).unref?.();
+    this.teardown.push(() => clearTimeout(settle));
     this.self.changes.notify();
     this.statusChanged();
     this.rosterChanged();
     this.tilesChanged();
     this.emit("localMedia");
     this.emit("speakers");
+  }
+
+  /**
+   * The SDK starts the microphone and camera in the background and does not always say when
+   * they are up. Called at the moments that is likely to have happened.
+   */
+  private mediaSettled(): void {
+    const next = this.readMedia();
+    const last = this.media;
+    if (last && last.microphone === next.microphone && last.camera === next.camera && last.screenShare === next.screenShare) return;
+    this.media = next;
+    this.self.changes.notify();
+    this.emit("localMedia");
+    this.tilesChanged();
   }
 
   private finish(reason: DisconnectReason): void {
@@ -754,7 +810,6 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       else if (state === "reconnecting" || state === "disconnected" || state === "failed") part(transport, true);
     });
 
-    let micOn = !!self.audioEnabled;
     let sharing = !!self.screenShareEnabled;
     const mediaChanged = () => {
       const next = this.readMedia();
@@ -767,8 +822,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     on(self, "audioUpdate", () => {
       mediaChanged();
       const now = !!self.audioEnabled;
-      if (now === micOn) return;
-      micOn = now;
+      if (now === this.micWas) return;
+      this.micWas = now;
       // Joining with the microphone on is not a toggle; nothing before `joined` is reported.
       if (this.joined) this.emit("localMic", now);
     });
@@ -786,7 +841,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     });
     on(self, "deviceUpdate", ({ device }: { device: MediaDeviceInfo }) => {
       if (device.kind !== "audiooutput") this.emit("device", device.kind);
+      this.mediaSettled();
     });
+    on(self, "mediaPermissionUpdate", () => this.mediaSettled());
     on(self, "mediaScoreUpdate", ({ score }: { score: number }) => {
       const weak = score < WEAK_SCORE;
       if (weak === this.self.weak) return;

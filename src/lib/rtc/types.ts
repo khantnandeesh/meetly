@@ -131,7 +131,7 @@ export interface RtcCall {
   /* pictures */
   /** A new array whenever `tiles` fires. */
   tiles(): RtcTile[];
-  /** Tells the provider which remote cameras are on screen, so the rest need not be streamed. */
+  /** Tells the provider whose pictures are on screen, so the rest need not be streamed. */
   setVideoDemand(visibleRemoteIdentities: string[]): void;
 
   /* sound */

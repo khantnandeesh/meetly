@@ -59,11 +59,18 @@ export function CallRoom({
       call.on("disconnected", (reason) => handlers.current.onDisconnected(reason)),
       call.on("error", (error) => handlers.current.onError(error)),
     ];
-    call.connect();
+    // Connecting waits one tick. React's development mode mounts every effect twice in a row;
+    // this way the throwaway first mount never dials, instead of dialling and hanging up.
+    let dialled = false;
+    const dial = setTimeout(() => {
+      dialled = true;
+      call.connect();
+    }, 0);
     return () => {
+      clearTimeout(dial);
       // Listeners go first, so hanging up on unmount is not mistaken for the call ending.
       stops.forEach((stop) => stop());
-      call.disconnect().catch(() => {});
+      if (dialled) call.disconnect().catch(() => {});
     };
   }, [call]);
 
