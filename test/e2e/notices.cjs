@@ -258,8 +258,8 @@ function overlaps(sample) {
 }
 
 /** A host in a fresh meeting, with the simulated crowd and the samplers. `init` runs in the page before the app does. */
-async function hostWith(browser, { viewport = H.DESKTOP, init } = {}) {
-  const person = await H.client(browser, { viewport, touch: viewport === H.PHONE });
+async function hostWith(browser, { viewport = H.DESKTOP, scale = 1, init } = {}) {
+  const person = await H.client(browser, { viewport, scale, touch: viewport.width < 768 });
   if (init) await person.ctx.addInitScript(init);
   const url = await H.createMeeting(person);
   await H.join(person, url, "Hana Host");
@@ -697,3 +697,4 @@ async function placement(browser) {
   }
 }
 module.exports.placement = placement;
+module.exports.hostWith = hostWith;
