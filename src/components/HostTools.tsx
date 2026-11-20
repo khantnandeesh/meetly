@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { FIRST_ROWS, people, recordJoin, recordLeave, type Departure } from "@/lib/hostLists";
+import { noteOwnChange } from "@/lib/listHold";
 import { useAccess, useCall, useCoHosts, useHostIdentity, useReactionsAllowed, useWaiting } from "@/lib/rtc/react";
 import { bulkFailures } from "@/lib/rtc/shared";
 import { displayName, type HostAction, type JoinAccess, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
@@ -220,7 +221,8 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
         ),
       // The hand going down in front of you is the confirmation.
       lowerHand: (p) => void run({ action: "lowerHand", identity: p.identity }, null, `Couldn't lower ${named(p)}'s hand`),
-      setCoHost: (p, on) =>
+      setCoHost: (p, on) => {
+        noteOwnChange(p.identity);
         void run(
           { action: "coHost", identity: p.identity, on },
           {
@@ -230,7 +232,8 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
             title: on ? `${named(p)} is now a co-host` : `${named(p)} is no longer a co-host`,
           },
           on ? `Couldn't make ${named(p)} a co-host` : `Couldn't remove ${named(p)} as co-host`,
-        ),
+        );
+      },
       askRemove: (participant, from) => {
         lastAsked.current = `${participant.identity}:${from ?? "row"}`;
         setAlsoAsk(false);
@@ -242,10 +245,17 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       // The control showing the new choice is the confirmation.
       setAccess: (next) => void run({ action: "access", access: next }, null, "Couldn't change who can join"),
       // Their tile arriving, or their row going, is the confirmation.
-      admit: (person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`),
+      // Someone you let in shows in People at once, even while you are reading it (listHold.ts).
+      admit: (person) => {
+        noteOwnChange(person.id);
+        void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`);
+      },
       deny: (person) => void run({ action: "deny", identity: person.id }, null, `Couldn't deny ${waiter(person)}`),
       // The list emptying is the confirmation.
-      admitAll: (list) => void answerAll("admit", list.map((person) => person.id)),
+      admitAll: (list) => {
+        noteOwnChange(...list.map((person) => person.id));
+        void answerAll("admit", list.map((person) => person.id));
+      },
       denyAll: (list) => void answerAll("deny", list.map((person) => person.id)),
       reactionsAllowed,
       // The switch moving is the confirmation.

@@ -32,3 +32,9 @@ test("a held list shows each person as they are now, in the place they had", () 
 test("nothing held, nothing current", () => {
   assert.deepEqual(holdList([], [], key), { shown: [], added: 0 });
 });
+
+test("someone you changed yourself shows at once in a held list; everyone else still waits", () => {
+  const { shown, added } = holdList([p("a"), p("b")], [p("a"), p("mine"), p("b"), p("theirs")], key, new Set(["mine"]));
+  assert.deepEqual(shown.map(key), ["a", "b", "mine"]);
+  assert.equal(added, 1, "only someone else's arrival is behind the pill");
+});

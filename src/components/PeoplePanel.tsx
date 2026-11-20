@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { handQueue } from "@/lib/handQueue";
-import { holdList, useFlip, useListHold } from "@/lib/listHold";
+import { holdList, useFlip, useListHold, useOwnChanges } from "@/lib/listHold";
 import { BULK_CONFIRM, FIRST_ROWS, matchesName, oldestFirst, ordinal, people, waitingFor, type Departure } from "@/lib/hostLists";
 import { useParticipantState } from "@/lib/rtc/react";
 import { displayName, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
@@ -116,10 +116,13 @@ function MainView({
   const [snapshot, setSnapshot] = useState<{ hands: RtcParticipant[]; participants: RtcParticipant[] } | null>(null);
   if (hold.held && !snapshot) setSnapshot({ hands, participants });
   if (!hold.held && snapshot) setSnapshot(null);
-  const heldHands = useMemo(() => (snapshot ? holdList(snapshot.hands, hands, identityOf) : { shown: hands, added: 0 }), [snapshot, hands]);
+  // What you did yourself shows at once (see `noteOwnChange`). A webinar's Speakers are never
+  // held: a short list that changes only by the host's and co-hosts' own decisions.
+  const yours = useOwnChanges();
+  const heldHands = useMemo(() => (snapshot ? holdList(snapshot.hands, hands, identityOf, yours) : { shown: hands, added: 0 }), [snapshot, hands, yours]);
   const heldPeople = useMemo(
-    () => (snapshot ? holdList(snapshot.participants, participants, identityOf) : { shown: participants, added: 0 }),
-    [snapshot, participants],
+    () => (snapshot && noun !== "webinar" ? holdList(snapshot.participants, participants, identityOf, yours) : { shown: participants, added: 0 }),
+    [snapshot, participants, yours, noun],
   );
   const showNew = () => {
     boxRef.current?.scrollTo({ top: 0 });

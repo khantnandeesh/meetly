@@ -270,7 +270,16 @@ module.exports = async function webinar(browser) {
   H.ok("phone: ● Live · On stage sits in the top bar", await H.until(async () => (await wes.page.locator("header").getByRole("button", { name: "Live, on stage. Stage options" }).count()) === 1, 6000));
   await H.until(async () => (await tilesOf(host)).includes(`${wesId}:camera`), 10000);
   await H.shot(wes, "webinar-on-stage-phone");
-  await H.people(host).getByRole("list", { name: "Participants" }).getByRole("button", { name: "Host controls for Wes Watcher" }).click();
+  // The host's pointer has rested on the People list since pressing Invite, which holds the list
+  // still (listHold.ts). The stage is the host's own doing: Speakers shows it at once, and its
+  // count always matches its rows.
+  const speakers = H.people(host).getByRole("list", { name: "Participants" });
+  H.ok("while the list is held, the host's pointer on it", await H.people(host).locator(".scroll-quiet").first().evaluate((el) => el.matches(":hover")));
+  H.ok("…Wes is under Speakers at once", await H.until(async () => (await speakers.getByRole("button", { name: "Host controls for Wes Watcher" }).count()) === 1, 4000));
+  const counted = await speakers.evaluate((el) => ({ header: Number(el.querySelector("h3 span")?.textContent), rows: el.querySelectorAll('[role="listitem"]').length }));
+  H.ok("…and the Speakers count equals its rows", counted.header === 2 && counted.rows === 2, JSON.stringify(counted));
+  H.ok("…with no pill for the host's own change", (await H.people(host).locator("[data-new-pill]").count()) === 0);
+  await speakers.getByRole("button", { name: "Host controls for Wes Watcher" }).click();
   await host.page.getByRole("menuitem", { name: "Back to audience" }).click();
   H.ok("Back to audience (host) returns the speaker to the audience", await H.until(async () => (await watchingScreen(wes).count()) === 1, 10000));
   H.ok("…and removes their right to publish", await H.until(async () => (await canPublish(wes)) === false, 6000));
