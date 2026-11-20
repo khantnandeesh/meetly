@@ -24,7 +24,7 @@ export function parseHostAction(body: Record<string, unknown>): HostAction | nul
     return identity ? { action: action as (typeof ON_ONE)[number], identity } : null;
   }
   if ((ON_ALL as readonly unknown[]).includes(action)) return { action: action as (typeof ON_ALL)[number] };
-  if (action === "coHost") {
+  if (action === "coHost" || action === "stage") {
     return identity && typeof body.on === "boolean" ? { action, identity, on: body.on } : null;
   }
   if (action === "pin") {

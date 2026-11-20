@@ -1,5 +1,5 @@
 import { RTC_PROVIDER } from "./config";
-import type { JoinGrant, MeetingPeek, RtcProviderModule } from "./types";
+import type { CallMode, JoinGrant, MeetingPeek, RtcProviderModule } from "./types";
 
 export { RTC_PROVIDER };
 
@@ -46,6 +46,21 @@ async function meeting<T>(body: object): Promise<T | null> {
  */
 export async function createMeeting(): Promise<string | null> {
   return (await meeting<{ code: string }>({ action: "create" }))?.code ?? null;
+}
+
+/**
+ * Starts a new webinar with this browser as its host. Unlike a meeting, a made-up code will not
+ * do (it would be a meeting), so this throws with a message fit to show if it could not be made.
+ */
+export async function createWebinar(): Promise<string> {
+  const response = await fetch("/api/meeting", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action: "create", mode: "webinar" satisfies CallMode }),
+  }).catch(() => null);
+  const data = response ? ((await response.json().catch(() => null)) as { code?: unknown; error?: unknown } | null) : null;
+  if (response?.ok && typeof data?.code === "string") return data.code;
+  throw new Error(typeof data?.error === "string" ? data.error : "Couldn't reach Meetly. Check your connection and try again.");
 }
 
 /** What can be known about a meeting before joining it (see `MeetingPeek`). Null if the server could not be asked. */

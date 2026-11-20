@@ -44,6 +44,8 @@ export type MeetingPeek = {
   host: boolean;
   /** How many people are in it right now, or null where the provider cannot say cheaply. */
   count: number | null;
+  /** A meeting or a webinar, as its record says. Absent means "meeting". */
+  mode?: CallMode;
 };
 
 /**

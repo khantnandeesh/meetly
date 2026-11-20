@@ -239,14 +239,12 @@ test("livekit: Admit all and Deny all are one request per person; a failure is c
   }
 });
 
-test("livekit: the reactions switch and the stage are refused as not available yet, without asking our server", async () => {
+test("livekit: the reactions switch is refused as not available yet, and a meeting has no stage, without asking our server", async () => {
   const { call, posted, restore } = livekit();
   try {
-    const refused: HostAction[] = [
-      { action: "reactions", allowed: false },
-      { action: "stage", identity: "m-grace", on: true },
-    ];
-    for (const action of refused) await assert.rejects((call as RtcCall).moderate(action), /isn't available yet/);
+    const reactions: HostAction = { action: "reactions", allowed: false };
+    await assert.rejects((call as RtcCall).moderate(reactions), /isn't available yet/);
+    await assert.rejects(call.moderate({ action: "stage", identity: "m-grace", on: true }), { message: "Only a webinar has a stage." });
     assert.equal(posted.length, 0);
   } finally {
     restore();

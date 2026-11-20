@@ -45,6 +45,8 @@ import {
   type SignedChat,
   notice,
 } from "./shared";
+import { liveKitRole, liveKitStageAction, liveKitStageInvite, stopPublishingIfViewer } from "./stage.livekit";
+import { STAGE_ATTRIBUTE } from "./stage";
 import {
   SAVER_FPS,
   SAVER_HEIGHT,
@@ -93,6 +95,8 @@ const PARTICIPANT_EVENTS = [
   ParticipantEvent.AttributesChanged,
   ParticipantEvent.ParticipantNameChanged,
   ParticipantEvent.ConnectionQualityChanged,
+  // Webinars: being invited on stage arrives as a change of what you may publish.
+  ParticipantEvent.ParticipantPermissionsChanged,
 ] as const;
 
 /** Everything that can change which track a publication is showing. */
@@ -113,6 +117,7 @@ class LiveKitParticipant implements RtcLocalParticipant {
     private readonly source: Participant,
     /** The call's `hostIdentity`, read live. */
     private readonly hostOf: () => string | null,
+    private readonly mode: CallMode,
   ) {}
   get identity() {
     return this.source.identity;
@@ -140,13 +145,12 @@ class LiveKitParticipant implements RtcLocalParticipant {
     const quality = this.source.connectionQuality;
     return quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost;
   }
-  /** There are no viewers yet: everyone but the host is a speaker. */
+  /** In a meeting everyone but the host is a speaker; in a webinar, see src/lib/rtc/stage.livekit.ts. */
   get role(): ParticipantRole {
-    return this.source.identity && this.source.identity === this.hostOf() ? "host" : "speaker";
+    return liveKitRole(this.source, this.mode, this.hostOf());
   }
-  /** Nobody can be invited on stage yet. */
   get stageInvite() {
-    return false;
+    return liveKitStageInvite(this.source, this.mode);
   }
   subscribe = (listener: () => void) => {
     PARTICIPANT_EVENTS.forEach((event) => this.source.on(event, listener));
@@ -502,7 +506,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
 
   private wrap(participant: Participant): LiveKitParticipant {
     let wrapped = this.people.get(participant);
-    if (!wrapped) this.people.set(participant, (wrapped = new LiveKitParticipant(participant, () => this.meta.host)));
+    if (!wrapped) this.people.set(participant, (wrapped = new LiveKitParticipant(participant, () => this.meta.host, this.mode)));
     return wrapped;
   }
 
@@ -549,7 +553,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   }
 
   async moderate(action: HostAction): Promise<void> {
-    if (action.action === "reactions" || action.action === "stage") throw notAvailableYet(action.action);
+    if (action.action === "reactions") throw notAvailableYet(action.action);
+    if (action.action === "stage") return liveKitStageAction(this.native, this.mode, this.token, action);
     if (action.action === "admitAll" || action.action === "denyAll") {
       const verb = action.action === "admitAll" ? "admit" : "deny";
       return answerEach(action.identities, verb, (identity) => this.moderate({ action: verb, identity }));
@@ -1414,6 +1419,13 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       this.tileList = null;
       this.emit("tiles");
     };
+    // Webinars: someone was invited on stage, said yes, or went back to the audience.
+    const stageChanged = () => {
+      if (this.mode !== "webinar") return;
+      rosterChanged();
+      tilesChanged();
+      this.emit("stage");
+    };
     const mediaChanged = () => {
       const next = this.readMedia();
       const last = this.media;
@@ -1500,6 +1512,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       .on(RoomEvent.ParticipantAttributesChanged, (changed, participant) => {
         rosterChanged();
         if (changed[HAND] === "1") this.emit("handRaised", this.wrap(participant));
+        if (STAGE_ATTRIBUTE in changed) stageChanged();
+      })
+      .on(RoomEvent.ParticipantPermissionsChanged, (_before, participant) => {
+        stageChanged();
+        if (participant.isLocal) stopPublishingIfViewer(room, this.mode);
       })
       .on(RoomEvent.TrackPublished, (publication) => {
         tilesChanged();

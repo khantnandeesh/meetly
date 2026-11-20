@@ -2,6 +2,7 @@ import { liveKitHostAction, lobbyWatchToken, verifyCaller } from "@/lib/host.ser
 import { RTC_PROVIDER } from "@/lib/rtc/config";
 import { DENIED, parseHostAction } from "@/lib/rtc/hostAction";
 import { realtimeKitHostAction } from "@/lib/rtc/server/realtimekit";
+import { liveKitStage } from "@/lib/webinar.server";
 
 /**
  * Moderation by the host and co-hosts (see `HostAction` in src/lib/rtc/types.ts for the list).
@@ -45,7 +46,8 @@ export async function POST(request: Request) {
   const wanted = parseHostAction(body);
   if (!wanted) return Response.json({ error: "Invalid request." }, { status: 400 });
   const caller = await verifyCaller(body.token);
-  const result = caller ? await liveKitHostAction(caller, wanted, body.message) : DENIED;
+  // The stage has rules of its own (anyone may step down), so it is decided apart from moderation.
+  const result = !caller ? DENIED : wanted.action === "stage" ? await liveKitStage(caller, wanted) : await liveKitHostAction(caller, wanted, body.message);
   return result.status === 200
     ? Response.json({ ok: true })
     : Response.json({ error: result.error }, { status: result.status });

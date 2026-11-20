@@ -13,7 +13,7 @@ import {
 } from "./rtc/hostAction";
 import { closeStoredPoll } from "./pollStore";
 import { ADMIT_TOPIC, readStoredPolls, type StoredPoll } from "./rtc/shared";
-import type { HostAction, JoinAccess, MeetingPeek } from "./rtc/types";
+import type { CallMode, HostAction, JoinAccess, MeetingPeek } from "./rtc/types";
 
 /**
  * The meeting's record and its rules on LiveKit, enforced here on the server.
@@ -58,6 +58,8 @@ export type RoomMeta = {
   pin?: { id: string; identity: string; name: string; ts: number; text: string };
   /** Polls and their votes (see ./polls.server.ts). */
   polls?: StoredPoll[];
+  /** Set when "New webinar" made the record. It never changes for the life of the record (see ./webinar.server.ts). */
+  mode?: "webinar";
 };
 
 /** A host token minted for a room without a host key gets this long to connect. */
@@ -113,6 +115,7 @@ export function parseRoomMeta(metadata: string | undefined): RoomMeta {
           }
         : {}),
       ...(Array.isArray(value.polls) && value.polls.length > 0 ? { polls: readStoredPolls(value.polls) } : {}),
+      ...(value.mode === "webinar" ? { mode: "webinar" as const } : {}),
     };
   } catch {
     return {};
@@ -162,7 +165,7 @@ export function updateMeta(service: RoomServiceClient, room: string, change: (me
  * asked. Null if the code is already in use or LiveKit could not be reached: the meeting still
  * works, by the first-person-in rule.
  */
-export async function createMeetingRecord(room: string): Promise<string | null> {
+export async function createMeetingRecord(room: string, mode: CallMode = "meeting"): Promise<string | null> {
   const service = roomService();
   if (!service) return null;
   try {
@@ -170,7 +173,7 @@ export async function createMeetingRecord(room: string): Promise<string | null> 
       const [existing] = await service.listRooms([room]);
       if (existing) return null;
       const kid = randomUUID();
-      await createRoom(service, room, { kid, access: "open" });
+      await createRoom(service, room, { kid, access: "open", ...(mode === "webinar" ? { mode } : {}) });
       return kid;
     });
   } catch (error) {
@@ -186,6 +189,8 @@ export type JoinDecision = {
   access: JoinAccess;
   /** The browser is not let in at all. */
   refused?: "removed" | "locked";
+  /** The record says this is a webinar. */
+  mode?: "webinar";
 };
 
 /**
@@ -206,12 +211,13 @@ export async function decideJoin(room: string, identity: string, pass: Pass): Pr
       }
       const meta = parseRoomMeta(existing.metadata);
       const access = meta.access ?? "open";
+      const mode = meta.mode ? { mode: meta.mode } : {};
       const claim = (kid: string): Promise<unknown> =>
         service.updateRoomMetadata(room, JSON.stringify({ ...meta, host: identity, claimedAt: now, kid } satisfies RoomMeta));
       if (meta.kid) {
         if (pass.key === meta.kid) {
           await claim(meta.kid);
-          return { role: "host", access };
+          return { role: "host", access, ...mode };
         }
       } else if (now - (meta.claimedAt ?? 0) >= CLAIM_WINDOW_MS) {
         // A room from before host keys, or one something else created. Hand it to the first
@@ -225,7 +231,7 @@ export async function decideJoin(room: string, identity: string, pass: Pass): Pr
       }
       if (meta.banned?.some((id) => pass.ids.includes(id))) return { role: "guest", access, refused: "removed" };
       if (access === "locked") return { role: "guest", access, refused: "locked" };
-      return { role: "guest", access };
+      return { role: "guest", access, ...mode };
     });
   } catch (error) {
     console.error("Could not read the meeting record", error);
@@ -243,7 +249,12 @@ export async function peekMeeting(room: string, pass: Pass): Promise<MeetingPeek
     const meta = parseRoomMeta(existing.metadata);
     // The count comes with the room at no extra cost. It is LiveKit's own, and can trail a join
     // or a leave by a moment. People waiting in the lobby are in another room and not counted.
-    return { access: meta.access ?? "open", host: !!meta.kid && pass.key === meta.kid, count: existing.numParticipants };
+    return {
+      access: meta.access ?? "open",
+      host: !!meta.kid && pass.key === meta.kid,
+      count: existing.numParticipants,
+      ...(meta.mode ? { mode: meta.mode } : {}),
+    };
   } catch {
     return { access: "open", host: false, count: null };
   }
@@ -342,7 +353,8 @@ export async function verifyCaller(token: string): Promise<Caller | null> {
  */
 export const lobbyOf = (room: string) => `${room}.lobby`;
 
-export type JoinTokenKind = "member" | "asking" | "lobby-watch";
+/** "viewer": a webinar's audience, in the meeting's room but unable to publish (see ./webinar.server.ts). */
+export type JoinTokenKind = "member" | "viewer" | "asking" | "lobby-watch";
 
 /** Signs a LiveKit token. `room` is always the meeting's code; the kind decides which room it opens. */
 export async function mintJoinToken(room: string, identity: string, name: string, kind: JoinTokenKind): Promise<string> {
@@ -353,11 +365,11 @@ export async function mintJoinToken(room: string, identity: string, name: string
     // also about how long a token outlives its owner being removed.
     ttl: "10m",
   });
-  if (kind === "member") {
+  if (kind === "member" || kind === "viewer") {
     token.addGrant({
       room,
       roomJoin: true,
-      canPublish: true,
+      canPublish: kind === "member",
       canSubscribe: true,
       canPublishData: true,
       canUpdateOwnMetadata: true, // lets a participant raise/lower their own hand
@@ -433,7 +445,7 @@ export async function liveKitHostAction(
         case "admit": {
           // Throws, and so answers "may have left", unless they are in the lobby right now.
           const person = await service.getParticipant(lobbyOf(room), identity);
-          const token = await mintJoinToken(room, identity, person.name, "member");
+          const token = await mintJoinToken(room, identity, person.name, meta.mode === "webinar" ? "viewer" : "member");
           await service.sendData(lobbyOf(room), new TextEncoder().encode(JSON.stringify({ token })), DataPacket_Kind.RELIABLE, {
             destinationIdentities: [identity],
             topic: ADMIT_TOPIC,
