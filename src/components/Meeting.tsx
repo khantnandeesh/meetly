@@ -250,11 +250,14 @@ function LeftScreen({
         </div>
         <p className="text-sm text-faint">{byYou ? "Everyone was disconnected. The link still works." : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
-        {!turnedAway && <CallRating minutes={minutes} people={people} />}
+        {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>
     </div>
   );
 }
+
+/** Off until answers have somewhere to go: asking and then discarding the answer would mislead. */
+const RATING_ENABLED = process.env.NEXT_PUBLIC_CALL_RATING === "1";
 
 /**
  * "How was the call?", answered with one tap. The answer goes to `sendUsageEvent`, which today

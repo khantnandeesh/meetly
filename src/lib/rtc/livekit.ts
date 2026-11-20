@@ -261,6 +261,9 @@ type ChatEntry = { message: RtcChatMessage; signed?: SignedChat };
 const HISTORY_WAIT_MS = 2500;
 /** How many participants are asked, one after another, before giving up on history. */
 const HISTORY_ASKS = 3;
+/** How long to wait for the first part of an answer before asking again, and how many times everyone is asked. */
+const HISTORY_FIRST_WAIT_MS = 1200;
+const HISTORY_ROUNDS = 3;
 /** Most bytes of JSON put in one data packet when answering. LiveKit carries about 15 kB reliably. */
 const HISTORY_CHUNK_BYTES = 12_000;
 
@@ -1031,19 +1034,27 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     const peers = Array.from(this.native.remoteParticipants.values())
       .sort((a, b) => (a.joinedAt?.getTime() ?? 0) - (b.joinedAt?.getTime() ?? 0))
       .slice(0, HISTORY_ASKS);
-    for (const peer of peers) {
-      if (attempt !== this.historyAttempt || this.native.state !== ConnectionState.Connected) return null;
-      const answer = await this.askPeer(peer);
-      if (answer) return answer;
+    // A request sent in the first moments of a call can reach someone whose client has not yet
+    // been told we exist, and is then dropped. So each person is asked again, under the same
+    // nonce: a slow answer to the first request still counts.
+    const nonces = new Map<string, string>();
+    for (let round = 0; round < HISTORY_ROUNDS; round++) {
+      for (const peer of peers) {
+        if (attempt !== this.historyAttempt || this.native.state !== ConnectionState.Connected) return null;
+        if (!this.native.remoteParticipants.has(peer.identity)) continue;
+        let nonce = nonces.get(peer.identity);
+        if (!nonce) nonces.set(peer.identity, (nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`));
+        const answer = await this.askPeer(peer, nonce);
+        if (answer) return answer;
+      }
     }
     return null;
   }
 
-  private askPeer(peer: RemoteParticipant): Promise<SignedChat[] | null> {
-    const nonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  private askPeer(peer: RemoteParticipant, nonce: string): Promise<SignedChat[] | null> {
     return new Promise((resolve) => {
       const got: SignedChat[] = [];
-      let timer = setTimeout(() => done(false), HISTORY_WAIT_MS);
+      let timer = setTimeout(() => done(false), HISTORY_FIRST_WAIT_MS);
       const done = (complete: boolean) => {
         clearTimeout(timer);
         if (this.historyWaiter?.nonce === nonce) this.historyWaiter = null;
