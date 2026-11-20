@@ -10,8 +10,6 @@ import {
   UserMinus,
   UserPlus,
   Users,
-  Volume2,
-  WifiOff,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +19,7 @@ import { miniTile } from "@/lib/miniTile";
 import { handQueue } from "@/lib/handQueue";
 import { crowdSentence } from "@/lib/notices";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
+import { useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
@@ -29,7 +27,7 @@ import { useCallSettings } from "@/lib/useCallSettings";
 import { useMiniWindow } from "@/lib/usePip";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
-import { CallQualityDialog, DataSaverBadge, WeakConnectionNotice } from "./CallQuality";
+import { CallQualityDialog, DataSaverBadge } from "./CallQuality";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
@@ -40,6 +38,7 @@ import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { StatusLane } from "./StatusLane";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -401,13 +400,8 @@ function Call({ code }: { code: string }) {
           ? 7.25
           : 0;
   const panelInset = (shown ? 23.25 : 0) + (beside ? 14.75 : 0);
-  // How many notifications the screen can take (src/lib/notices.ts): two, or on a phone with a
-  // sheet open one line over the top bar, and then only what concerns you.
+  // How many notifications fit is the status lane's to say (see StatusLane.tsx).
   const sheetOpen = phone && panel !== null;
-  useEffect(() => {
-    toast.setSurface(sheetOpen ? { max: 1, info: false, compact: true } : { max: 2, info: true });
-  }, [sheetOpen, toast]);
-  useEffect(() => () => toast.setSurface({ max: 2, info: true }), [toast]);
   useEffect(() => {
     // Set on the notification region itself, not on the page root: a custom property changed on
     // the root makes the browser re-resolve the style of every element in the document, and
@@ -500,7 +494,6 @@ function Call({ code }: { code: string }) {
 
   /* ------------------------------------------------------------------ render */
   const connecting = connection === "connecting";
-  const reconnecting = connection === "reconnecting";
   const alone = participants.length === 1 && !connecting;
   const leaving = panel === null && shown !== null;
   const panelTitle = shown === "chat" ? "Chat" : "People";
@@ -591,11 +584,7 @@ function Call({ code }: { code: string }) {
 
           <Connecting show={connecting} />
 
-          <div className="pointer-events-none absolute inset-x-0 top-3 z-40 flex flex-col items-center gap-2">
-            <Reconnecting show={reconnecting} />
-            <WeakConnectionNotice />
-            <AudioUnlock />
-          </div>
+          <StatusLane sheetOpen={sheetOpen} />
         </main>
 
         {shown && (
@@ -877,22 +866,6 @@ function Connecting({ show }: { show: boolean }) {
   );
 }
 
-function Reconnecting({ show }: { show: boolean }) {
-  const presence = usePresence(show);
-  if (!presence.mounted) return null;
-  return (
-    <p
-      role={show ? "status" : undefined}
-      data-leaving={presence.leaving}
-      onAnimationEnd={presence.onAnimationEnd}
-      className="anim-pop chip h-9 gap-2 px-3.5 text-warn shadow-lg"
-    >
-      <WifiOff className="size-4" aria-hidden="true" />
-      Connection lost. Reconnecting…
-    </p>
-  );
-}
-
 function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCopy: () => Promise<boolean> }) {
   const [dismissed, setDismissed] = useState(false);
   // Somebody asking to join is the answer to this card: it steps aside for their notification
@@ -929,18 +902,5 @@ function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCop
         </span>
       </button>
     </div>
-  );
-}
-
-/** Browsers may block audio until the page is interacted with; offer a one-tap fix. */
-function AudioUnlock() {
-  const call = useCall();
-  const blocked = useAudioBlocked();
-  if (!blocked) return null;
-  return (
-    <button onClick={() => call.startAudio().catch(() => {})} className="btn btn-primary anim-pop pointer-events-auto h-11 rounded-xl shadow-lg">
-      <Volume2 className="size-[1.125rem]" aria-hidden="true" />
-      Turn on sound
-    </button>
   );
 }
