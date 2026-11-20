@@ -260,7 +260,7 @@ function LeftScreen({
           {!homeFirst && home}
           {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
               who sends it. It keeps this link, so the host stays the host. */}
-          {host && (
+          {host && !closed && (
             <button className="btn btn-quiet" onClick={() => setPlanning(true)}>
               <CalendarPlus className="size-[1.125rem]" aria-hidden="true" />
               Schedule a follow-up

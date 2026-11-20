@@ -41,6 +41,7 @@ module.exports = async function costGuardSuite(browser) {
   const host = await H.client(browser, { viewport: { width: 1440, height: 900 }, scale: 2 });
   const phone = await H.client(browser, { viewport: H.PHONE, scale: 2, touch: true });
 
+  await host.page.goto(`${H.BASE}/`);
   const offered = await host.page.evaluate(async () => (await (await fetch("/api/meeting", { method: "POST", body: JSON.stringify({ action: "webinars" }) })).json()).enabled);
   H.ok("with the switch unset, webinars are offered", offered === true);
 
@@ -65,6 +66,7 @@ module.exports = async function costGuardSuite(browser) {
   H.ok("the leave screen says the free time limit ended it", /This webinar reached its free time limit/.test(text));
   H.ok("and does not say the host ended it or removed anyone", !/host ended|host removed/i.test(text), text.replace(/\s+/g, " "));
   H.ok("there is nothing to rejoin: no Rejoin button", (await host.page.getByRole("button", { name: /Rejoin|Start again/ }).count()) === 0);
+  H.ok("nor a follow-up on a link that no longer lets anyone in", (await host.page.getByRole("button", { name: "Schedule a follow-up" }).count()) === 0);
   H.ok("Back to home is the way out", (await host.page.getByRole("link", { name: "Back to home" }).getAttribute("class")).includes("btn-primary"));
   await H.shot(host, "cost-guard-limit-desktop");
 
