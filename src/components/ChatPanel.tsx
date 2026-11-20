@@ -138,7 +138,7 @@ function MessageRow({ message, own, entering, actions }: { message: RtcChatMessa
       </p>
       <Dropdown.Root open={open} onOpenChange={setOpen}>
         <Dropdown.Trigger
-          aria-label="Message options"
+          aria-label="More actions"
           className="icon-btn size-8 shrink-0 rounded-lg opacity-0 transition-opacity group-hover/msg:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:pointer-events-none"
         >
           <Ellipsis className="size-4" aria-hidden="true" />

@@ -162,6 +162,21 @@ const randomCode = () => {
   await host(ada, hostSession, { action: "coHost", participantId: benIdentity, on: false });
   ok("a demoted co-host is a guest again", (await host(ben, guestSession, { action: "muteAll" })).status === 403 && (await host(ben, guestSession, { action: "roles" })).body.coHosts.length === 0);
 
+  /* ---- pinned chat message: a host action like the others, kept in the record ---- */
+  const pinId = "0f8b2c1e-6a7d-4e55-9c3a-2b1d4e5f6a70"; // shaped like a RealtimeKit message id; no such message exists
+  ok("a guest may not pin", (await host(ben, guestSession, { action: "pin", messageId: pinId })).status === 403);
+  ok("nothing is pinned to begin with", (await host(ben, guestSession, { action: "roles" })).body.pin === null);
+  ok("the host may", (await host(ada, hostSession, { action: "pin", messageId: pinId })).status === 200);
+  ok("everyone who asks is told which message is pinned", (await host(ben, guestSession, { action: "roles" })).body.pin === pinId);
+  ok("a late joiner is told at the door", (await join(browser(), code, "Later")).body.pin === pinId);
+  const secondPin = "msg_second-one.2";
+  ok("pinning another replaces it", (await host(ada, hostSession, { action: "pin", messageId: secondPin })).status === 200 && (await host(ben, guestSession, { action: "roles" })).body.pin === secondPin);
+  ok("a malformed message id is a bad request", (await host(ada, hostSession, { action: "pin", messageId: "not an id!" })).status === 400);
+  await host(ada, hostSession, { action: "coHost", participantId: benIdentity, on: true });
+  ok("a co-host may unpin", (await host(ben, guestSession, { action: "pin", messageId: null })).status === 200 && (await host(ben, guestSession, { action: "roles" })).body.pin === null);
+  await host(ada, hostSession, { action: "coHost", participantId: benIdentity, on: false });
+  ok("RealtimeKit builds have no chat route of ours: chat is Cloudflare's", (await ben.post("/api/chat", { action: "send", text: "x" })).status === 404);
+
   /* ---- lock ---- */
   ok("ask-to-join is refused where the app has no preset for it", (await host(ada, hostSession, { action: "access", access: "ask" })).status === (process.env.EXPECT_ASK ? 200 : 400));
   if (process.env.EXPECT_ASK) await host(ada, hostSession, { action: "access", access: "open" });

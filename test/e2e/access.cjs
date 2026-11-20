@@ -92,11 +92,19 @@ module.exports = async function access(browser) {
   await ada.page.getByText("2 people want to join").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("two people waiting share one notification", (await ada.page.locator("[data-toast]").filter({ hasText: "want" }).count()) === 1 && (await ada.page.getByText("2 people want to join").count()) === 1);
   await H.shot(ada, "knock-two-desktop");
+  // Nothing of the conversation reaches someone who is only asking.
+  const whileWaiting = await dee.page.evaluate(() => window.__meetly.call.chatMessages().length);
   await H.people(ada).getByRole("button", { name: "Admit Dee Knocker" }).click();
   await H.inCall(dee).catch(() => {});
   H.ok("admit: the person is in the call", (await H.isInCall(dee)) && (await H.until(async () => (await headcount(ada)) === 3, 8000)));
   H.ok("admit: they see and hear the others", await H.until(() => dee.page.evaluate(() => Array.from(document.querySelectorAll("[data-tile] video")).filter((v) => v.videoWidth > 0 && !v.paused).length >= 3 && document.querySelectorAll("audio").length >= 2), 15000));
-  H.ok("admit: earlier chat was never sent to them", (await dee.page.evaluate(() => window.__meetly.call.chatMessages().length)) === 0);
+  // Since chat history for late joiners: once let in they are given the conversation so far, as history.
+  await H.sleep(2500);
+  H.ok(
+    "admit: no chat reached them while they waited; once in, what came before is history",
+    whileWaiting === 0 && (await dee.page.evaluate(() => window.__meetly.call.chatMessages().every((message) => message.earlier === true))),
+    JSON.stringify(await dee.page.evaluate(() => window.__meetly.call.chatMessages().map((message) => [message.message, !!message.earlier]))),
+  );
   H.ok("the other person is still waiting", await H.until(async () => (await eli.page.getByText("Asking to join…").count()) === 1 && (await ada.page.getByText("Eli Second wants to join").count()) === 1, 6000));
   // Cancelling takes them off the host's list.
   await eli.page.getByRole("button", { name: "Cancel" }).click();

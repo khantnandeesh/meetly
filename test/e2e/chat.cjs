@@ -24,7 +24,7 @@ const pinnedBar = (person) => panel(person).locator("[data-pinned-message]");
 async function menuOf(person, text) {
   const row = bubble(person, text).locator("xpath=..");
   await row.hover();
-  await row.getByRole("button", { name: "Message options" }).click();
+  await row.getByRole("button", { name: "More actions" }).click();
   await person.page.getByRole("menu").waitFor();
   return (await person.page.getByRole("menuitem").allInnerTexts()).map((item) => item.trim());
 }

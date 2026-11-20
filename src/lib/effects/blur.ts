@@ -125,6 +125,7 @@ export class BlurRenderer {
   private readonly mask = makeCanvas(MODEL_W, MODEL_H);
   private readonly person = makeCanvas(2, 2);
   private readonly backdrop = makeCanvas(2, 2);
+  private readonly cutout = makeCanvas(2, 2);
   private readonly pixels = new Float32Array(MODEL_W * MODEL_H * 3);
   private readonly scores = new Float32Array(MODEL_W * MODEL_H);
   private readonly maskImage = new ImageData(MODEL_W, MODEL_H);
@@ -164,6 +165,21 @@ export class BlurRenderer {
     }
     if (this.filters) backdrop.context.filter = `blur(${radius}px)`;
     backdrop.context.drawImage(source, 0, 0, bw, bh);
+    if (this.filters) {
+      // Blurring the whole frame smears the person into what is behind them: a dark halo. So the
+      // frame is blurred once more with the person cut out, and laid on top: next to them, the
+      // colour then comes from the background alone.
+      const cutout = this.cutout;
+      if (cutout.canvas.width !== bw || cutout.canvas.height !== bh) {
+        cutout.canvas.width = bw;
+        cutout.canvas.height = bh;
+      }
+      cutout.context.globalCompositeOperation = "copy";
+      cutout.context.drawImage(source, 0, 0, bw, bh);
+      cutout.context.globalCompositeOperation = "destination-out";
+      cutout.context.drawImage(this.mask.canvas, 0, 0, bw, bh);
+      for (let pass = 0; pass < 3; pass++) backdrop.context.drawImage(cutout.canvas, 0, 0);
+    }
 
     const person = this.person;
     if (person.canvas.width !== width || person.canvas.height !== height) {
