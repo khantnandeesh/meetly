@@ -3,6 +3,7 @@ import type { AudioMiddleware, RTKParticipant, VideoMiddleware } from "@cloudfla
 import { BlurRenderer, blurUnavailable, watchFrameRate, type BlurStrength } from "../effects/blur";
 import { createNoiseNode, noiseFilterSupported } from "../effects/noise";
 import { Notifier, RtcEmitter } from "./emitter";
+import { VoiceMeter } from "./voice";
 import {
   REACTION_MESSAGE,
   SAVER_FPS,
@@ -238,6 +239,9 @@ class Person implements RtcParticipant {
 }
 
 /** Our server mints `customParticipantId`; it is the same for everyone and for the REST API. */
+/** The voice meter's key for your own microphone; peer ids are the keys for everyone else. */
+const SELF_VOICE = "self";
+
 const identityOf = (peer: { customParticipantId?: string; userId: string; id: string }) =>
   peer.customParticipantId || peer.userId || peer.id;
 
@@ -290,6 +294,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private messages: RtcChatMessage[] = [];
   private sending = false;
   private speaker: string | null = null;
+  /**
+   * Who is talking, heard from the tracks themselves. The SDK's own signal names one person,
+   * only when that changes, and never you, so it is the fallback where audio cannot be analysed.
+   */
+  private voice: VoiceMeter | null = null;
   private lastHost: string | null = null;
   /** Remote cameras on screen, once the stage has said. Until then the preset's own size stands. */
   private demand: number | null = null;
@@ -363,8 +372,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
           camOn: !!me?.videoEnabled,
         };
       },
-      // The SDK's active-speaker signal only ever names other people.
-      () => false,
+      () => !!this.meeting?.self.audioEnabled && !!this.voice?.speaking(SELF_VOICE),
     );
   }
 
@@ -506,9 +514,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.joined = true;
     this.waitlisted = false;
     this.broken.clear();
+    if (VoiceMeter.available()) this.voice ??= new VoiceMeter(this.voiceChanged);
     for (const peer of meeting.participants.joined.toArray()) this.addPeer(peer, false);
     const last = meeting.participants.lastActiveSpeaker;
     if (last && this.peers.has(last)) this.speaker = last;
+    this.listenToSelf();
     this.media = this.readMedia();
     this.history = new Set(meeting.chat.messages.map((message) => message.id));
     this.removed.clear();
@@ -563,6 +573,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.audioSink?.remove();
     this.audioSink = null;
     this.speaker = null;
+    this.voice?.stop();
+    this.voice = null;
     // The SDK drops its middlewares with the meeting; the conversation is kept for the goodbye screen.
     this.blurWatch?.stop();
     this.blurWatch = null;
@@ -759,7 +771,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         micOn: !!peer.audioEnabled,
         camOn: !!peer.videoEnabled,
       }),
-      () => this.speaker === peer.id && !!peer.audioEnabled,
+      () => !!peer.audioEnabled && (this.voice ? this.voice.speaking(peer.id) : this.speaker === peer.id),
     );
     person.camera = new RemoteCamera(peer);
     person.screen = new DirectVideo(
@@ -810,6 +822,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       peer.off("mediaScoreUpdate", onScore);
       this.stopSound(peer.id);
       this.stopSound(`screen:${peer.id}`);
+      this.voice?.set(peer.id, undefined);
     };
     this.peers.set(peer.id, { peer, person, stop });
     this.playPeer(peer);
@@ -908,6 +921,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   /** RealtimeKit reports one active speaker at a time, and only when it changes. */
   activeSpeakers(): string[] {
+    if (this.voice) {
+      const me = this.meeting?.self;
+      return this.voice
+        .loudest()
+        .map((key) => (key === SELF_VOICE ? (me?.audioEnabled ? this.self.identity : undefined) : this.peers.get(key)?.person.identity))
+        .filter((identity): identity is string => !!identity);
+    }
     const entry = this.speaker ? this.peers.get(this.speaker) : undefined;
     return entry && entry.peer.audioEnabled ? [entry.person.identity] : [];
   }
@@ -927,9 +947,22 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.emit("audio");
   }
 
+  /** Your own microphone is metered too, so your tile shows when you are heard. */
+  private listenToSelf(): void {
+    const me = this.meeting?.self;
+    this.voice?.set(SELF_VOICE, this.joined && me?.audioEnabled ? me.audioTrack : undefined);
+  }
+
+  private readonly voiceChanged = (key: string): void => {
+    (key === SELF_VOICE ? this.self : this.peers.get(key)?.person)?.changes.notify();
+    this.emit("speakers");
+  };
+
   /** The SDK hands over tracks, not sound: each one needs an element of its own to be heard. */
   private playPeer(peer: RTKParticipant): void {
-    this.playSound(peer.id, peer.audioEnabled ? peer.audioTrack : undefined);
+    const voice = peer.audioEnabled ? peer.audioTrack : undefined;
+    this.playSound(peer.id, voice);
+    this.voice?.set(peer.id, voice);
     this.playSound(`screen:${peer.id}`, peer.screenShareEnabled ? peer.screenShareTracks?.audio : undefined);
   }
 
@@ -1527,6 +1560,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     };
     on(self, "audioUpdate", () => {
       mediaChanged();
+      this.listenToSelf();
       if (!self.audioEnabled) this.forgetScore("audio");
       const now = !!self.audioEnabled;
       if (now === this.micWas) return;
