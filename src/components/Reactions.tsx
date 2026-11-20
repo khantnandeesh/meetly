@@ -172,7 +172,7 @@ export function ReactMenu({
                   event.preventDefault();
                   send(emoji);
                 }}
-                className="menu-item size-11 min-h-0 justify-center p-0 text-2xl leading-none active:scale-(--scale-press)"
+                className="menu-item size-11 min-h-0 justify-center p-0 text-2xl leading-none active:scale-(--scale-press) data-disabled:opacity-40 data-disabled:grayscale"
               >
                 <span aria-hidden="true">{emoji}</span>
               </Dropdown.Item>
