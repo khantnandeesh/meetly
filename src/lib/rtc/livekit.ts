@@ -28,16 +28,29 @@ import {
   CHAT_SYNC_TOPIC,
   CHAT_TOPIC,
   REACTION_MESSAGE,
+  checkNewPoll,
   createReactionLimits,
   createThrottle,
   isReaction,
   isSignedChat,
   postChat,
   postHost,
+  postPoll,
+  readStoredPolls,
+  tally,
+  type StoredPoll,
   type SignedChat,
+} from "./shared";
+import {
+  SAVER_FPS,
+  SAVER_HEIGHT,
+  SAVER_MAX_BITRATE,
+  SAVER_WIDTH,
 } from "./shared";
 import type {
   BackgroundMode,
+  CallQuality,
+  CallStats,
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
@@ -48,9 +61,11 @@ import type {
   LocalEffects,
   LocalMedia,
   LocalSource,
+  NewPoll,
   RtcCall,
   RtcChatMessage,
   RtcParticipant,
+  RtcPoll,
   RtcTile,
   RtcVideoTrack,
   RtcWaiter,
@@ -152,8 +167,8 @@ class LiveKitVideo implements RtcVideoTrack {
 type Pin = { id: string; identity: string; name: string; ts: number; text: string };
 
 /** The part of the meeting's record (room metadata, written by our server only) that clients show. */
-type Meta = { host: string | null; coHosts: string[]; access: JoinAccess; pin: Pin | null };
-const NO_META: Meta = { host: null, coHosts: [], access: "open", pin: null };
+type Meta = { host: string | null; coHosts: string[]; access: JoinAccess; pin: Pin | null; polls: StoredPoll[] };
+const NO_META: Meta = { host: null, coHosts: [], access: "open", pin: null, polls: [] };
 
 function readPin(value: unknown): Pin | null {
   if (typeof value !== "object" || value === null) return null;
@@ -207,15 +222,19 @@ class BlurProcessor implements TrackProcessor<Track.Kind.Video, VideoProcessorOp
   readonly name = "meetly-blur";
   processedTrack?: MediaStreamTrack;
   pipeline: BlurPipeline | null = null;
+  /** The camera as captured, before the blur. */
+  input?: MediaStreamTrack;
   constructor(
     private strength: BlurStrength,
     private readonly onSlow: () => void,
   ) {}
   async init({ track }: VideoProcessorOptions) {
+    this.input = track;
     this.pipeline = await BlurPipeline.create(track, this.strength, this.onSlow);
     this.processedTrack = this.pipeline.output;
   }
   async restart({ track }: VideoProcessorOptions) {
+    this.input = track;
     this.pipeline?.setInput(track);
   }
   async destroy() {
@@ -254,6 +273,7 @@ function readMeta(metadata: string | undefined): Meta {
       coHosts: Array.isArray(value.cohosts) ? value.cohosts.filter((id: unknown): id is string => typeof id === "string") : [],
       access: value.access === "ask" || value.access === "locked" ? value.access : "open",
       pin: readPin(value.pin),
+      polls: readStoredPolls(value.polls),
     };
   } catch {
     return NO_META;
@@ -313,7 +333,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   private watch: Room | null = null;
   private watchAttempt = 0;
   private waiters: RtcWaiter[] = [];
-  readonly supports = { askToJoin: true, stopCamera: true } as const;
+  readonly supports = { askToJoin: true, stopCamera: true, polls: true, createPolls: true } as const;
   private fx: LocalEffects;
   private noise: NoiseProcessor | null = null;
   private blur: BlurProcessor | null = null;
@@ -322,6 +342,18 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   private noiseFailures = 0;
   /** Changes to the effects run one after another, never interleaved. */
   private effectsQueue: Promise<void> = Promise.resolve();
+  private pollList: RtcPoll[] = [];
+  private pollsSeen = "[]";
+  /** Votes this browser has cast, as our server confirmed them: the choice, and what the record files it under. */
+  private readonly myVotes = new Map<string, { option: number; key: string }>();
+  private askedMyVotes = false;
+  private readonly repairing = new Set<string>();
+  private readonly repairs = new Map<string, number>();
+  private health: CallQuality = { connection: "unknown", dataSaver: false };
+  private saver = false;
+  /** What the camera was capturing before "use less data" made it smaller, to put back afterwards. */
+  private readonly fullCapture = new WeakMap<MediaStreamTrack, MediaTrackSettings>();
+  private readonly fullRates = new WeakMap<RTCRtpSender, { maxBitrate?: number; maxFramerate?: number }[]>();
 
   constructor(
     private readonly grant: Extract<JoinGrant, { provider: "livekit" }>,
@@ -502,6 +534,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     if (roles) this.emit("host");
     if (next.access !== last.access) this.emit("access");
     if (next.pin?.id !== last.pin?.id) this.chatChanged();
+    this.readPolls();
+    this.repairVotes();
     this.syncLobbyWatch();
   }
 
@@ -1079,6 +1113,241 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     });
   }
 
+  /* ------------------------------------------------------------------- polls */
+
+  /**
+   * Polls live in the room's metadata, which only our server can write (src/lib/polls.server.ts),
+   * so what is shown here is what the server counted. Starting one and voting are requests to it.
+   */
+  polls(): RtcPoll[] {
+    return this.pollList;
+  }
+
+  private readPolls(): void {
+    const me = this.native.localParticipant.identity;
+    const next = this.meta.polls.map((poll): RtcPoll => {
+      const counts = tally(poll);
+      // A named poll files your vote under your identity; an anonymous one under a key only the
+      // server can work out, which it told us when it counted the vote.
+      const mine = this.myVotes.get(poll.id) ?? (!poll.a && poll.v && me && me in poll.v ? { option: poll.v[me] } : undefined);
+      const voters: string[][] = poll.o.map(() => []);
+      if (!poll.a && poll.v) {
+        for (const [identity, choice] of Object.entries(poll.v)) {
+          const voter = this.participant(identity);
+          if (voter) voters[choice].push(voter.name || "Guest");
+        }
+      }
+      return {
+        id: poll.id,
+        question: poll.q,
+        createdBy: poll.by,
+        anonymous: !!poll.a,
+        open: !poll.c,
+        options: poll.o.map((text, index) => ({ text, votes: counts[index], voters: voters[index] })),
+        total: counts.reduce((sum, count) => sum + count, 0),
+        voted: !!mine,
+        ...(mine ? { myVote: mine.option } : {}),
+      };
+    });
+    const signature = JSON.stringify(next);
+    if (signature !== this.pollsSeen) {
+      this.pollsSeen = signature;
+      this.pollList = next;
+      this.emit("polls");
+    }
+    // After a reload this is a new participant, but the same browser: ask once what it voted for.
+    const votesExist = this.meta.polls.some((poll) => poll.v && Object.keys(poll.v).length > 0);
+    if (votesExist && !this.askedMyVotes && this.native.state === ConnectionState.Connected) {
+      this.askedMyVotes = true;
+      postPoll({ token: this.token, action: "mine" })
+        .then((data) => {
+          const votes = (typeof data.votes === "object" && data.votes !== null ? data.votes : {}) as Record<string, unknown>;
+          for (const [pollId, vote] of Object.entries(votes)) {
+            const { option, key } = (vote ?? {}) as { option?: unknown; key?: unknown };
+            if (typeof option === "number" && typeof key === "string" && !this.myVotes.has(pollId)) this.myVotes.set(pollId, { option, key });
+          }
+          this.readPolls();
+        })
+        .catch(() => {
+          this.askedMyVotes = false;
+        });
+    }
+  }
+
+  /**
+   * The record is read, changed and written back by whichever server instance takes a request,
+   * so two votes at the same instant can lose one. If a vote our server confirmed is not in the
+   * record a moment later, it is sent again: the server takes the same vote twice without
+   * counting it twice.
+   */
+  private repairVotes(): void {
+    const missing = (pollId: string, key: string) => {
+      const poll = this.meta.polls.find((entry) => entry.id === pollId);
+      return !!poll?.v && !(key in poll.v);
+    };
+    for (const [pollId, vote] of this.myVotes) {
+      const tries = this.repairs.get(pollId) ?? 0;
+      if (this.repairing.has(pollId) || tries >= 3 || !missing(pollId, vote.key)) continue;
+      this.repairing.add(pollId);
+      setTimeout(() => {
+        this.repairing.delete(pollId);
+        if (this.native.state !== ConnectionState.Connected || !missing(pollId, vote.key)) return;
+        this.repairs.set(pollId, tries + 1);
+        postPoll({ token: this.token, action: "vote", pollId, option: vote.option }).catch(() => {});
+      }, 2000);
+    }
+  }
+
+  async createPoll(poll: NewPoll): Promise<void> {
+    const checked = checkNewPoll(poll);
+    if (typeof checked === "string") throw new Error(checked);
+    if (this.native.state !== ConnectionState.Connected) throw new Error("Not connected.");
+    await postPoll({ token: this.token, action: "create", ...checked });
+  }
+
+  async votePoll(pollId: string, option: number): Promise<void> {
+    if (this.native.state !== ConnectionState.Connected) throw new Error("Not connected.");
+    const data = await postPoll({ token: this.token, action: "vote", pollId, option });
+    this.myVotes.set(pollId, { option, key: typeof data.key === "string" ? data.key : this.native.localParticipant.identity });
+    this.readPolls();
+    this.repairVotes();
+  }
+
+  /* ------------------------------------------------------ how the call is doing */
+
+  quality(): CallQuality {
+    return this.health;
+  }
+
+  /** LiveKit's server rates each participant's connection from what it sees arrive and what they report. */
+  private readQuality(): void {
+    const rated = this.native.localParticipant.connectionQuality;
+    const connection =
+      this.native.state !== ConnectionState.Connected
+        ? "unknown"
+        : rated === ConnectionQuality.Excellent
+          ? "good"
+          : rated === ConnectionQuality.Good
+            ? "fair"
+            : rated === ConnectionQuality.Poor || rated === ConnectionQuality.Lost
+              ? "poor"
+              : "unknown";
+    if (connection === this.health.connection && this.saver === this.health.dataSaver) return;
+    this.health = { connection, dataSaver: this.saver };
+    this.emit("quality");
+  }
+
+  async setDataSaver(on: boolean): Promise<void> {
+    this.saver = on;
+    this.readQuality();
+    await this.queued(() => this.syncSaver()).catch(() => {});
+  }
+
+  private resyncSaver(): void {
+    if (this.saver) void this.queued(() => this.syncSaver()).catch(() => {});
+  }
+
+  /**
+   * "Use less data", the sending half: the camera is captured small and slow, and every version
+   * of it that goes out is capped. (The receiving half is the interface not showing pictures it
+   * can do without; adaptive stream then stops them being sent to us.) Put back as it was after.
+   */
+  private async syncSaver(): Promise<void> {
+    const track = this.native.localParticipant.getTrackPublication(Track.Source.Camera)?.track;
+    if (!(track instanceof LocalVideoTrack)) return;
+    const raw = this.blur && track.getProcessor() === this.blur && this.blur.input ? this.blur.input : track.mediaStreamTrack;
+    const ideal = (value: number | undefined) => (value ? { ideal: value } : undefined);
+    try {
+      if (this.saver) {
+        if (!this.fullCapture.has(raw)) this.fullCapture.set(raw, raw.getSettings());
+        await raw.applyConstraints({ width: ideal(SAVER_WIDTH), height: ideal(SAVER_HEIGHT), frameRate: ideal(SAVER_FPS) });
+      } else {
+        const full = this.fullCapture.get(raw);
+        this.fullCapture.delete(raw);
+        if (full) await raw.applyConstraints({ width: ideal(full.width), height: ideal(full.height), frameRate: ideal(full.frameRate) });
+      }
+    } catch {
+      // A camera that will not change size is still capped below.
+    }
+    const sender = track.sender;
+    if (!sender) return;
+    try {
+      const parameters = sender.getParameters();
+      const full = this.fullRates.get(sender);
+      if (this.saver) {
+        if (!full) {
+          this.fullRates.set(
+            sender,
+            parameters.encodings.map(({ maxBitrate, maxFramerate }) => ({ maxBitrate, maxFramerate })),
+          );
+        }
+        for (const encoding of parameters.encodings) {
+          encoding.maxBitrate = Math.min(encoding.maxBitrate ?? Infinity, SAVER_MAX_BITRATE);
+          encoding.maxFramerate = Math.min(encoding.maxFramerate ?? Infinity, SAVER_FPS);
+        }
+      } else if (full) {
+        this.fullRates.delete(sender);
+        parameters.encodings.forEach((encoding, index) => {
+          const before = full[index] ?? {};
+          if (before.maxBitrate === undefined) delete encoding.maxBitrate;
+          else encoding.maxBitrate = before.maxBitrate;
+          if (before.maxFramerate === undefined) delete encoding.maxFramerate;
+          else encoding.maxFramerate = before.maxFramerate;
+        });
+      } else {
+        return;
+      }
+      await sender.setParameters(parameters);
+    } catch {
+      // The smaller capture alone still sends less.
+    }
+  }
+
+  async stats(): Promise<CallStats> {
+    let sent = 0;
+    let received = 0;
+    let roundTrip: number | null = null;
+    let lost = 0;
+    let packets = 0;
+    let sentVideo: CallStats["sentVideo"] = null;
+    const note = (stats: { packetsSent?: number; packetsLost?: number; roundTripTime?: number } | undefined) => {
+      if (!stats) return;
+      packets += stats.packetsSent ?? 0;
+      lost += Math.max(0, stats.packetsLost ?? 0);
+      if (typeof stats.roundTripTime === "number") roundTrip = Math.max(roundTrip ?? 0, stats.roundTripTime);
+    };
+    try {
+      for (const publication of this.native.localParticipant.trackPublications.values()) {
+        const track = publication.track;
+        if (!track) continue;
+        sent += track.currentBitrate;
+        if (track instanceof LocalAudioTrack) note(await track.getSenderStats());
+        if (track instanceof LocalVideoTrack) {
+          for (const layer of await track.getSenderStats()) {
+            note(layer);
+            if (publication.source !== Track.Source.Camera || !layer.frameWidth) continue;
+            if (!sentVideo || layer.frameWidth > sentVideo.width) {
+              sentVideo = { width: layer.frameWidth, height: layer.frameHeight, fps: layer.framesPerSecond ?? null };
+            }
+          }
+        }
+      }
+      for (const participant of this.native.remoteParticipants.values()) {
+        for (const publication of participant.trackPublications.values()) received += publication.track?.currentBitrate ?? 0;
+      }
+    } catch {
+      // Whatever was gathered so far is what there is.
+    }
+    const connected = this.native.state === ConnectionState.Connected;
+    return {
+      sentKbps: connected ? Math.round(sent / 1000) : null,
+      receivedKbps: connected ? Math.round(received / 1000) : null,
+      roundTripMs: roundTrip === null ? null : Math.round(roundTrip * 1000),
+      lossPercent: packets > 0 ? Math.round((1000 * lost) / (packets + lost)) / 10 : null,
+      sentVideo,
+    };
+  }
+
   /* ------------------------------------------------------------------ events */
 
   private listen(): void {
@@ -1088,6 +1357,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     const rosterChanged = () => {
       this.roster = null;
       this.emit("roster");
+      // Who voted for what is shown by name, and names come from the roster.
+      if (this.meta.polls.length > 0) this.readPolls();
     };
     const tilesChanged = () => {
       this.tileList = null;
@@ -1118,6 +1389,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         tilesChanged();
         this.emit("host");
         this.readMeta();
+        this.readQuality();
       })
       .on(RoomEvent.Connected, this.sweepUnattached)
       .on(RoomEvent.Connected, () => {
@@ -1190,7 +1462,10 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         // A microphone or camera published now (first time, or again after reconnecting) gets
         // whatever was asked for.
         if (publication.source === Track.Source.Microphone) this.resync("noise");
-        if (publication.source === Track.Source.Camera) this.resync("background");
+        if (publication.source === Track.Source.Camera) {
+          this.resync("background");
+          this.resyncSaver();
+        }
       })
       .on(RoomEvent.TrackUnpublished, (publication) => {
         tilesChanged();
@@ -1223,8 +1498,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       .on(RoomEvent.ActiveDeviceChanged, (kind) => {
         this.emit("device", kind);
         if (kind === "audioinput") this.resync("noise");
+        if (kind === "videoinput") this.resyncSaver();
       })
       .on(RoomEvent.AudioPlaybackStatusChanged, () => this.emit("audio"));
+    // The local participant is the same object for the life of the room.
+    room.localParticipant.on(ParticipantEvent.ConnectionQualityChanged, () => this.readQuality());
   }
 }
 

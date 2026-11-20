@@ -21,6 +21,7 @@ import { CHAT_MAX_LENGTH } from "@/lib/rtc/shared";
 import type { RtcChatMessage } from "@/lib/rtc/types";
 import { useChatStore } from "./ChatStore";
 import { useHost } from "./HostTools";
+import { PollsSection } from "./Polls";
 import { Avatar } from "./ui/Avatar";
 import { Dropdown } from "./ui/Menu";
 import { Tip } from "./ui/Tip";
@@ -357,6 +358,7 @@ export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
 
   return (
     <>
+      <PollsSection />
       {pinned && <PinnedMessage message={pinned} canUnpin={canModerate} onUnpin={() => pin(null)} />}
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div

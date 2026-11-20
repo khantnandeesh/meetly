@@ -47,6 +47,10 @@ const COHOST = "meetly-cohost:";
 const ACCESS = "meetly-access:";
 /** "meetly-pin:<chat message id>": the message shown above the conversation. The newest one stands. */
 const PIN = "meetly-pin:";
+/** "meetly-poll-closed:<poll id>": a RealtimeKit poll the host or a co-host ended. RealtimeKit itself has no way to end one. */
+const POLL_CLOSED = "meetly-poll-closed:";
+/** Polls are ended a handful at a time; past this, something other than a person is asking. */
+const MAX_CLOSED_POLLS = 40;
 const isMarker = (p: Participant) => p.custom_participant_id.startsWith("meetly-");
 
 type Config = {
@@ -178,6 +182,8 @@ type MeetingRecord = {
   access: JoinAccess;
   /** Id of the pinned chat message. */
   pin: string | null;
+  /** Ids of RealtimeKit polls that were ended. */
+  closedPolls: string[];
   markers: Participant[];
 };
 
@@ -199,6 +205,7 @@ export function readRecord(participants: Participant[], hostPreset: string, canA
     banned: new Set(tagged(BAN)),
     access,
     pin: pins.length > 0 ? pins[pins.length - 1].custom_participant_id.slice(PIN.length) : null,
+    closedPolls: Array.from(new Set(tagged(POLL_CLOSED))),
     markers,
   };
 }
@@ -260,6 +267,7 @@ export type RealtimeKitJoin = {
   access: JoinAccess;
   canAsk: boolean;
   pin: string | null;
+  closedPolls: string[];
 };
 
 export type RealtimeKitJoinOutcome =
@@ -299,6 +307,7 @@ function grant(
     access: record?.access ?? "open",
     canAsk: c.knockPreset !== null,
     pin: record?.pin ?? null,
+    closedPolls: record?.closedPolls ?? [],
   };
 }
 
@@ -387,7 +396,7 @@ export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<
 
 /* --------------------------------------------------------------- moderation */
 
-export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess; pin: string | null };
+export type RealtimeKitRoles = { coHosts: string[]; access: JoinAccess; pin: string | null; closedPolls: string[] };
 
 /**
  * Moderation, and `roles`: the one thing here any participant may ask, since RealtimeKit has no
@@ -413,7 +422,7 @@ export async function realtimeKitHostAction(
     const me = record.people.find((p) => p.id === session.participantId);
     if (!me) return DENIED;
     if (request.action === "roles") {
-      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access, pin: record.pin } };
+      return { status: 200, data: { coHosts: coHostIdentities(record), access: record.access, pin: record.pin, closedPolls: record.closedPolls } };
     }
     const role = me.preset_name === c.hostPreset ? "host" : record.coHostIds.has(me.id) ? "cohost" : "guest";
     if (role === "guest") return DENIED;
@@ -482,6 +491,22 @@ export async function realtimeKitHostAction(
         }
         const cleared = await removeMarkers(c, session.meetingId, record, (fact) => fact.startsWith(PIN) && fact !== wanted);
         return cleared ? { status: 200 } : UNREACHABLE;
+      }
+      case "closePoll": {
+        // RealtimeKit keeps the poll and counts its votes but has no way to end one, so that it
+        // has ended is one more statement in the record. Clients stop offering it; see the note
+        // on `closedPolls` in src/lib/rtc/realtimekit.ts for what that does and does not stop.
+        if (record.closedPolls.includes(request.pollId)) return { status: 200 };
+        const added = await addMarker(c, session.meetingId, `${POLL_CLOSED}${request.pollId}`);
+        if (!added.ok) return UNREACHABLE;
+        // A link used for call after call does not collect these for ever: the oldest go.
+        const old = record.markers
+          .filter((m) => m.custom_participant_id.startsWith(POLL_CLOSED))
+          .sort(oldestFirst)
+          .slice(0, Math.max(0, record.closedPolls.length + 1 - MAX_CLOSED_POLLS))
+          .map((m) => m.custom_participant_id);
+        if (old.length > 0) await removeMarkers(c, session.meetingId, record, (fact) => old.includes(fact));
+        return { status: 200 };
       }
       case "access": {
         if (request.access === "ask" && !c.knockPreset) {

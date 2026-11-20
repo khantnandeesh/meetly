@@ -2,6 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type {
+  CallQuality,
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
@@ -13,6 +14,7 @@ import type {
   RtcChatMessage,
   RtcEventName,
   RtcParticipant,
+  RtcPoll,
   RtcTile,
   RtcVideoTrack,
   RtcWaiter,
@@ -103,6 +105,8 @@ const CHAT = ["chat"] as const;
 const AUDIO = ["audio"] as const;
 const EFFECTS = ["effects"] as const;
 const DEVICE = ["device"] as const;
+const POLLS = ["polls", "status"] as const;
+const QUALITY = ["quality"] as const;
 
 export function useConnectionStatus(): ConnectionStatus {
   const call = useCall();
@@ -164,6 +168,18 @@ export function useActiveDevice(kind: DeviceKind): string {
 export function useLocalEffects(): LocalEffects {
   const call = useCall();
   return useCallValue(call, EFFECTS, () => call.localEffects());
+}
+
+/** The call's polls, oldest first. */
+export function usePolls(): RtcPoll[] {
+  const call = useCall();
+  return useCallValue(call, POLLS, () => call.polls());
+}
+
+/** How your own connection is doing, and whether "use less data" is on. */
+export function useCallQuality(): CallQuality {
+  const call = useCall();
+  return useCallValue(call, QUALITY, () => call.quality());
 }
 
 export function useChat(): {
