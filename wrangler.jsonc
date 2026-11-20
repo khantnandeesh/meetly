@@ -27,7 +27,8 @@
 		"CLOUDFLARE_ACCOUNT_ID": "439a27349e5028092af2cfd5a45bdac1",
 		"REALTIMEKIT_APP_ID": "e9e7398f-10dd-4c0d-88f3-b38198239422",
 		"REALTIMEKIT_HOST_PRESET": "meetly-host",
-		"REALTIMEKIT_GUEST_PRESET": "meetly-guest"
+		"REALTIMEKIT_GUEST_PRESET": "meetly-guest",
+		"REALTIMEKIT_KNOCK_PRESET": "meetly-knock"
 	}
 
 	// KV namespace (create with `wrangler kv namespace create <name>`, paste the id here), read via
