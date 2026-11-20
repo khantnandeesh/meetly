@@ -6,7 +6,9 @@
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "meetly",
 	"account_id": "439a27349e5028092af2cfd5a45bdac1",
-	"main": ".open-next/worker.js",
+	// OpenNext's generated Worker (.open-next/worker.js) wrapped to add the cost guard's Cron
+	// Trigger handler; see custom-worker.ts.
+	"main": "custom-worker.ts",
 	"compatibility_date": "2026-11-01",
 	// nodejs_compat: node:crypto and the server SDKs used by the route handlers.
 	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -19,6 +21,9 @@
 	// Workers custom domain: creates the DNS record and certificate for the hostname.
 	"routes": [{ "pattern": "meet.nandeesh.dev", "custom_domain": true }],
 	"observability": { "enabled": true },
+	// The webinar cost guard (src/lib/costGuard.server.ts), once a minute. Each run makes one
+	// RealtimeKit REST call, and at most 30, so it stays far inside the 3,500 per five minutes.
+	"triggers": { "crons": ["* * * * *"] },
 	"upload_source_maps": true,
 
 	// Non-secret configuration goes in "vars"; secrets are set with `wrangler secret put <NAME>`
@@ -28,7 +33,14 @@
 		"REALTIMEKIT_APP_ID": "e9e7398f-10dd-4c0d-88f3-b38198239422",
 		"REALTIMEKIT_HOST_PRESET": "meetly-host",
 		"REALTIMEKIT_GUEST_PRESET": "meetly-guest",
-		"REALTIMEKIT_KNOCK_PRESET": "meetly-knock"
+		"REALTIMEKIT_KNOCK_PRESET": "meetly-knock",
+		// Webinars on ("1") or off ("0"): off, none can be started or joined and the cost guard
+		// ends those running. To switch off at once, change it in the dashboard (Workers → meetly →
+		// Settings → Variables, which deploys straight away) and then here, or the next deploy
+		// switches it back on. See "Webinar costs" in the README.
+		"MEETLY_WEBINARS_ENABLED": "1",
+		// The most participant-minutes one webinar session may use before it is ended.
+		"MEETLY_WEBINAR_MINUTE_LIMIT": "5000"
 	}
 
 	// KV namespace (create with `wrangler kv namespace create <name>`, paste the id here), read via

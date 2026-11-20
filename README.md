@@ -608,3 +608,13 @@ In Workers Builds use build command `npx opennextjs-cloudflare build` and deploy
 `npx opennextjs-cloudflare deploy`. Plain `wrangler deploy` skips the page-cache step and every
 page then returns 500. For local
 preview, put them in `.dev.vars` (git-ignored).
+
+The Worker's entry is `custom-worker.ts`, not OpenNext's `.open-next/worker.js` directly: it
+passes every request to OpenNext's handler and adds a `scheduled` handler, the webinar cost
+guard, which the Cron Trigger in `wrangler.jsonc` (`triggers.crons`) runs once a minute (see
+"Webinar costs" above). `MEETLY_WEBINARS_ENABLED` and `MEETLY_WEBINAR_MINUTE_LIMIT` are `vars`
+there. To switch webinars off at once, set `MEETLY_WEBINARS_ENABLED` to `0` in the dashboard
+(Workers → meetly → Settings → Variables), which deploys that change straight away, and then in
+`wrangler.jsonc`, or the next deploy turns them back on. `npx wrangler dev --test-scheduled`
+runs the handler locally on `/__scheduled`; without `CLOUDFLARE_API_TOKEN` in `.dev.vars` it
+does nothing and logs `"skipped":"not-configured"`.
