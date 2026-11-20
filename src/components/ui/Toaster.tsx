@@ -5,12 +5,12 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import {
   DESKTOP_MODE,
-  QUEUE_MS,
   UPDATE_MS,
   isNews,
   order,
   overflow,
   place,
+  queueUntil,
   type NoticeMode,
   type NoticePriority,
 } from "@/lib/notices";
@@ -28,9 +28,19 @@ export type ToastInput = {
   action?: { label: string; onClick: () => void };
   /** A second, quieter choice shown before `action` ("Deny" beside "Admit"). */
   secondary?: { label: string; onClick: () => void };
+  /**
+   * The one answer offered in the one-line strip over a phone's top bar (a sheet is open), where
+   * two do not fit. Defaults to `action`; `secondary` is never shown there.
+   */
+  compactAction?: { label: string; onClick: () => void };
+  /** Called when the person closes it with its ×, and only then (not when it times out or is answered). */
+  onDismiss?: () => void;
   /** A toast with a tag updates the one already showing (or waiting) with that tag, in place. */
   tag?: string;
-  /** Milliseconds before auto-dismiss. Defaults to 4500. `Infinity` stays until it is answered or dismissed. */
+  /**
+   * Milliseconds before auto-dismiss. Defaults to 4500. `Infinity` stays until it is answered or
+   * dismissed. A tag in STATE_TAGS (src/lib/notices.ts) also makes it wait for room for as long as it takes.
+   */
   duration?: number;
 };
 
@@ -196,7 +206,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
       commit(listRef.current.map((t) => (ids.has(t.id) ? { ...t, leaving: true } : t)));
       for (const t of out) {
         if (isNews(t.priority)) continue;
-        queue.current = [...queue.current, { toast: { ...t, id: nextId.current++ }, until: t.duration === Infinity ? Infinity : Date.now() + QUEUE_MS }];
+        queue.current = [...queue.current, { toast: { ...t, id: nextId.current++ }, until: queueUntil(t, Date.now()) }];
       }
     }
     promote();
@@ -231,8 +241,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         const placed = place(showing(), toast, mode.current);
         if (placed.kind === "drop") return;
         if (placed.kind === "queue") {
-          const until = toast.duration === Infinity ? Infinity : Date.now() + QUEUE_MS;
-          queue.current = [...queue.current, { toast, until }];
+          queue.current = [...queue.current, { toast, until: queueUntil(toast, Date.now()) }];
           return;
         }
         if (placed.kind === "replace") {
@@ -241,7 +250,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
           forget(placed.evict);
           commit(listRef.current.map((t) => (t.id === placed.evict ? { ...t, leaving: true } : t)));
           if (evicted && !isNews(evicted.priority)) {
-            queue.current = [...queue.current, { toast: { ...evicted, id: nextId.current++ }, until: evicted.duration === Infinity ? Infinity : Date.now() + QUEUE_MS }];
+            queue.current = [...queue.current, { toast: { ...evicted, id: nextId.current++ }, until: queueUntil(evicted, Date.now()) }];
           }
         }
         show(toast);
@@ -268,6 +277,20 @@ export function Toaster({ children }: { children: React.ReactNode }) {
     }),
     [commit, forget, promote, refit, show, showing, update],
   );
+
+  // Opt-in handle for tests and debugging, like window.__meetly: localStorage["meetly:debug"] = "1".
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("meetly:debug") !== "1") return;
+    } catch {
+      return;
+    }
+    const target = window as unknown as { __meetlyToast?: ToastApi };
+    target.__meetlyToast = api;
+    return () => {
+      if (target.__meetlyToast === api) delete target.__meetlyToast;
+    };
+  }, [api]);
 
   // Reading a toast should not be a race: the clocks stop while the pointer or focus is on them.
   const pause = useCallback(() => {
@@ -331,10 +354,14 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         onPointerLeave={resume}
         onFocus={pause}
         onBlur={resume}
-        className="toast-region pointer-events-none fixed z-60 flex flex-col gap-2 px-3"
+        className="toast-region pointer-events-none fixed z-45 flex flex-col gap-2 px-3"
       >
         <div role="status" aria-live="polite" className="contents">
-          {toasts.map((toast) => (
+          {toasts.map((toast) => {
+            // In the one-line strip there is room for one answer (see `compactAction`).
+            const action = compact ? (toast.compactAction ?? toast.action) : toast.action;
+            const secondary = compact ? undefined : toast.secondary;
+            return (
             <div
               key={toast.id}
               data-toast={toast.id}
@@ -356,35 +383,43 @@ export function Toaster({ children }: { children: React.ReactNode }) {
               </p>
               {/* Two answers ("Deny", "Admit") go on a line of their own under the text, so a long
                   name wraps between words instead of being squeezed into a sliver beside them. */}
-              <div className={toast.secondary ? "toast-actions order-last -mt-1.5 flex basis-full justify-end gap-1" : "contents"}>
-                {toast.secondary && (
+              <div className={secondary ? "toast-actions order-last -mt-1.5 flex basis-full justify-end gap-1" : "contents"}>
+                {secondary && (
                   <button
                     className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-muted transition-colors hover:bg-surface-3 hover:text-text"
                     onClick={() => {
-                      toast.secondary?.onClick();
+                      secondary.onClick();
                       remove(toast.id);
                     }}
                   >
-                    {toast.secondary.label}
+                    {secondary.label}
                   </button>
                 )}
-                {toast.action && (
+                {action && (
                   <button
                     className="h-9 shrink-0 cursor-pointer rounded-lg px-3 font-semibold text-accent transition-colors hover:bg-surface-3"
                     onClick={() => {
-                      toast.action?.onClick();
+                      action.onClick();
                       remove(toast.id);
                     }}
                   >
-                    {toast.action.label}
+                    {action.label}
                   </button>
                 )}
               </div>
-              <button className="icon-btn size-9 hover:bg-surface-3" aria-label="Dismiss notification" onClick={() => leave(toast.id)}>
+              <button
+                className="icon-btn size-9 hover:bg-surface-3"
+                aria-label="Dismiss notification"
+                onClick={() => {
+                  toast.onDismiss?.();
+                  leave(toast.id);
+                }}
+              >
                 <X className="size-4" />
               </button>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
     </ToastContext.Provider>

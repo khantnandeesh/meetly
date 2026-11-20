@@ -68,7 +68,7 @@ function Call({ code }: { code: string }) {
   const connection = useConnectionStatus();
   const [settings, updateSettings] = useCallSettings();
   useCallSounds(call, {
-    onHostMuted: () => toast.push({ priority: "you", icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
+    onHostMuted: () => toast.push({ tag: "muted-by-host", priority: "you", icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
   });
 
   // Opt-in handle for load tests and debugging: set localStorage["meetly:debug"] = "1".
@@ -366,6 +366,7 @@ function Call({ code }: { code: string }) {
   const hideSelf = useCallback(() => {
     updateSettings({ selfView: "hidden" });
     toast.push({
+      tag: "self-hidden",
       priority: "you",
       icon: <EyeOff className="size-5" />,
       title: "Your own video is hidden",
@@ -377,7 +378,7 @@ function Call({ code }: { code: string }) {
   // Copying confirms on the button that was pressed (see useCopied); only a failure needs a toast.
   const copyLink = useCallback(async () => {
     const ok = await copyText(`${window.location.origin}/${code}`);
-    if (!ok) toast.push({ icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link", body: "Copy it from the address bar instead." });
+    if (!ok) toast.push({ tag: "copy-error", icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link", body: "Copy it from the address bar instead." });
     return ok;
   }, [code, toast]);
   const headerCopy = useCopied(copyLink);
@@ -584,7 +585,7 @@ function Call({ code }: { code: string }) {
 
           <Connecting show={connecting} />
 
-          <StatusLane sheetOpen={sheetOpen} />
+          <StatusLane phone={phone} sheetOpen={sheetOpen} />
         </main>
 
         {shown && (
