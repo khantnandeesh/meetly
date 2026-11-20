@@ -7,6 +7,7 @@ export const SHORTCUTS = [
   { key: "M", action: "Mute or unmute your microphone" },
   { key: "V", action: "Turn your camera on or off" },
   { key: "H", action: "Raise or lower your hand" },
+  { key: "R", action: "Open reactions, then 1 to 6 to send one" },
   { key: "C", action: "Open or close chat" },
   { key: "P", action: "Show or hide people" },
   { key: "← →", action: "Previous or next gallery page" },

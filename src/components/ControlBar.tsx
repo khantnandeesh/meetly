@@ -10,6 +10,7 @@ import {
   Keyboard,
   LayoutGrid,
   LoaderCircle,
+  LogOut,
   MessageSquare,
   Mic,
   MicOff,
@@ -23,13 +24,16 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useCopied } from "@/lib/hooks";
+import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { useActiveDevice, useCall, useLocalToggle } from "@/lib/rtc/react";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
 import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
 import { useUnread } from "./ChatStore";
+import { useHost } from "./HostTools";
 import { LayoutMenuItems } from "./LayoutMenu";
+import { ReactMenu } from "./Reactions";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -45,6 +49,8 @@ export function ControlBar({
   handRaised,
   hands,
   onToggleHand,
+  reactOpen,
+  onReactOpenChange,
   onTogglePanel,
   onCopyLink,
   onShowShortcuts,
@@ -59,6 +65,9 @@ export function ControlBar({
   /** Large screens: the raised-hands summary, shown beside the people control. */
   hands?: React.ReactNode;
   onToggleHand: () => void;
+  /** The reactions strip, opened from here or with R. */
+  reactOpen: boolean;
+  onReactOpenChange: (open: boolean) => void;
   onTogglePanel: (panel: Exclude<Panel, null>) => void;
   onCopyLink: () => Promise<boolean>;
   onShowShortcuts: () => void;
@@ -68,6 +77,7 @@ export function ControlBar({
   const call = useCall();
   const toast = useToast();
   const copyState = useCopied(onCopyLink);
+  const { isHost, waiting, askEnd } = useHost();
 
   const deviceError = (what: string) => () =>
     toast.push({
@@ -100,7 +110,15 @@ export function ControlBar({
   );
   const camButton = (
     <Tip label={camLabel} shortcut={phone ? undefined : "V"}>
-      <button className="ctrl" data-ctl={cam.enabled ? "on" : "off"} aria-label={camLabel} onClick={() => cam.toggle()}>
+      <button
+        className="ctrl"
+        data-ctl={cam.enabled ? "on" : "off"}
+        aria-label={camLabel}
+        onClick={() => {
+          noteOwnCameraToggle();
+          cam.toggle();
+        }}
+      >
         {cam.pending ? (
           <LoaderCircle className="anim-spin size-5" />
         ) : cam.enabled ? (
@@ -117,6 +135,9 @@ export function ControlBar({
         <Hand className="size-5" />
       </button>
     </Tip>
+  );
+  const reactButton = (
+    <ReactMenu phone={phone} open={reactOpen} onOpenChange={onReactOpenChange} handRaised={handRaised} onToggleHand={onToggleHand} />
   );
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
@@ -161,6 +182,15 @@ export function ControlBar({
               <LayoutMenuItems settings={settings} onChange={onSettings} showTileLimit={false} />
               <div className="menu-sep" />
               <DeviceGroups kinds={["audioinput", "videoinput", "audiooutput"]} />
+              {isHost && (
+                <>
+                  <div className="menu-sep" />
+                  <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
+                    <PhoneOff className="size-4" aria-hidden="true" />
+                    End call for everyone
+                  </Dropdown.Item>
+                </>
+              )}
             </>
           ) : (
             <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
@@ -180,7 +210,7 @@ export function ControlBar({
         <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Call controls">
           {micButton}
           {camButton}
-          {handButton}
+          {reactButton}
           {chatButton}
           {moreMenu}
           {leaveButton}
@@ -232,9 +262,36 @@ export function ControlBar({
           </button>
         </Tip>
         {handButton}
+        {reactButton}
         {moreMenu}
         <span className="mx-1 h-6 w-px bg-border-strong" aria-hidden="true" />
-        {leaveButton}
+        {isHost ? (
+          // Leaving stays one tap for the host too; ending the call for everyone is beside it.
+          <div className="ctrl-split">
+            {leaveButton}
+            <Dropdown.Root>
+              <Tip label="More ways to leave" hoverOnly>
+                <Dropdown.Trigger className="ctrl ctrl-danger group" aria-label="More ways to leave">
+                  <ChevronUp className="size-4 transition-transform group-aria-expanded:rotate-180" />
+                </Dropdown.Trigger>
+              </Tip>
+              <Dropdown.Portal>
+                <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu">
+                  <Dropdown.Item className="menu-item" onSelect={() => call.disconnect().catch(() => {})}>
+                    <LogOut className="size-4 text-muted" aria-hidden="true" />
+                    Leave call
+                  </Dropdown.Item>
+                  <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
+                    <PhoneOff className="size-4" aria-hidden="true" />
+                    End call for everyone
+                  </Dropdown.Item>
+                </Dropdown.Content>
+              </Dropdown.Portal>
+            </Dropdown.Root>
+          </div>
+        ) : (
+          leaveButton
+        )}
       </div>
 
       <div className="flex min-w-0 items-center justify-end gap-2">
@@ -261,6 +318,16 @@ export function ControlBar({
           >
             <Users className="size-5" />
             <span className="text-sm font-semibold tabular-nums">{headcount}</span>
+            {waiting.length > 0 && (
+              // Stays for as long as somebody is waiting; the notification is what announces them.
+              <span
+                className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+                data-waiting-count
+              >
+                {waiting.length > 9 ? "9+" : waiting.length}
+                <span className="sr-only"> waiting to join</span>
+              </span>
+            )}
           </button>
         </Tip>
         {chatButton}

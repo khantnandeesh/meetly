@@ -6,6 +6,7 @@ import type { Rect } from "@/lib/motion";
 import { useParticipantState, useVideoTrack } from "@/lib/rtc/react";
 import type { RtcTile, RtcVideoTrack } from "@/lib/rtc/types";
 import { HostMenu, useHost } from "./HostTools";
+import { TileReactionBadge } from "./Reactions";
 import { avatarColor, initials } from "./ui/Avatar";
 import { Tip } from "./ui/Tip";
 
@@ -51,7 +52,7 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
     hideTimer.current = setTimeout(() => setRevealed(false), 3500);
   }
 
-  const { hostId, isHost } = useHost();
+  const { hostId, canModerate } = useHost();
   const isScreen = source === "screen_share";
   const isLocal = participant.isLocal;
   const showVideo = isScreen || camOn;
@@ -117,9 +118,9 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
       )}
       </div>
 
-      {(onTogglePin || (isHost && !isLocal && !isScreen)) && (
+      {(onTogglePin || (canModerate && !isLocal && !isScreen)) && (
         <div className="tile-actions absolute top-2 right-2 z-30 flex origin-top-right gap-1.5">
-          {!isScreen && <HostMenu participant={participant} micOn={micOn} variant="tile" />}
+          {!isScreen && <HostMenu participant={participant} micOn={micOn} camOn={camOn} handRaised={handRaised} variant="tile" />}
           {onTogglePin && (
           <Tip label={pinned ? "Unpin" : "Pin to main view"} side="bottom">
             <button
@@ -139,6 +140,7 @@ function TileView({ trackRef, pinned = false, onTogglePin, className = "", rect,
 
       {children}
 
+      {!isScreen && <TileReactionBadge identity={participant.identity} />}
       <div className="tile-meta absolute bottom-2 left-2 z-30 flex max-w-[calc(100%-1rem)] origin-bottom-left items-center gap-1.5">
         {handRaised && !isScreen && (
           <span className="anim-pop grid size-7 shrink-0 place-items-center rounded-lg bg-accent text-accent-ink" aria-hidden="true">

@@ -17,15 +17,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import { useAudioBlocked, useCall, useConnectionStatus, useParticipants, useTiles } from "@/lib/rtc/react";
-import { displayName, type JoinGrant, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
+import { noteOwnCameraToggle } from "@/lib/ownToggles";
+import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { useCallSettings } from "@/lib/useCallSettings";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
 import { ChatPanel } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
-import { HostProvider } from "./HostTools";
+import { HostProvider, useHost } from "./HostTools";
 import { ControlBar, type Panel } from "./ControlBar";
+import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
+import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ShortcutsDialog } from "./ShortcutsDialog";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
@@ -41,7 +44,7 @@ const ROSTER_TOAST_LIMIT = 24;
 const PHONE_PAGE_SIZE = 6;
 type OpenPanel = Exclude<Panel, null>;
 
-export function Conference(props: { code: string; grant: JoinGrant }) {
+export function Conference(props: { code: string }) {
   return (
     <ChatStore>
       <Call {...props} />
@@ -49,7 +52,7 @@ export function Conference(props: { code: string; grant: JoinGrant }) {
   );
 }
 
-function Call({ code, grant }: { code: string; grant: JoinGrant }) {
+function Call({ code }: { code: string }) {
   const call = useCall();
   const toast = useToast();
   const phone = useIsPhone();
@@ -180,6 +183,7 @@ function Call({ code, grant }: { code: string; grant: JoinGrant }) {
   }, [call]);
 
   const openChat = useCallback(() => setPanel("chat"), []);
+  const [reactOpen, setReactOpen] = useState(false);
 
   /* ------------------------------------------------------------ room events */
   useEffect(() => {
@@ -338,7 +342,12 @@ function Call({ code, grant }: { code: string; grant: JoinGrant }) {
           call.setEnabled("microphone", !media.microphone).catch(() => {});
           break;
         case "v":
+          noteOwnCameraToggle();
           call.setEnabled("camera", !media.camera).catch(() => {});
+          break;
+        case "r":
+          // Opens the strip; inside it 1 to 6 send, and Escape closes it.
+          if (call.status === "connected") setReactOpen(true);
           break;
         case "h":
           toggleHand();
@@ -366,7 +375,9 @@ function Call({ code, grant }: { code: string; grant: JoinGrant }) {
   const panelTitle = shown === "chat" ? "Chat" : "People";
 
   return (
-    <HostProvider grant={grant} localIdentity={localParticipant.identity}>
+    <HostProvider localIdentity={localParticipant.identity}>
+      <ModerationNotices localIdentity={localParticipant.identity} onShowPeople={showPeople} />
+      <ReactionFeed />
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
           <button
@@ -388,10 +399,11 @@ function Call({ code, grant }: { code: string; grant: JoinGrant }) {
               onClick={() => togglePanel("people")}
               aria-expanded={panel === "people"}
               aria-label="Show everyone"
-              className="inline-flex h-11 shrink-0 cursor-pointer items-center gap-2 rounded-xl bg-surface-2 px-3.5 text-sm font-semibold tabular-nums active:bg-surface-3"
+              className="relative inline-flex h-11 shrink-0 cursor-pointer items-center gap-2 rounded-xl bg-surface-2 px-3.5 text-sm font-semibold tabular-nums active:bg-surface-3"
             >
               <Users className="size-[1.125rem]" aria-hidden="true" />
               {participants.length}
+              <WaitingCount />
             </button>
           </div>
         </header>
@@ -426,6 +438,8 @@ function Call({ code, grant }: { code: string; grant: JoinGrant }) {
             }
             onHide={hideSelf}
           />
+
+          <ReactionLane />
 
           <InviteCard show={alone} code={code} onCopy={copyLink} />
 
@@ -495,6 +509,8 @@ function Call({ code, grant }: { code: string; grant: JoinGrant }) {
         handRaised={handRaised}
         hands={<RaisedHands hands={raisedHands} onShow={showPeople} />}
         onToggleHand={toggleHand}
+        reactOpen={reactOpen}
+        onReactOpenChange={setReactOpen}
         onTogglePanel={togglePanel}
         onCopyLink={copyLink}
         onShowShortcuts={() => setShortcutsOpen(true)}
@@ -668,6 +684,21 @@ function RaisedHands({ hands, onShow, compact = false }: { hands: RtcParticipant
   if (compact) return button;
   return (
     <Tip label={list.length === 1 ? "1 raised hand" : `${list.length} raised hands`}>{button}</Tip>
+  );
+}
+
+/** Phones: how many people are asking to join, on the people button. Host and co-hosts only. */
+function WaitingCount() {
+  const { waiting, canModerate } = useHost();
+  if (!canModerate || waiting.length === 0) return null;
+  return (
+    <span
+      className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+      data-waiting-count
+    >
+      {waiting.length > 9 ? "9+" : waiting.length}
+      <span className="sr-only"> waiting to join</span>
+    </span>
   );
 }
 

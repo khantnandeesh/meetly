@@ -1,12 +1,12 @@
 "use client";
 
-import { CircleAlert, Home, LogOut, RotateCcw, Unplug, UserX } from "lucide-react";
+import { CircleAlert, DoorClosed, Home, LogOut, PhoneOff, RotateCcw, Unplug, UserX } from "lucide-react";
 import Link from "next/link";
-import { useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { useMounted } from "@/lib/hooks";
-import { loadProvider, requestJoin } from "@/lib/rtc/provider";
+import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
-import type { JoinChoices, JoinGrant, RtcCall } from "@/lib/rtc/types";
+import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
@@ -14,9 +14,19 @@ import { PreJoin, PreJoinSkeleton } from "./PreJoin";
 import { Logo } from "./ui/Logo";
 import { useToast } from "./ui/Toaster";
 
-type Session = { call: RtcCall; grant: JoinGrant; joinedAt: number };
+type Session = { call: RtcCall; joinedAt: number };
 type Stage = "prejoin" | "joined" | "left";
-type Departure = { minutes: number; dropped: boolean; removed: boolean };
+type Departure = { minutes: number; reason: DisconnectReason; byYou: boolean };
+
+/** The status of a call that is not (yet) provided through context. */
+function useStatusOf(call: RtcCall | null): ConnectionStatus | null {
+  const subscribe = useCallback((onChange: () => void) => (call ? call.on("status", onChange) : () => {}), [call]);
+  return useSyncExternalStore(
+    subscribe,
+    () => call?.status ?? null,
+    () => null,
+  );
+}
 
 export function Meeting({ code }: { code: string }) {
   const mounted = useMounted();
@@ -29,7 +39,20 @@ export function Meeting({ code }: { code: string }) {
   /** The pre-join screen is still on top (it leaves once `ready`). */
   const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departure, setDeparture] = useState<Departure>({ minutes: 0, dropped: false, removed: false });
+  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false });
+  /** Who may join, and whether this browser is the host. Asked each time the pre-join screen is up. */
+  const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean } | null>(null);
+
+  useEffect(() => {
+    if (stage !== "prejoin") return;
+    let current = true;
+    void peekMeeting(code).then((answer) => {
+      if (current && answer) setSeen(answer);
+    });
+    return () => {
+      current = false;
+    };
+  }, [code, stage]);
 
   async function join(choices: JoinChoices) {
     // Still inside the click that joins: the only moment a browser lets audio be switched on.
@@ -39,7 +62,7 @@ export function Meeting({ code }: { code: string }) {
     try {
       // The provider's SDK is fetched here, alongside the token, and not a moment earlier.
       const [grant, provider] = await Promise.all([requestJoin(code, choices.username), loadProvider()]);
-      setSession({ call: provider.createCall(grant, choices), grant, joinedAt: Date.now() });
+      setSession({ call: provider.createCall(grant, choices), joinedAt: Date.now() });
       setReady(false);
       setCovered(true);
       setStage("joined");
@@ -50,17 +73,24 @@ export function Meeting({ code }: { code: string }) {
     }
   }
 
+  const backToPreJoin = () => {
+    setReady(false);
+    setCovered(true);
+    setSession(null);
+    setStage("prejoin");
+  };
+
+  const inCall = stage === "joined" && session !== null;
+  // Asked to join, not answered yet: the pre-join screen stays, saying so. Unmounting the call
+  // (Cancel) hangs up quietly.
+  const waiting = useStatusOf(inCall ? session.call : null) === "waiting";
+
   if (stage === "left") {
-    return <LeftScreen code={code} departure={departure} onRejoin={() => {
-          setReady(false);
-          setCovered(true);
-          setStage("prejoin");
-        }} />;
+    return <LeftScreen code={code} departure={departure} onRejoin={backToPreJoin} />;
   }
 
   // The pre-join screen stays up, with its live preview, until the room is connected and the
   // stage is drawn underneath; then it fades away to reveal it. One hand-over, not three screens.
-  const inCall = stage === "joined" && session !== null;
   return (
     <>
       {inCall && (
@@ -68,12 +98,13 @@ export function Meeting({ code }: { code: string }) {
           call={session.call}
           onConnected={() => setReady(true)}
           onDisconnected={(reason) => {
+            const { call } = session;
             toast.clear();
             playCallEndedSound();
             setDeparture({
-              minutes: Math.round((Date.now() - session.joinedAt) / 60_000),
-              removed: reason === "removed",
-              dropped: reason === "dropped",
+              minutes: reason === "denied" ? 0 : Math.round((Date.now() - session.joinedAt) / 60_000),
+              reason,
+              byYou: reason === "ended" && call.hostIdentity !== null && call.hostIdentity === call.local.identity,
             });
             setStage("left");
           }}
@@ -88,7 +119,7 @@ export function Meeting({ code }: { code: string }) {
           }
         >
           <div className="flex h-dvh flex-col" data-in-call inert={covered}>
-            <Conference code={code} grant={session.grant} />
+            <Conference code={code} />
           </div>
         </CallRoom>
       )}
@@ -97,12 +128,22 @@ export function Meeting({ code }: { code: string }) {
         (mounted ? (
           <div
             className={inCall ? `fixed inset-0 z-70 flex flex-col overflow-y-auto bg-bg ${ready ? "screen-out" : ""}` : "contents"}
-            inert={inCall}
+            // While asking to join, the screen is still in use: it holds the way to stop asking.
+            inert={inCall && !waiting}
             onAnimationEnd={(event) => {
               if (ready && event.target === event.currentTarget) setCovered(false);
             }}
           >
-            <PreJoin code={code} joining={joining || inCall} error={error} onJoin={join} />
+            <PreJoin
+              code={code}
+              joining={joining || inCall}
+              waiting={waiting}
+              access={seen?.access ?? "open"}
+              isHost={seen?.host ?? false}
+              error={error}
+              onJoin={join}
+              onCancel={backToPreJoin}
+            />
           </div>
         ) : (
           <PreJoinSkeleton />
@@ -110,6 +151,22 @@ export function Meeting({ code }: { code: string }) {
     </>
   );
 }
+
+const ENDINGS: Record<DisconnectReason, { icon: typeof LogOut; title: string; note: string }> = {
+  left: { icon: LogOut, title: "You left the meeting", note: "The meeting stays open for others until everyone has left." },
+  dropped: {
+    icon: Unplug,
+    title: "You were disconnected",
+    note: "The meeting stays open for others until everyone has left.",
+  },
+  removed: { icon: UserX, title: "The host removed you", note: "You can't rejoin this meeting from this browser." },
+  denied: {
+    icon: DoorClosed,
+    title: "The host didn't let you in",
+    note: "If that was a mistake, ask again or check with whoever sent you the link.",
+  },
+  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link works again if the host starts a new call." },
+};
 
 function LeftScreen({
   code,
@@ -120,10 +177,13 @@ function LeftScreen({
   departure: Departure;
   onRejoin: () => void;
 }) {
-  const { minutes, dropped, removed } = departure;
-  const Icon = removed ? UserX : dropped ? Unplug : LogOut;
+  const { minutes, reason, byYou } = departure;
+  const { icon: Icon, title, note } = ENDINGS[reason];
+  // Someone the host turned away is shown the way out first; coming back is the quieter option,
+  // and for someone who was removed it is not an option at all.
+  const turnedAway = reason === "removed" || reason === "denied";
   const home = (
-    <Link href="/" className={`btn ${removed ? "btn-primary" : "btn-secondary"}`}>
+    <Link href="/" className={`btn ${turnedAway ? "btn-primary" : "btn-secondary"}`}>
       <Home className="size-[1.125rem]" aria-hidden="true" />
       Back to home
     </Link>
@@ -139,24 +199,25 @@ function LeftScreen({
         </span>
         <div className="flex flex-col gap-3">
           <h1 className="font-display text-4xl leading-[1.05] font-semibold tracking-[-0.02em] sm:text-5xl">
-            {removed ? "The host removed you" : dropped ? "You were disconnected" : "You left the meeting"}
+            {byYou ? "You ended the meeting" : title}
           </h1>
           <p className="text-lg text-muted">
-            {dropped ? "The connection to the call was lost. " : ""}
+            {reason === "dropped" ? "The connection to the call was lost. " : ""}
             <span className="font-mono text-[0.9em]">{code}</span>
             {minutes >= 1 && ` · ${minutes} min in the call`}
           </p>
         </div>
-        {/* Someone the host removed is shown the way out first; coming straight back is the quieter option. */}
         <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
-          {removed && home}
-          <button className={`btn ${removed ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!removed}>
-            <RotateCcw className="size-[1.125rem]" aria-hidden="true" />
-            Rejoin
-          </button>
-          {!removed && home}
+          {turnedAway && home}
+          {reason !== "removed" && (
+            <button className={`btn ${turnedAway ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!turnedAway}>
+              <RotateCcw className="size-[1.125rem]" aria-hidden="true" />
+              {reason === "denied" ? "Ask again" : byYou ? "Start again" : "Rejoin"}
+            </button>
+          )}
+          {!turnedAway && home}
         </div>
-        <p className="text-sm text-faint">The meeting stays open for others until everyone has left.</p>
+        <p className="text-sm text-faint">{byYou ? "Everyone was disconnected. The link still works." : note}</p>
       </main>
     </div>
   );

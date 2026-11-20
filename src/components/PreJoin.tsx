@@ -5,8 +5,10 @@ import {
   Check,
   ChevronDown,
   CircleAlert,
+  Crown,
   Link2,
   LoaderCircle,
+  Lock,
   Mic,
   MicOff,
   RotateCw,
@@ -15,7 +17,7 @@ import {
 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { copyText } from "@/lib/hooks";
-import type { JoinChoices } from "@/lib/rtc/types";
+import type { JoinAccess, JoinChoices } from "@/lib/rtc/types";
 import {
   useDeviceList,
   usePreviewMedia,
@@ -33,13 +35,25 @@ import { useToast } from "./ui/Toaster";
 export function PreJoin({
   code,
   joining,
+  waiting = false,
+  access = "open",
+  isHost = false,
   error,
   onJoin,
+  onCancel,
 }: {
   code: string;
   joining: boolean;
+  /** Asked to join; nobody has answered yet. */
+  waiting?: boolean;
+  /** Who may join, as far as is known before asking. */
+  access?: JoinAccess;
+  /** This browser holds the meeting's host key. */
+  isHost?: boolean;
   error: string | null;
   onJoin: (choices: JoinChoices) => void;
+  /** Stop asking to join. */
+  onCancel?: () => void;
 }) {
   const [saved, save] = useSavedChoices();
   const { audio, video, setEnabled, setDevice, retry } = usePreviewMedia(saved);
@@ -95,6 +109,9 @@ export function PreJoin({
   const micOn = audio.enabled && !!audio.track;
   const camOn = video.enabled && !!video.track;
   const blocked = audio.problem === "denied" || video.problem === "denied";
+  // The host walks straight in whatever the meeting is set to.
+  const mustAsk = access === "ask" && !isHost;
+  const locked = access === "locked" && !isHost;
 
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
@@ -149,10 +166,30 @@ export function PreJoin({
               </button>
             </div>
             <h1 className="font-display text-4xl leading-[1.05] font-semibold tracking-[-0.02em] sm:text-5xl">
-              Ready to join?
+              {waiting ? "Asking to join…" : "Ready to join?"}
             </h1>
+            {isHost && !waiting && (
+              <p className="flex items-center gap-2 text-sm text-muted">
+                <Crown className="size-4 shrink-0 text-accent" aria-hidden="true" />
+                You&apos;re the host of this meeting, from this browser.
+              </p>
+            )}
           </div>
 
+          {waiting ? (
+            <div className="anim-fade flex flex-col gap-4">
+              <p role="status" className="flex items-center gap-3.5 rounded-2xl bg-surface-2 p-4 shadow-[inset_0_0_0_1px_var(--border)]">
+                <LoaderCircle className="anim-spin size-5 shrink-0 text-accent" aria-hidden="true" />
+                <span className="min-w-0">
+                  <span className="block font-medium">Someone in the call will let you in</span>
+                  <span className="block truncate text-sm text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
+                </span>
+              </p>
+              <button type="button" className="btn btn-secondary h-13 text-base" onClick={onCancel}>
+                Cancel
+              </button>
+            </div>
+          ) : (
           <form onSubmit={submit} className="flex flex-col gap-4" noValidate>
             <div className="flex flex-col gap-2">
               <label htmlFor={nameId} className="text-sm font-medium text-muted">
@@ -180,15 +217,22 @@ export function PreJoin({
               )}
             </div>
 
+            {locked && !error && (
+              <p className="flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-3 text-sm text-muted">
+                <Lock className="mt-px size-4 shrink-0" aria-hidden="true" />
+                This meeting is locked. Nobody new can join until that changes.
+              </p>
+            )}
+
             <button type="submit" className="btn btn-primary h-13 text-base" disabled={joining}>
               {joining ? (
                 <>
                   <LoaderCircle className="anim-spin size-5" aria-hidden="true" />
-                  Joining…
+                  {mustAsk ? "Asking…" : "Joining…"}
                 </>
               ) : (
                 <>
-                  Join now
+                  {mustAsk ? "Ask to join" : "Join now"}
                   <ArrowRight className="size-[1.125rem]" strokeWidth={2.5} aria-hidden="true" />
                 </>
               )}
@@ -201,11 +245,13 @@ export function PreJoin({
               </p>
             )}
           </form>
+          )}
 
           <p className="text-sm leading-relaxed text-faint" aria-live="polite">
             {blocked
               ? "You can still join and listen. Allow access any time to be seen and heard."
               : `You'll join with your camera ${camOn ? "on" : "off"} and microphone ${micOn ? "on" : "off"}.`}
+            {mustAsk && !waiting && " People ask to join this meeting, so somebody will have to let you in."}
           </p>
         </section>
       </main>

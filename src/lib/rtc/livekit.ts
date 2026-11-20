@@ -15,10 +15,13 @@ import {
   type TrackPublication,
 } from "livekit-client";
 import { RtcEmitter } from "./emitter";
+import { ADMIT_TOPIC, REACTION_MESSAGE, createReactionLimits, isReaction, postHost } from "./shared";
 import type {
   ConnectionStatus,
   DeviceKind,
   DisconnectReason,
+  HostAction,
+  JoinAccess,
   JoinChoices,
   JoinGrant,
   LocalMedia,
@@ -28,6 +31,7 @@ import type {
   RtcParticipant,
   RtcTile,
   RtcVideoTrack,
+  RtcWaiter,
 } from "./types";
 
 /** Participant attribute that carries a raised hand ("1" when up). */
@@ -122,13 +126,28 @@ class LiveKitVideo implements RtcVideoTrack {
   }
 }
 
-function hostFromMetadata(metadata: string | undefined): string | null {
+/** The part of the meeting's record (room metadata, written by our server only) that clients show. */
+type Meta = { host: string | null; coHosts: string[]; access: JoinAccess };
+const NO_META: Meta = { host: null, coHosts: [], access: "open" };
+
+function readMeta(metadata: string | undefined): Meta {
   try {
-    const host = JSON.parse(metadata || "{}")?.host;
-    return typeof host === "string" ? host : null;
+    const value = JSON.parse(metadata || "{}");
+    if (typeof value !== "object" || value === null) return NO_META;
+    return {
+      host: typeof value.host === "string" ? value.host : null,
+      coHosts: Array.isArray(value.cohosts) ? value.cohosts.filter((id: unknown): id is string => typeof id === "string") : [],
+      access: value.access === "ask" || value.access === "locked" ? value.access : "open",
+    };
   } catch {
-    return null;
+    return NO_META;
   }
+}
+
+function whyDisconnected(reason: LiveKitDisconnectReason | undefined, asking: boolean): DisconnectReason {
+  if (reason === LiveKitDisconnectReason.PARTICIPANT_REMOVED) return asking ? "denied" : "removed";
+  if (reason === LiveKitDisconnectReason.ROOM_DELETED) return "ended";
+  return reason === undefined || reason === LiveKitDisconnectReason.CLIENT_INITIATED ? "left" : "dropped";
 }
 
 class LiveKitCall extends RtcEmitter implements RtcCall {
@@ -146,6 +165,17 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   private chatSubscriptions: { unsubscribe(): void }[] = [];
   private audioSink: HTMLElement | null = null;
   private attempt = 0;
+  private meta: Meta = NO_META;
+  private readonly limits = createReactionLimits();
+  /** While you are asking to join: the lobby you wait in (see src/lib/host.server.ts). */
+  private lobby: Room | null = null;
+  /** Your way into the meeting itself, once a host has let you in from the lobby. */
+  private memberToken: string | null = null;
+  /** As host or co-host: a hidden connection to the lobby, to see who is asking. */
+  private watch: Room | null = null;
+  private watchAttempt = 0;
+  private waiters: RtcWaiter[] = [];
+  readonly supports = { askToJoin: true, stopCamera: true } as const;
 
   constructor(
     private readonly grant: Extract<JoinGrant, { provider: "livekit" }>,
@@ -163,6 +193,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   /* -------------------------------------------------------------- connection */
 
   get status(): ConnectionStatus {
+    if (this.lobby) return this.lobby.state === ConnectionState.Connecting ? "connecting" : "waiting";
     switch (this.native.state) {
       case ConnectionState.Connecting:
         return "connecting";
@@ -176,17 +207,76 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     }
   }
 
+  /** What proves who you are to the meeting and to our server. */
+  private get token(): string {
+    return this.memberToken ?? this.grant.token;
+  }
+
   connect(): void {
     const attempt = ++this.attempt;
+    if (this.grant.lobby && !this.memberToken) this.ask(attempt);
+    else this.enter(attempt);
+  }
+
+  private enter(attempt: number): void {
     this.startChat();
-    this.native.connect(this.grant.serverUrl, this.grant.token).catch((error) => {
+    this.native.connect(this.grant.serverUrl, this.token).catch((error) => {
       // A connect that was abandoned (the call was unmounted) is not worth reporting.
+      if (attempt === this.attempt) this.emit("error", error instanceof Error ? error : new Error(String(error)));
+    });
+  }
+
+  /**
+   * Waits in the lobby until a host answers. Being let in arrives as a message from our server
+   * (nobody in the lobby can send one) carrying a token for the meeting; being turned away is
+   * being removed from the lobby.
+   */
+  private ask(attempt: number): void {
+    const lobby = new Room();
+    this.lobby = lobby;
+    this.emit("status");
+    lobby
+      .on(RoomEvent.ConnectionStateChanged, () => {
+        if (this.lobby === lobby) this.emit("status");
+      })
+      .on(RoomEvent.DataReceived, (payload, sender, _kind, topic) => {
+        if (this.lobby !== lobby || sender || topic !== ADMIT_TOPIC) return;
+        let token: unknown;
+        try {
+          token = JSON.parse(new TextDecoder().decode(payload)).token;
+        } catch {
+          return;
+        }
+        if (typeof token !== "string" || attempt !== this.attempt) return;
+        this.memberToken = token;
+        this.lobby = null;
+        lobby.disconnect().catch(() => {});
+        this.enter(attempt);
+      })
+      .on(RoomEvent.Disconnected, (reason) => {
+        if (this.lobby !== lobby) return;
+        this.lobby = null;
+        this.emit("status");
+        this.emit("disconnected", whyDisconnected(reason, true));
+      });
+    lobby.connect(this.grant.serverUrl, this.grant.token).catch((error) => {
+      if (this.lobby !== lobby) return;
+      this.lobby = null;
+      this.emit("status");
       if (attempt === this.attempt) this.emit("error", error instanceof Error ? error : new Error(String(error)));
     });
   }
 
   async disconnect(): Promise<void> {
     this.attempt++;
+    const lobby = this.lobby;
+    if (lobby) {
+      // Giving up on asking: quietly, like any other hang-up of your own.
+      this.lobby = null;
+      await lobby.disconnect();
+      this.emit("status");
+      return;
+    }
     await this.native.disconnect();
   }
 
@@ -220,7 +310,95 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
 
   /** Room metadata is written by our server only (see src/lib/host.server.ts). */
   get hostIdentity(): string | null {
-    return hostFromMetadata(this.native.metadata);
+    return this.meta.host;
+  }
+
+  coHosts(): string[] {
+    return this.meta.coHosts;
+  }
+
+  get access(): JoinAccess {
+    return this.meta.access;
+  }
+
+  waiting(): RtcWaiter[] {
+    return this.waiters;
+  }
+
+  async moderate(action: HostAction): Promise<void> {
+    await postHost({ token: this.token, ...action });
+  }
+
+  /** Follows the room's metadata, and says what changed. */
+  private readMeta(): void {
+    const next = readMeta(this.native.metadata);
+    const last = this.meta;
+    this.meta = next;
+    const roles = next.host !== last.host || next.coHosts.join() !== last.coHosts.join();
+    if (roles) this.emit("host");
+    if (next.access !== last.access) this.emit("access");
+    this.syncLobbyWatch();
+  }
+
+  private get canModerate(): boolean {
+    const me = this.native.localParticipant.identity;
+    return !!me && (this.meta.host === me || this.meta.coHosts.includes(me));
+  }
+
+  /**
+   * The host and co-hosts see who is asking to join by being in the lobby themselves, hidden,
+   * for as long as people have to ask or somebody is still waiting. Who is in the lobby is the
+   * list; our server hands out the way in and checks who is asking for it.
+   */
+  private syncLobbyWatch(): void {
+    const wanted =
+      this.native.state === ConnectionState.Connected &&
+      this.canModerate &&
+      (this.meta.access === "ask" || this.waiters.length > 0);
+    if (wanted === !!this.watch) return;
+    if (!wanted) return this.stopLobbyWatch();
+    const attempt = ++this.watchAttempt;
+    const room = new Room();
+    this.watch = room;
+    const current = () => this.watch === room && attempt === this.watchAttempt;
+    const refresh = () => {
+      if (!current()) return;
+      this.waiters = Array.from(room.remoteParticipants.values(), (p) => ({ id: p.identity, name: p.name ?? "" }));
+      this.emit("waiting");
+      this.syncLobbyWatch();
+    };
+    const retry = (afterMs: number) => {
+      if (!current()) return;
+      this.watch = null;
+      if (this.waiters.length > 0) {
+        this.waiters = [];
+        this.emit("waiting");
+      }
+      setTimeout(() => this.syncLobbyWatch(), afterMs);
+    };
+    room
+      .on(RoomEvent.Connected, refresh)
+      .on(RoomEvent.ParticipantConnected, refresh)
+      .on(RoomEvent.ParticipantDisconnected, refresh)
+      .on(RoomEvent.ParticipantNameChanged, refresh)
+      .on(RoomEvent.Disconnected, () => retry(3000));
+    postHost({ token: this.token, action: "lobby" })
+      .then((data) => {
+        if (!current()) return;
+        return room.connect(this.grant.serverUrl, String(data.token));
+      })
+      .catch(() => retry(5000));
+  }
+
+  private stopLobbyWatch(): void {
+    const room = this.watch;
+    this.watch = null;
+    this.watchAttempt++;
+    if (this.waiters.length > 0) {
+      this.waiters = [];
+      this.emit("waiting");
+    }
+    room?.disconnect().catch(() => {});
   }
 
   /* ---------------------------------------------------------------- pictures */
@@ -401,6 +579,15 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     await this.native.localParticipant.setAttributes({ [HAND]: raised ? "1" : "" });
   }
 
+  async sendReaction(emoji: string): Promise<void> {
+    if (!isReaction(emoji) || this.native.state !== ConnectionState.Connected || !this.limits.maySend()) return;
+    this.emit("reaction", this.local, emoji);
+    await this.native.localParticipant.publishData(new TextEncoder().encode(JSON.stringify({ emoji })), {
+      reliable: true,
+      topic: REACTION_MESSAGE,
+    });
+  }
+
   /* ------------------------------------------------------------------ events */
 
   private listen(): void {
@@ -437,6 +624,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         rosterChanged();
         tilesChanged();
         this.emit("host");
+        this.readMeta();
       })
       .on(RoomEvent.Connected, this.sweepUnattached)
       .on(RoomEvent.Disconnected, (reason) => {
@@ -446,15 +634,21 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
         this.sendMessage = null;
         this.audioSink?.remove();
         this.audioSink = null;
-        const why: DisconnectReason =
-          reason === LiveKitDisconnectReason.PARTICIPANT_REMOVED
-            ? "removed"
-            : reason === undefined || reason === LiveKitDisconnectReason.CLIENT_INITIATED
-              ? "left"
-              : "dropped";
-        this.emit("disconnected", why);
+        this.stopLobbyWatch();
+        this.emit("disconnected", whyDisconnected(reason, false));
       })
-      .on(RoomEvent.RoomMetadataChanged, () => this.emit("host"))
+      .on(RoomEvent.RoomMetadataChanged, () => this.readMeta())
+      .on(RoomEvent.DataReceived, (payload, sender, _kind, topic) => {
+        // The sender is named by LiveKit, not by the message, so it cannot be somebody else's.
+        if (topic !== REACTION_MESSAGE || !sender) return;
+        let emoji: unknown;
+        try {
+          emoji = JSON.parse(new TextDecoder().decode(payload)).emoji;
+        } catch {
+          return;
+        }
+        if (isReaction(emoji) && this.limits.mayReceive(sender.identity)) this.emit("reaction", this.wrap(sender), emoji);
+      })
       .on(RoomEvent.ParticipantConnected, (participant) => {
         rosterChanged();
         tilesChanged();

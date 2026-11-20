@@ -18,6 +18,9 @@ const grant: Extract<JoinGrant, { provider: "realtimekit" }> = {
   meetingId: "meeting-id",
   role: "guest",
   hostPreset: "meetly-host",
+  coHosts: [],
+  access: "open",
+  canAsk: false,
 };
 const choices: JoinChoices = {
   username: "Ada",

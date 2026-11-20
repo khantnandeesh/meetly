@@ -1,11 +1,13 @@
 "use client";
 
-import { Link2, MessagesSquare, MonitorUp, Plus } from "lucide-react";
+import { Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { JoinForm } from "@/components/JoinForm";
 import { Logo } from "@/components/ui/Logo";
 import { generateCode } from "@/lib/code";
+import { createMeeting } from "@/lib/rtc/provider";
 
 const FEATURES = [
   {
@@ -27,6 +29,14 @@ const FEATURES = [
 
 export default function Home() {
   const router = useRouter();
+  const [starting, setStarting] = useState(false);
+
+  // The server makes the meeting, with this browser as its host. If it cannot be asked, any new
+  // code works as well: the first person into it becomes host instead.
+  async function start() {
+    setStarting(true);
+    router.push(`/${(await createMeeting()) ?? generateCode()}`);
+  }
 
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
@@ -52,8 +62,12 @@ export default function Home() {
             </div>
 
             <div className="flex max-w-[34rem] flex-col gap-3 sm:flex-row sm:items-start">
-              <button className="btn btn-primary" onClick={() => router.push(`/${generateCode()}`)}>
-                <Plus className="size-[1.125rem]" strokeWidth={2.5} aria-hidden="true" />
+              <button className="btn btn-primary" onClick={start} disabled={starting}>
+                {starting ? (
+                  <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" />
+                ) : (
+                  <Plus className="size-[1.125rem]" strokeWidth={2.5} aria-hidden="true" />
+                )}
                 New meeting
               </button>
               <JoinForm />

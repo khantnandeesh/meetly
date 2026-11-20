@@ -9,10 +9,37 @@
 
 export type RtcProviderName = "livekit" | "realtimekit";
 
-export type ConnectionStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
+/**
+ * "waiting": you asked to join and nobody has answered yet. You are not in the call: you see and
+ * hear nothing of it, and only the host and co-hosts are shown that you are there.
+ */
+export type ConnectionStatus = "connecting" | "waiting" | "connected" | "reconnecting" | "disconnected";
 
-/** Why the call ended for you: you left, the host removed you, or the connection was lost. */
-export type DisconnectReason = "left" | "removed" | "dropped";
+/**
+ * Why the call ended for you: you left, the host removed you, the connection was lost, the host
+ * did not let you in ("denied"), or the host ended the call for everyone ("ended").
+ */
+export type DisconnectReason = "left" | "removed" | "dropped" | "denied" | "ended";
+
+/** Who may join: anyone with the link, people the host lets in one by one, or nobody new. */
+export type JoinAccess = "open" | "ask" | "locked";
+
+/**
+ * Something the host (or, except for the last two kinds, a co-host) asks for. It is a request:
+ * our server decides, from the caller's signed token, whether it happens.
+ */
+export type HostAction =
+  | { action: "mute" | "remove" | "stopCamera" | "lowerHand" | "admit" | "deny"; identity: string }
+  | { action: "muteAll" | "lowerAllHands" }
+  | { action: "access"; access: JoinAccess }
+  | { action: "end" }
+  | { action: "coHost"; identity: string; on: boolean };
+
+/** Someone asking to join. `id` is what `admit` and `deny` take as `identity`. */
+export type RtcWaiter = { id: string; name: string };
+
+/** The reactions that can be sent. Anything else is dropped on arrival. */
+export const REACTIONS = ["👍", "❤️", "😂", "😮", "👏", "🎉"] as const;
 
 /** Also the value of `data-source` on a tile, which the stylesheet and the stage key on. */
 export type TileSource = "camera" | "screen_share";
@@ -96,8 +123,14 @@ export type RtcEvents = {
   device: [kind: DeviceKind];
   /** `chatMessages()` or `chatSending` changed. */
   chat: [];
-  /** `hostIdentity` changed. */
+  /** `hostIdentity` or `coHosts()` changed. */
   host: [];
+  /** `access` changed. */
+  access: [];
+  /** The list from `waiting()` changed. */
+  waiting: [];
+  /** Somebody (possibly you) sent a reaction. `emoji` is always one of `REACTIONS`. */
+  reaction: [participant: RtcParticipant, emoji: string];
   /** `audioBlocked` changed. */
   audio: [];
 };
@@ -127,6 +160,19 @@ export interface RtcCall {
   participant(identity: string): RtcParticipant | undefined;
   /** Who the server made host, or null while unknown. Decided server-side; this only displays it. */
   readonly hostIdentity: string | null;
+  /** Identities the host made co-host, as the server recorded it. A new array whenever `host` fires. */
+  coHosts(): string[];
+  /** Who may join right now, as far as this client has been told. */
+  readonly access: JoinAccess;
+  /** People asking to join. Empty unless you are the host or a co-host. A new array whenever `waiting` fires. */
+  waiting(): RtcWaiter[];
+  /**
+   * Asks our server for a moderation action and does whatever the provider needs around it.
+   * Rejects with a message fit to show if it was refused or failed.
+   */
+  moderate(action: HostAction): Promise<void>;
+  /** Moderation that depends on how the provider is set up. Everything else is always available. */
+  readonly supports: { askToJoin: boolean; stopCamera: boolean };
 
   /* pictures */
   /** A new array whenever `tiles` fires. */
@@ -157,6 +203,8 @@ export interface RtcCall {
   readonly chatSending: boolean;
   sendChat(text: string): Promise<void>;
   setHandRaised(raised: boolean): Promise<void>;
+  /** Shows `emoji` (one of `REACTIONS`) to everyone for a moment. Nothing is stored. */
+  sendReaction(emoji: string): Promise<void>;
 
   on<E extends RtcEventName>(event: E, listener: (...args: RtcEvents[E]) => void): () => void;
 }
@@ -172,7 +220,13 @@ export type JoinChoices = {
 
 /** What POST /api/token returns, per provider. Opaque to components. */
 export type JoinGrant =
-  | { provider: "livekit"; token: string; serverUrl: string }
+  | {
+      provider: "livekit";
+      token: string;
+      serverUrl: string;
+      /** The token opens the lobby, not the meeting: this person has to be let in first. */
+      lobby?: boolean;
+    }
   | {
       provider: "realtimekit";
       authToken: string;
@@ -183,6 +237,11 @@ export type JoinGrant =
       role: "host" | "guest";
       /** Preset name that marks a participant as host, so guests can show who it is. */
       hostPreset: string;
+      /** Co-hosts and join access at the moment of joining; the adapter asks again when told they changed. */
+      coHosts: string[];
+      access: JoinAccess;
+      /** The app has a preset whose holders wait to be let in, so "ask to join" can be offered. */
+      canAsk: boolean;
     };
 
 export type RtcProviderModule = {

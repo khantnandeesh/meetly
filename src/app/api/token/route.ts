@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
-import { AccessToken } from "livekit-server-sdk";
 import { isValidCode } from "@/lib/code";
-import { claimHostIfFirst } from "@/lib/host.server";
+import { decideJoin, liveKitPassSecret, mintJoinToken } from "@/lib/host.server";
+import { extendPass, passCookie, readPass } from "@/lib/pass.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
-import { issueRealtimeKitJoin, missingRealtimeKitEnv } from "@/lib/rtc/server/realtimekit";
+import { issueRealtimeKitJoin, missingRealtimeKitEnv, realtimeKitPassSecret } from "@/lib/rtc/server/realtimekit";
 
-/** Lets someone into a meeting. What comes back depends on the provider this build uses. */
+const REFUSALS = {
+  removed: "The host removed you from this meeting.",
+  locked: "This meeting is locked. Nobody new can join right now.",
+} as const;
+
+function refuse(reason: keyof typeof REFUSALS): Response {
+  return Response.json({ error: REFUSALS[reason], reason }, { status: 403 });
+}
+
+/** Lets someone into a meeting, or says why not. What comes back depends on the provider this build uses. */
 export async function POST(request: Request) {
   if (RTC_PROVIDER === "realtimekit") {
     const missing = missingRealtimeKitEnv();
@@ -36,34 +45,36 @@ export async function POST(request: Request) {
   }
 
   if (RTC_PROVIDER === "realtimekit") {
+    const secret = realtimeKitPassSecret();
+    const pass = readPass(request, room, secret);
     try {
-      // { authToken, session, participantId, meetingId, role, hostPreset }
-      return Response.json(await issueRealtimeKitJoin(room, name));
+      const outcome = await issueRealtimeKitJoin(room, name, pass);
+      if (outcome.refused) return refuse(outcome.refused);
+      // { authToken, session, participantId, meetingId, role, hostPreset, coHosts, access, canAsk }
+      return Response.json(outcome.join, {
+        headers: { "Set-Cookie": passCookie(request, extendPass(pass, outcome.identity, outcome.key), secret) },
+      });
     } catch (error) {
       console.error("Could not issue a RealtimeKit token", error);
       return Response.json({ error: "Could not reach the meeting service. Try again." }, { status: 502 });
     }
   }
-  return Response.json(await liveKitJoin(room, name));
-}
 
-async function liveKitJoin(room: string, name: string): Promise<{ token: string; serverUrl: string }> {
+  const secret = liveKitPassSecret();
+  const pass = readPass(request, room, secret);
   // Identity is always minted server-side so a client can't impersonate another participant.
   const identity = randomUUID();
-  // The first person into an empty room becomes its host (see src/lib/host.server.ts).
-  await claimHostIfFirst(room, identity);
-  const token = new AccessToken(process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET, {
-    identity,
-    name,
-    ttl: "6h",
-  });
-  token.addGrant({
-    room,
-    roomJoin: true,
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-    canUpdateOwnMetadata: true, // lets a participant raise/lower their own hand
-  });
-  return { token: await token.toJwt(), serverUrl: process.env.LIVEKIT_URL! };
+  // Host, guest, a guest who has to ask first, or nobody (see src/lib/host.server.ts).
+  const decision = await decideJoin(room, identity, pass);
+  if (decision.refused) return refuse(decision.refused);
+  // Someone who has to ask is given a token for the lobby, not for the meeting.
+  const asking = decision.role === "guest" && decision.access === "ask";
+  return Response.json(
+    {
+      token: await mintJoinToken(room, identity, name, asking ? "asking" : "member"),
+      serverUrl: process.env.LIVEKIT_URL!,
+      ...(asking ? { lobby: true } : {}),
+    },
+    { headers: { "Set-Cookie": passCookie(request, extendPass(pass, identity, decision.key), secret) } },
+  );
 }
