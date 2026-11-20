@@ -13,8 +13,10 @@ Link-based video meetings built on Next.js, running on [LiveKit](https://livekit
 - A meeting for later: a link now, and a Google Calendar, Outlook or .ics entry to go with it
 - Layouts for large calls: Auto, Tiled (paginated gallery), Spotlight and Sidebar, with a debounced
   active speaker on the main tile; only on-screen cameras are streamed
-- People list with search (windowed, fine at 100+); raised hands at the top, in the order they
-  went up
+- People list with search (windowed, fine at 1,000+), as one scrolling list: who is waiting to
+  join (the five who have waited longest, with how long, Admit all and Deny all), raised hands
+  (the first five in the order they went up, with Lower all), everyone, and for the host who
+  left since they joined. Waiting and hands each have a "See all" view with its own search
 - Whoever starts the meeting is its host, from that browser, across reloads. The host can mute one
   or all, stop a camera, lower hands, remove people, name co-hosts, end the call for everyone,
   and choose who can join: anyone with the link, people who ask, or nobody new
@@ -284,6 +286,18 @@ offers it) or lock it.
 Every host action is a request to `/api/host`, which works out from the caller's signed token
 and the meeting's record what they may do. Co-hosts can do everything except end the call and
 choose co-hosts, and cannot act on the host.
+
+Admit all and Deny all are one request however many people are waiting. If some of them could
+not be answered, the host gets one notification with how many, and "Try again" answers just
+those. On RealtimeKit our server only says yes, and the host's own browser then answers the
+waiting room through the SDK (one message for Admit all, one per person for Deny all).
+
+**Allow reactions** (People › ⋯, host and co-hosts) is kept in the meeting's record and is
+enforced client-side only. Each browser disables its own react button and drops reactions that
+arrive from anyone but the host and co-hosts while it is off, but reactions travel between
+browsers without passing our server, so a modified client can still send one to anyone whose
+browser does not drop it. On RealtimeKit a reaction names its sender itself, so one that claims
+to come from the host is believed.
 
 On LiveKit the record is the room's metadata, kept for a day after the last person leaves; after
 that the code is new again. People who have to ask wait in a second room (`<code>.lobby`) with a

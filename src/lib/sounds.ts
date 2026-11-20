@@ -105,12 +105,14 @@ export const SOUNDS: Record<SoundName, SoundSpec> = {
   },
 
   // Somebody at the door: the same note twice, mid-register, like knuckles. It asks the host
-  // for an answer, so it is one of the sounds that "important only" keeps.
+  // for an answer, so it is one of the sounds that "important only" keeps. At most one every
+  // 30 seconds: in a steady stream of arrivals the notification's count is the news, not a
+  // knock every few seconds.
   knock: {
     notes: [note(E5, 0, 0.36, 0.028), note(E5, 0.12, 0.4, 0.04)],
     length: 0.32,
     important: true,
-    minGapMs: 4000,
+    minGapMs: 30_000,
     meaning: "Someone is asking to join (host and co-hosts only)",
   },
 

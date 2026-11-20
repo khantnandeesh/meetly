@@ -10,18 +10,17 @@ import {
   UserMinus,
   UserPlus,
   Users,
-  Volume2,
-  WifiOff,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
+import { badgeCount, fullCount, shortCount } from "@/lib/counts";
 import { copyText, useCopied, useIsPhone, usePresence } from "@/lib/hooks";
 import { miniTile } from "@/lib/miniTile";
 import { handQueue } from "@/lib/handQueue";
 import { crowdSentence } from "@/lib/notices";
 import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
-import { useAudioBlocked, useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
+import { useCall, useCallQuality, useConnectionStatus, useParticipants, useTiles, useWaiting } from "@/lib/rtc/react";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { displayName, type RtcParticipant, type RtcTile } from "@/lib/rtc/types";
 import { deviceClass, sendUsageEvent, sizeBucket } from "@/lib/usage";
@@ -29,7 +28,7 @@ import { useCallSettings } from "@/lib/useCallSettings";
 import { useMiniWindow } from "@/lib/usePip";
 import { noteOwnMicToggle, notePresence, useCallSounds } from "@/lib/useSounds";
 import { useSpeakers, type VisibleRange } from "@/lib/useSpeakers";
-import { CallQualityDialog, DataSaverBadge, WeakConnectionNotice } from "./CallQuality";
+import { CallQualityDialog, DataSaverBadge } from "./CallQuality";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
@@ -40,6 +39,7 @@ import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
 import { ReactionFeed, ReactionLane } from "./Reactions";
 import { ShortcutsDialog } from "./ShortcutsDialog";
+import { StatusLane } from "./StatusLane";
 import { Tile } from "./Tile";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -69,7 +69,7 @@ function Call({ code }: { code: string }) {
   const connection = useConnectionStatus();
   const [settings, updateSettings] = useCallSettings();
   useCallSounds(call, {
-    onHostMuted: () => toast.push({ priority: "you", icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
+    onHostMuted: () => toast.push({ tag: "muted-by-host", priority: "you", icon: <MicOff className="size-5" />, title: "The host muted your microphone" }),
   });
 
   // Opt-in handle for load tests and debugging: set localStorage["meetly:debug"] = "1".
@@ -367,6 +367,7 @@ function Call({ code }: { code: string }) {
   const hideSelf = useCallback(() => {
     updateSettings({ selfView: "hidden" });
     toast.push({
+      tag: "self-hidden",
       priority: "you",
       icon: <EyeOff className="size-5" />,
       title: "Your own video is hidden",
@@ -378,7 +379,7 @@ function Call({ code }: { code: string }) {
   // Copying confirms on the button that was pressed (see useCopied); only a failure needs a toast.
   const copyLink = useCallback(async () => {
     const ok = await copyText(`${window.location.origin}/${code}`);
-    if (!ok) toast.push({ icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link", body: "Copy it from the address bar instead." });
+    if (!ok) toast.push({ tag: "copy-error", icon: <CircleAlert className="size-5" />, tone: "danger", title: "Couldn't copy the link", body: "Copy it from the address bar instead." });
     return ok;
   }, [code, toast]);
   const headerCopy = useCopied(copyLink);
@@ -401,13 +402,8 @@ function Call({ code }: { code: string }) {
           ? 7.25
           : 0;
   const panelInset = (shown ? 23.25 : 0) + (beside ? 14.75 : 0);
-  // How many notifications the screen can take (src/lib/notices.ts): two, or on a phone with a
-  // sheet open one line over the top bar, and then only what concerns you.
+  // How many notifications fit is the status lane's to say (see StatusLane.tsx).
   const sheetOpen = phone && panel !== null;
-  useEffect(() => {
-    toast.setSurface(sheetOpen ? { max: 1, info: false, compact: true } : { max: 2, info: true });
-  }, [sheetOpen, toast]);
-  useEffect(() => () => toast.setSurface({ max: 2, info: true }), [toast]);
   useEffect(() => {
     // Set on the notification region itself, not on the page root: a custom property changed on
     // the root makes the browser re-resolve the style of every element in the document, and
@@ -500,7 +496,6 @@ function Call({ code }: { code: string }) {
 
   /* ------------------------------------------------------------------ render */
   const connecting = connection === "connecting";
-  const reconnecting = connection === "reconnecting";
   const alone = participants.length === 1 && !connecting;
   const leaving = panel === null && shown !== null;
   const panelTitle = shown === "chat" ? "Chat" : "People";
@@ -535,8 +530,11 @@ function Call({ code }: { code: string }) {
             >
               <Users className="size-[1.125rem]" aria-hidden="true" />
               <span className="sr-only">People, </span>
-              {participants.length}
-              <span className="sr-only"> in the meeting</span>
+              {/* "1.2k" fits the top bar; a screen reader hears the whole number. */}
+              <span aria-hidden="true" data-headcount>
+                {shortCount(participants.length)}
+              </span>
+              <span className="sr-only">{fullCount(participants.length)} in the meeting</span>
               <WaitingCount />
             </button>
           </div>
@@ -591,11 +589,7 @@ function Call({ code }: { code: string }) {
 
           <Connecting show={connecting} />
 
-          <div className="pointer-events-none absolute inset-x-0 top-3 z-40 flex flex-col items-center gap-2">
-            <Reconnecting show={reconnecting} />
-            <WeakConnectionNotice />
-            <AudioUnlock />
-          </div>
+          <StatusLane phone={phone} sheetOpen={sheetOpen} />
         </main>
 
         {shown && (
@@ -615,7 +609,7 @@ function Call({ code }: { code: string }) {
               onAnimationEnd={(event) => {
                 if (leaving && event.target === event.currentTarget) setShown(null);
               }}
-              className={`panel flex w-[22.5rem] shrink-0 flex-col ${leaving ? "md:absolute md:inset-y-3 md:right-3" : ""} overflow-hidden rounded-[1.25rem] bg-surface shadow-[inset_0_0_0_1px_var(--border)] max-md:fixed max-md:inset-x-0 max-md:top-[max(3.5rem,env(safe-area-inset-top))] max-md:bottom-0 max-md:z-50 max-md:w-auto max-md:rounded-b-none`}
+              className={`panel flex w-[22.5rem] shrink-0 flex-col ${leaving ? "md:absolute md:inset-y-3 md:right-3" : ""} overflow-hidden rounded-[1.25rem] bg-surface shadow-[inset_0_0_0_1px_var(--border)] max-md:fixed max-md:inset-x-0 max-md:top-(--sheet-top) max-md:bottom-0 max-md:z-50 max-md:w-auto max-md:rounded-b-none`}
             >
               <div
                 className="relative flex items-center justify-between py-2.5 pr-2.5 pl-5 max-md:touch-none max-md:pt-4"
@@ -848,12 +842,11 @@ function WaitingCount() {
   if (!canModerate || waiting.length === 0) return null;
   return (
     <span
-      className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+      className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink tabular-nums ring-3 ring-bg"
       data-waiting-count
     >
-      <span className="sr-only">, </span>
-      {waiting.length > 9 ? "9+" : waiting.length}
-      <span className="sr-only"> waiting to join</span>
+      <span aria-hidden="true">{badgeCount(waiting.length)}</span>
+      <span className="sr-only">, {fullCount(waiting.length)} waiting to join</span>
     </span>
   );
 }
@@ -874,22 +867,6 @@ function Connecting({ show }: { show: boolean }) {
         <p>Joining the meeting…</p>
       </div>
     </div>
-  );
-}
-
-function Reconnecting({ show }: { show: boolean }) {
-  const presence = usePresence(show);
-  if (!presence.mounted) return null;
-  return (
-    <p
-      role={show ? "status" : undefined}
-      data-leaving={presence.leaving}
-      onAnimationEnd={presence.onAnimationEnd}
-      className="anim-pop chip h-9 gap-2 px-3.5 text-warn shadow-lg"
-    >
-      <WifiOff className="size-4" aria-hidden="true" />
-      Connection lost. Reconnecting…
-    </p>
   );
 }
 
@@ -929,18 +906,5 @@ function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCop
         </span>
       </button>
     </div>
-  );
-}
-
-/** Browsers may block audio until the page is interacted with; offer a one-tap fix. */
-function AudioUnlock() {
-  const call = useCall();
-  const blocked = useAudioBlocked();
-  if (!blocked) return null;
-  return (
-    <button onClick={() => call.startAudio().catch(() => {})} className="btn btn-primary anim-pop pointer-events-auto h-11 rounded-xl shadow-lg">
-      <Volume2 className="size-[1.125rem]" aria-hidden="true" />
-      Turn on sound
-    </button>
   );
 }

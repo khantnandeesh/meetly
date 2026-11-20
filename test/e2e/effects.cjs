@@ -474,7 +474,9 @@ async function run(browser) {
   await mo.page.getByRole("button", { name: "Join now" }).click();
   await H.inCall(mo);
   await mo.page.getByRole("button", { name: "More options" }).click();
-  // On a phone the device settings are one level down in More.
+  // On a phone the device settings are one level down in More, and first in it.
+  await mo.page.getByRole("menu").waitFor();
+  H.ok("phone: Audio and video is the first item in More", /^Audio and video/.test((await mo.page.locator("[role=menu] [role^=menuitem]").first().innerText()).trim()));
   await mo.page.getByRole("menuitem", { name: "Audio and video" }).click();
   const phoneSwitch = mo.page.getByRole("menuitemcheckbox", { name: /^Noise suppression/ });
   await phoneSwitch.scrollIntoViewIfNeeded();
