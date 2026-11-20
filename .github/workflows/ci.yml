@@ -1,0 +1,201 @@
+# Checks every change: types, lint, unit tests, a production build for each media provider, and
+# the browser tests against a local LiveKit dev server.
+#
+# Runs on pull requests and on pushes to every branch except cloudflare-deploy. Pushes to
+# cloudflare-deploy run these same jobs through deploy.yml (workflow_call), and deploy only if
+# they pass, so they are not run twice.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches-ignore:
+      - cloudflare-deploy
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch (or PR) cancels the run it supersedes. When deploy.yml calls
+# this workflow, `github.workflow` is "Deploy", so this never cancels a CI run of another branch.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "22"
+  NEXT_TELEMETRY_DISABLED: "1"
+  # https://github.com/livekit/livekit/releases
+  LIVEKIT_VERSION: "1.13.11"
+  # The version the browser tests were written against.
+  PLAYWRIGHT_VERSION: "1.63.0"
+
+jobs:
+  checks:
+    name: Types, lint, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # Route types (PageProps, LayoutProps) come from `next typegen`; without them tsc fails.
+      - name: Generate route types
+        run: npx next typegen
+      - name: Type check
+        run: npx tsc --noEmit
+      - name: Lint
+        run: npm run lint
+      - name: Unit tests
+        run: npm test
+
+  build:
+    name: Build (${{ matrix.provider }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        provider: [livekit, realtimekit]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      # https://nextjs.org/docs/app/guides/ci-build-caching (also node_modules/next/dist/docs).
+      # One cache per provider: NEXT_PUBLIC_RTC_PROVIDER is inlined, so their outputs differ.
+      - name: Cache Next.js build
+        uses: actions/cache@v5
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-${{ matrix.provider }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**', 'public/**', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            next-${{ runner.os }}-${{ matrix.provider }}-${{ hashFiles('package-lock.json') }}-
+      # A variable set here wins over .env.production (which on cloudflare-deploy says realtimekit).
+      - name: next build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_RTC_PROVIDER: ${{ matrix.provider }}
+
+  e2e:
+    name: Browser tests (LiveKit dev server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      MEETLY_URL: http://127.0.0.1:3000
+      ARTIFACTS: ${{ github.workspace }}/e2e-artifacts
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+
+      - name: Cache livekit-server
+        id: livekit-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/livekit
+          key: livekit-server-${{ env.LIVEKIT_VERSION }}-linux-amd64
+      # The official release archive, checked against the release's own checksums.txt.
+      - name: Download livekit-server ${{ env.LIVEKIT_VERSION }}
+        if: steps.livekit-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/livekit"
+          mkdir -p "$dir"
+          cd "$dir"
+          archive="livekit_${LIVEKIT_VERSION}_linux_amd64.tar.gz"
+          base="https://github.com/livekit/livekit/releases/download/v${LIVEKIT_VERSION}"
+          curl -fsSL --retry 4 -o "$archive" "$base/$archive"
+          curl -fsSL --retry 4 -o checksums.txt "$base/checksums.txt"
+          grep " ${archive}\$" checksums.txt | sha256sum -c -
+          mkdir unpacked
+          tar xzf "$archive" -C unpacked
+          install -m 755 "$(find unpacked -type f -name livekit-server | head -n 1)" livekit-server
+          rm -rf unpacked "$archive" checksums.txt
+      - name: Start livekit-server --dev
+        run: |
+          set -euo pipefail
+          mkdir -p "$ARTIFACTS/logs"
+          "$RUNNER_TEMP/livekit/livekit-server" --version
+          nohup "$RUNNER_TEMP/livekit/livekit-server" --dev --bind 127.0.0.1 > "$ARTIFACTS/logs/livekit-server.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:7880/ >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "livekit-server did not start"; cat "$ARTIFACTS/logs/livekit-server.log"; exit 1
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      # Playwright is not a dependency of the app (see eslint.config.mjs): the tests find it
+      # through NODE_PATH, so it is installed outside the project and package-lock.json is untouched.
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+
+      - name: Cache Next.js build
+        uses: actions/cache@v5
+        with:
+          path: .next/cache
+          key: next-${{ runner.os }}-e2e-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**', 'public/**', 'next.config.ts', 'tsconfig.json') }}
+          restore-keys: |
+            next-${{ runner.os }}-e2e-${{ hashFiles('package-lock.json') }}-
+      # NEXT_PUBLIC_CALL_RATING=1: the rating suite tests the leave-screen rating, which is only
+      # built in with that flag.
+      - name: Build (LiveKit, call rating on)
+        run: npm run build
+        env:
+          NEXT_PUBLIC_RTC_PROVIDER: livekit
+          NEXT_PUBLIC_CALL_RATING: "1"
+      - name: Start Meetly
+        env:
+          NEXT_PUBLIC_RTC_PROVIDER: livekit
+          LIVEKIT_URL: ws://127.0.0.1:7880
+          LIVEKIT_API_KEY: devkey
+          LIVEKIT_API_SECRET: secret
+        run: |
+          set -euo pipefail
+          nohup npx next start -H 127.0.0.1 -p 3000 > "$ARTIFACTS/logs/next.log" 2>&1 &
+          for _ in $(seq 1 60); do
+            curl -fsS -o /dev/null "$MEETLY_URL/" && exit 0
+            sleep 1
+          done
+          echo "Meetly did not start"; cat "$ARTIFACTS/logs/next.log"; exit 1
+
+      # Every suite: host, reactions, host-tools, access, effects, schedule, chat, fixes, polls,
+      # quality, mini, rating.
+      - name: Browser tests (all suites)
+        env:
+          MEETLY_FAILURE_SHOTS: ${{ github.workspace }}/e2e-artifacts/screenshots
+        run: |
+          set -o pipefail
+          node test/e2e/run.cjs 2>&1 | tee "$ARTIFACTS/logs/e2e.log"
+
+      - name: Upload screenshots and logs
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e-artifacts/
+          retention-days: 14
+          if-no-files-found: warn

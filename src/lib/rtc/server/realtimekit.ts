@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { PASS_MAX_AGE_S, type Pass } from "../../pass.server";
 import { DENIED, GONE, HOST_ONLY, NOT_THE_HOST, OWN_CONTROLS, isHostOnly, type HostActionResult } from "../hostAction";
-import type { HostAction, JoinAccess } from "../types";
+import type { HostAction, JoinAccess, MeetingPeek } from "../types";
 import { signSession, verifySession, type Session } from "./session";
 
 /**
@@ -381,16 +381,20 @@ export async function createRealtimeKitMeeting(code: string): Promise<{ key: str
   }
 }
 
-/** What the pre-join screen may know before asking to join. */
-export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<{ access: JoinAccess; host: boolean }> {
+/**
+ * What the pre-join screen may know before asking to join. How many people are in the meeting
+ * is not known: the participant records say who may join, not who is there, and asking
+ * RealtimeKit who is there is rate-limited.
+ */
+export async function peekRealtimeKitMeeting(code: string, pass: Pass): Promise<MeetingPeek> {
   const c = config();
   try {
     const meeting = c ? await findMeeting(c, code) : null;
-    if (!c || !meeting) return { access: "open", host: false };
+    if (!c || !meeting) return { access: "open", host: false, count: null };
     const record = readRecord(await listParticipants(c, meeting.id), c.hostPreset, c.knockPreset !== null);
-    return { access: record.access, host: !!pass.key && record.hosts.some((p) => p.id === pass.key) };
+    return { access: record.access, host: !!pass.key && record.hosts.some((p) => p.id === pass.key), count: null };
   } catch {
-    return { access: "open", host: false };
+    return { access: "open", host: false, count: null };
   }
 }
 

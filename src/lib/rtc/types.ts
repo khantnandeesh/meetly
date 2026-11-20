@@ -25,11 +25,35 @@ export type DisconnectReason = "left" | "removed" | "dropped" | "denied" | "ende
 export type JoinAccess = "open" | "ask" | "locked";
 
 /**
- * Something the host (or, except for the last two kinds, a co-host) asks for. It is a request:
+ * What kind of call this is, fixed when the link is made. In a webinar most people only watch:
+ * they have no microphone, camera or tile until the host brings them on stage.
+ */
+export type CallMode = "meeting" | "webinar";
+
+/**
+ * What someone may do in the call. Everyone in a meeting is a "speaker" except the host. In a
+ * webinar the audience are "viewer"s, and a viewer the host brings on stage becomes a "speaker".
+ * Co-hosts keep the role they have; `coHosts()` says who they are.
+ */
+export type ParticipantRole = "host" | "speaker" | "viewer";
+
+/** What the pre-join screen may know about a meeting before asking to join it. */
+export type MeetingPeek = {
+  access: JoinAccess;
+  /** This browser made the meeting. */
+  host: boolean;
+  /** How many people are in it right now, or null where the provider cannot say cheaply. */
+  count: number | null;
+};
+
+/**
+ * Something the host (or, for all but `end` and `coHost`, a co-host) asks for. It is a request:
  * our server decides, from the caller's signed token, whether it happens.
  */
 export type HostAction =
   | { action: "mute" | "remove" | "stopCamera" | "lowerHand" | "admit" | "deny"; identity: string }
+  /** Answers everyone in `identities` (ids from `waiting()`). If some fail, it rejects once, saying how many. */
+  | { action: "admitAll" | "denyAll"; identities: string[] }
   | { action: "muteAll" | "lowerAllHands" }
   | { action: "access"; access: JoinAccess }
   | { action: "end" }
@@ -37,10 +61,22 @@ export type HostAction =
   /** Shows one chat message above the conversation for everyone; null takes it down again. */
   | { action: "pin"; messageId: string | null }
   /** Stops a poll taking votes. Its result stays where it is. */
-  | { action: "closePoll"; pollId: string };
+  | { action: "closePoll"; pollId: string }
+  /** Lets everyone send reactions, or stops them. See `reactionsAllowed`. */
+  | { action: "reactions"; allowed: boolean }
+  /** Webinars: invites a viewer to speak (`on`), or sends a speaker back to the audience. */
+  | { action: "stage"; identity: string; on: boolean };
 
 /** Someone asking to join. `id` is what `admit` and `deny` take as `identity`. */
-export type RtcWaiter = { id: string; name: string };
+export type RtcWaiter = {
+  id: string;
+  name: string;
+  /**
+   * When they started waiting, in milliseconds since the epoch. Where the provider does not say,
+   * it is when this browser first saw them asking, so it can be later than the truth.
+   */
+  since: number;
+};
 
 /** The reactions that can be sent. Anything else is dropped on arrival. */
 export const REACTIONS = ["👍", "❤️", "😂", "😮", "👏", "🎉"] as const;
@@ -71,6 +107,20 @@ export interface RtcParticipant {
   readonly weakConnection: boolean;
   /** Called when any of the properties above changes. */
   subscribe(listener: () => void): () => void;
+  /**
+   * What they may do in the call. Read live; a change is announced by the `host` or `stage`
+   * event, not by `subscribe`.
+   */
+  readonly role: ParticipantRole;
+}
+
+/** You, as `RtcCall.local` has you: one more thing that only you are told. */
+export interface RtcLocalParticipant extends RtcParticipant {
+  /**
+   * Webinars: the host has invited you on stage and you have not answered yet. Always false in a
+   * meeting. A change is announced by `subscribe` and by the `stage` event.
+   */
+  readonly stageInvite: boolean;
 }
 
 /** A camera or screen picture that can be shown in a `<video>`. */
@@ -82,8 +132,8 @@ export interface RtcVideoTrack {
 }
 
 /**
- * Something the stage can show: every participant has a camera tile (with a track once their
- * camera is published), and one more for each screen being shared.
+ * Something the stage can show: every participant but a viewer has a camera tile (with a track
+ * once their camera is published), and one more for each screen being shared.
  */
 export type RtcTile = {
   participant: RtcParticipant;
@@ -222,6 +272,10 @@ export type RtcEvents = {
   waiting: [];
   /** Somebody (possibly you) sent a reaction. `emoji` is always one of `REACTIONS`. */
   reaction: [participant: RtcParticipant, emoji: string];
+  /** `reactionsAllowed` changed. */
+  reactionsAllowed: [];
+  /** Somebody's `role`, or your `stageInvite`, changed. */
+  stage: [];
   /** `audioBlocked` changed. */
   audio: [];
   /** The list from `polls()` changed. */
@@ -238,6 +292,8 @@ export interface RtcCall {
   readonly provider: RtcProviderName;
   /** The provider's own room or meeting object. For debugging and tests only, never for UI. */
   readonly native: unknown;
+  /** A meeting or a webinar. It never changes during the call. */
+  readonly mode: CallMode;
 
   /* connection */
   readonly status: ConnectionStatus;
@@ -247,7 +303,7 @@ export interface RtcCall {
   disconnect(): Promise<void>;
 
   /* people */
-  readonly local: RtcParticipant;
+  readonly local: RtcLocalParticipant;
   /** You first, then everyone else in a stable order. A new array whenever `roster` fires. */
   participants(): RtcParticipant[];
   /** Identities of everyone but you, in the same order. Read live. */
@@ -274,7 +330,7 @@ export interface RtcCall {
   readonly supports: { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean };
 
   /* pictures */
-  /** A new array whenever `tiles` fires. */
+  /** Never includes a viewer. A new array whenever `tiles` fires. */
   tiles(): RtcTile[];
   /** Tells the provider whose pictures are on screen, so the rest need not be streamed. */
   setVideoDemand(visibleRemoteIdentities: string[]): void;
@@ -317,6 +373,11 @@ export interface RtcCall {
   setHandRaised(raised: boolean): Promise<void>;
   /** Shows `emoji` (one of `REACTIONS`) to everyone for a moment. Nothing is stored. */
   sendReaction(emoji: string): Promise<void>;
+  /**
+   * The host lets people send reactions. Each browser keeps to it for itself; nothing on a
+   * server stops a modified client sending one anyway.
+   */
+  readonly reactionsAllowed: boolean;
 
   /* polls */
   /** Oldest first, including what was started before you joined. A new array whenever `polls` fires. */
@@ -357,6 +418,8 @@ export type JoinGrant =
       serverUrl: string;
       /** The token opens the lobby, not the meeting: this person has to be let in first. */
       lobby?: boolean;
+      /** Absent means "meeting". */
+      mode?: CallMode;
     }
   | {
       provider: "realtimekit";
@@ -377,6 +440,8 @@ export type JoinGrant =
       pin?: string | null;
       /** Ids of polls that had been ended at the moment of joining. */
       closedPolls?: string[];
+      /** Absent means "meeting". */
+      mode?: CallMode;
     };
 
 export type RtcProviderModule = {

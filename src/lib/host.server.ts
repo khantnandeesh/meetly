@@ -13,7 +13,7 @@ import {
 } from "./rtc/hostAction";
 import { closeStoredPoll } from "./pollStore";
 import { ADMIT_TOPIC, readStoredPolls, type StoredPoll } from "./rtc/shared";
-import type { HostAction, JoinAccess } from "./rtc/types";
+import type { HostAction, JoinAccess, MeetingPeek } from "./rtc/types";
 
 /**
  * The meeting's record and its rules on LiveKit, enforced here on the server.
@@ -234,15 +234,18 @@ export async function decideJoin(room: string, identity: string, pass: Pass): Pr
 }
 
 /** What the pre-join screen may know before asking to join. */
-export async function peekMeeting(room: string, pass: Pass): Promise<{ access: JoinAccess; host: boolean }> {
+export async function peekMeeting(room: string, pass: Pass): Promise<MeetingPeek> {
   const service = roomService();
+  if (!service) return { access: "open", host: false, count: null };
   try {
-    const [existing] = (await service?.listRooms([room])) ?? [];
-    if (!existing) return { access: "open", host: false };
+    const [existing] = await service.listRooms([room]);
+    if (!existing) return { access: "open", host: false, count: 0 };
     const meta = parseRoomMeta(existing.metadata);
-    return { access: meta.access ?? "open", host: !!meta.kid && pass.key === meta.kid };
+    // The count comes with the room at no extra cost. It is LiveKit's own, and can trail a join
+    // or a leave by a moment. People waiting in the lobby are in another room and not counted.
+    return { access: meta.access ?? "open", host: !!meta.kid && pass.key === meta.kid, count: existing.numParticipants };
   } catch {
-    return { access: "open", host: false };
+    return { access: "open", host: false, count: null };
   }
 }
 

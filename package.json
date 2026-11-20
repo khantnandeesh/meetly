@@ -11,7 +11,7 @@
     "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
     "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
     "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts",
-    "test": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --import ./test/register.mjs --test --test-reporter=spec \"test/**/*.test.ts\"",
+    "test": "node --experimental-transform-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning --import ./test/register.mjs --test --test-reporter=spec \"test/**/*.test.ts\"",
     "effects": "node scripts/copy-effects.mjs",
     "predev": "node scripts/copy-effects.mjs",
     "prebuild": "node scripts/copy-effects.mjs"

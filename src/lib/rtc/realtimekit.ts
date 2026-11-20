@@ -9,16 +9,20 @@ import {
   SAVER_FPS,
   SAVER_HEIGHT,
   SAVER_WIDTH,
+  answerEach,
   checkNewPoll,
   createReactionLimits,
   isReaction,
+  notAvailableYet,
   postHost,
+  withSince,
   type HostApi,
   notice,
 } from "./shared";
 import { POLL_LIMITS } from "./types";
 import type {
   BackgroundMode,
+  CallMode,
   CallQuality,
   CallStats,
   ConnectionStatus,
@@ -32,8 +36,10 @@ import type {
   LocalMedia,
   LocalSource,
   NewPoll,
+  ParticipantRole,
   RtcCall,
   RtcChatMessage,
+  RtcLocalParticipant,
   RtcParticipant,
   RtcPoll,
   RtcTile,
@@ -200,21 +206,31 @@ class DirectVideo implements RtcVideoTrack {
   }
 }
 
-class Person implements RtcParticipant {
+class Person implements RtcLocalParticipant {
   readonly isLocal: boolean;
   readonly changes = new Notifier();
   readonly subscribe = this.changes.subscribe;
   weak = false;
   hand = false;
+  /** Nobody can be invited on stage yet. */
+  stageInvite = false;
   camera?: RtcVideoTrack;
   screen?: RtcVideoTrack;
   private readonly read: () => { identity: string; name: string; micOn: boolean; camOn: boolean };
   private readonly isSpeaking: () => boolean;
+  /** The call's `hostIdentity`, as last announced. */
+  private readonly hostOf: () => string | null;
 
-  constructor(isLocal: boolean, read: Person["read"], isSpeaking: () => boolean) {
+  constructor(isLocal: boolean, read: Person["read"], isSpeaking: () => boolean, hostOf: () => string | null) {
     this.isLocal = isLocal;
     this.read = read;
     this.isSpeaking = isSpeaking;
+    this.hostOf = hostOf;
+  }
+  /** There are no viewers yet: everyone but the host is a speaker. */
+  get role(): ParticipantRole {
+    const identity = this.identity;
+    return identity && identity === this.hostOf() ? "host" : "speaker";
   }
   get identity() {
     return this.read().identity;
@@ -248,6 +264,7 @@ const identityOf = (peer: { customParticipantId?: string; userId: string; id: st
 
 export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "realtimekit" as const;
+  readonly mode: CallMode;
 
   private readonly grant: Grant;
   private readonly choices: JoinChoices;
@@ -276,6 +293,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   /** You asked to join and are in RealtimeKit's waiting room. */
   private waitlisted = false;
   private waiters: RtcWaiter[] = [];
+  /** When this browser first saw each person in `waiters` asking. RealtimeKit does not say when they started. */
+  private readonly knocks = new Map<string, number>();
   private endingAt = -Infinity;
 
   private meeting: Meeting | null = null;
@@ -349,6 +368,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.factory = factory;
     this.api = api;
     this.effects = effects;
+    this.mode = grant.mode ?? "meeting";
     this.cohosts = grant.coHosts ?? [];
     this.gate = grant.access ?? "open";
     this.pinId = grant.pin ?? null;
@@ -374,6 +394,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         };
       },
       () => !!this.meeting?.self.audioEnabled && !!this.voice?.speaking(SELF_VOICE),
+      () => this.lastHost,
     );
   }
 
@@ -598,7 +619,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   /* ------------------------------------------------------------------ people */
 
-  get local(): RtcParticipant {
+  get local(): RtcLocalParticipant {
     return this.self;
   }
 
@@ -671,11 +692,17 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
+  /** Always true for now: there is no switch to turn reactions off yet. */
+  get reactionsAllowed(): boolean {
+    return true;
+  }
+
   /** RealtimeKit's waiting room, as far as your preset lets you answer it. */
   private readWaiters(): void {
     const meeting = this.meeting;
     const allowed = !!meeting && this.joined && !!meeting.self.permissions?.acceptWaitingRequests;
-    const next = allowed ? meeting.participants.waitlisted.toArray().map((p) => ({ id: p.id, name: p.name ?? "" })) : [];
+    const asking = allowed ? meeting.participants.waitlisted.toArray().map((p) => ({ id: p.id, name: p.name ?? "" })) : [];
+    const next = withSince(asking, this.knocks);
     if (next.length === 0 && this.waiters.length === 0) return;
     this.waiters = next;
     this.emit("waiting");
@@ -725,8 +752,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * camera; lowering hands is a message between clients, as raising one is.
    */
   async moderate(action: HostAction): Promise<void> {
+    if (action.action === "reactions" || action.action === "stage") throw notAvailableYet(action.action);
     const meeting = this.meeting;
     if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
+    if (action.action === "admitAll" || action.action === "denyAll") {
+      const verb = action.action === "admitAll" ? "admit" : "deny";
+      return answerEach(action.identities, verb, (identity) => this.moderate({ action: verb, identity }));
+    }
     // Sent first: afterwards there is nobody left to tell.
     if (action.action === "end") await this.tell(ENDING_MESSAGE);
     await this.api({ session: this.grant.session, ...action });
@@ -773,6 +805,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
         camOn: !!peer.videoEnabled,
       }),
       () => !!peer.audioEnabled && (this.voice ? this.voice.speaking(peer.id) : this.speaker === peer.id),
+      () => this.lastHost,
     );
     person.camera = new RemoteCamera(peer);
     person.screen = new DirectVideo(
@@ -886,7 +919,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       });
       if (peer.screenShareEnabled) screens.push({ participant: person, source: "screen_share", track: person.screen });
     }
-    return (this.tileList = [...cameras, ...screens]);
+    return (this.tileList = [...cameras, ...screens].filter((tile) => tile.participant.role !== "viewer"));
   }
 
   private tilesChanged(): void {

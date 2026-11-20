@@ -28,16 +28,19 @@ import {
   CHAT_SYNC_TOPIC,
   CHAT_TOPIC,
   REACTION_MESSAGE,
+  answerEach,
   checkNewPoll,
   createReactionLimits,
   createThrottle,
   isReaction,
   isSignedChat,
+  notAvailableYet,
   postChat,
   postHost,
   postPoll,
   readStoredPolls,
   tally,
+  withSince,
   type StoredPoll,
   type SignedChat,
   notice,
@@ -50,6 +53,7 @@ import {
 } from "./shared";
 import type {
   BackgroundMode,
+  CallMode,
   CallQuality,
   CallStats,
   ConnectionStatus,
@@ -63,8 +67,10 @@ import type {
   LocalMedia,
   LocalSource,
   NewPoll,
+  ParticipantRole,
   RtcCall,
   RtcChatMessage,
+  RtcLocalParticipant,
   RtcParticipant,
   RtcPoll,
   RtcTile,
@@ -102,8 +108,12 @@ const TRACK_EVENTS = [
   ParticipantEvent.TrackUnmuted,
 ] as const;
 
-class LiveKitParticipant implements RtcParticipant {
-  constructor(private readonly source: Participant) {}
+class LiveKitParticipant implements RtcLocalParticipant {
+  constructor(
+    private readonly source: Participant,
+    /** The call's `hostIdentity`, read live. */
+    private readonly hostOf: () => string | null,
+  ) {}
   get identity() {
     return this.source.identity;
   }
@@ -129,6 +139,14 @@ class LiveKitParticipant implements RtcParticipant {
   get weakConnection() {
     const quality = this.source.connectionQuality;
     return quality === ConnectionQuality.Poor || quality === ConnectionQuality.Lost;
+  }
+  /** There are no viewers yet: everyone but the host is a speaker. */
+  get role(): ParticipantRole {
+    return this.source.identity && this.source.identity === this.hostOf() ? "host" : "speaker";
+  }
+  /** Nobody can be invited on stage yet. */
+  get stageInvite() {
+    return false;
   }
   subscribe = (listener: () => void) => {
     PARTICIPANT_EVENTS.forEach((event) => this.source.on(event, listener));
@@ -307,6 +325,7 @@ function whyDisconnected(reason: LiveKitDisconnectReason | undefined, asking: bo
 class LiveKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "livekit" as const;
   readonly native: Room;
+  readonly mode: CallMode;
 
   private readonly people = new WeakMap<Participant, LiveKitParticipant>();
   private readonly videos = new WeakMap<TrackPublication, LiveKitVideo>();
@@ -337,6 +356,8 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   private watch: Room | null = null;
   private watchAttempt = 0;
   private waiters: RtcWaiter[] = [];
+  /** When this browser first saw each person in `waiters` asking. */
+  private readonly knocks = new Map<string, number>();
   readonly supports = { askToJoin: true, stopCamera: true, polls: true, createPolls: true } as const;
   private fx: LocalEffects;
   private noise: NoiseProcessor | null = null;
@@ -364,6 +385,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     private readonly choices: JoinChoices,
   ) {
     super();
+    this.mode = grant.mode ?? "meeting";
     const noiseSuppression = choices.noiseSuppression !== false;
     const unavailable = typeof document === "undefined" ? null : blurUnavailable();
     this.fx = {
@@ -480,11 +502,11 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
 
   private wrap(participant: Participant): LiveKitParticipant {
     let wrapped = this.people.get(participant);
-    if (!wrapped) this.people.set(participant, (wrapped = new LiveKitParticipant(participant)));
+    if (!wrapped) this.people.set(participant, (wrapped = new LiveKitParticipant(participant, () => this.meta.host)));
     return wrapped;
   }
 
-  get local(): RtcParticipant {
+  get local(): RtcLocalParticipant {
     return this.wrap(this.native.localParticipant);
   }
 
@@ -521,7 +543,17 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     return this.waiters;
   }
 
+  /** Always true for now: there is no switch to turn reactions off yet. */
+  get reactionsAllowed(): boolean {
+    return true;
+  }
+
   async moderate(action: HostAction): Promise<void> {
+    if (action.action === "reactions" || action.action === "stage") throw notAvailableYet(action.action);
+    if (action.action === "admitAll" || action.action === "denyAll") {
+      const verb = action.action === "admitAll" ? "admit" : "deny";
+      return answerEach(action.identities, verb, (identity) => this.moderate({ action: verb, identity }));
+    }
     // To pin, our server wants the message as it signed it: that is how it knows the text is
     // what was really said, and by whom.
     const message = action.action === "pin" && action.messageId ? this.chat.get(action.messageId)?.signed : undefined;
@@ -566,7 +598,13 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
     const current = () => this.watch === room && attempt === this.watchAttempt;
     const refresh = () => {
       if (!current()) return;
-      this.waiters = Array.from(room.remoteParticipants.values(), (p) => ({ id: p.identity, name: p.name ?? "" }));
+      const asking = Array.from(room.remoteParticipants.values(), (p) => ({
+        id: p.identity,
+        name: p.name ?? "",
+        // When they entered the lobby, by LiveKit's clock.
+        since: p.joinedAt?.getTime(),
+      }));
+      this.waiters = withSince(asking, this.knocks);
       this.emit("waiting");
       this.syncLobbyWatch();
     };
@@ -625,7 +663,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
       const screen = person.getTrackPublication(Track.Source.ScreenShare);
       if (screen) screens.push({ participant, source: "screen_share", track: this.video(screen, person) });
     }
-    return (this.tileList = [...cameras, ...screens]);
+    return (this.tileList = [...cameras, ...screens].filter((tile) => tile.participant.role !== "viewer"));
   }
 
   /**
