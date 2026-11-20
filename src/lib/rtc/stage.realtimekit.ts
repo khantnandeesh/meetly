@@ -108,15 +108,62 @@ export class RealtimeKitStage {
       this.onChange();
       return;
     }
-    // Co-hosts join with the audience's preset, which cannot change the stage.
-    if (!meeting.self.permissions?.acceptStageRequests) throw notice("Only the host can invite people to speak in this webinar.");
+    if (!mayChangeStage(meeting)) throw notice("Only the host can invite people to speak in this webinar.");
     await context.authorize();
     const peer = context.peerOf(action.identity);
     if (!peer) throw new Error("That person may have already left.");
-    if (action.on) await stage.grantAccess([peer.userId]);
-    else if (peer.stageStatus === "ON_STAGE") await stage.kick([peer.userId]);
-    else await stage.denyAccess([peer.userId]);
+    // All or nothing: a speaker can chat, the audience cannot, and nobody is ever one without
+    // the other. Each half is undone if the other fails.
+    if (action.on) {
+      await setChat(meeting, peer, true);
+      try {
+        await stage.grantAccess([peer.userId]);
+      } catch (error) {
+        await setChat(meeting, peer, false).catch(() => {});
+        throw error;
+      }
+      this.chatting.add(peer.id);
+      return;
+    }
+    await setChat(meeting, peer, false);
+    try {
+      if (peer.stageStatus === "ON_STAGE") await stage.kick([peer.userId]);
+      else await stage.denyAccess([peer.userId]);
+    } catch (error) {
+      await setChat(meeting, peer, true).catch(() => {});
+      throw error;
+    }
+    this.chatting.delete(peer.id);
   }
+
+  /** People whose chat this client turned on with an invitation, by peer id. */
+  private readonly chatting = new Set<string>();
+
+  /**
+   * Someone left the stage, or turned an invitation down, by themselves: the audience cannot
+   * chat, and they cannot take the permission back from themselves, so whoever invited them
+   * does. Nothing is asked of anyone here.
+   */
+  peerStageChanged(meeting: Meeting, peer: RTKParticipant): void {
+    if (this.mode !== "webinar" || !this.chatting.has(peer.id)) return;
+    if (peer.stageStatus === "ON_STAGE" || peer.stageStatus === "ACCEPTED_TO_JOIN_STAGE") return;
+    this.chatting.delete(peer.id);
+    void setChat(meeting, peer, false).catch(() => {});
+  }
+}
+
+/**
+ * Changing who is on stage takes two permissions: the stage's own (`can_accept_production_requests`)
+ * and changing what someone may do (`can_change_participant_permissions`), for their chat.
+ */
+export function mayChangeStage(meeting: Meeting): boolean {
+  const permissions = meeting.self.permissions;
+  return !!permissions?.acceptStageRequests && !!permissions?.canChangeParticipantPermissions;
+}
+
+/** Lets someone send public chat, or stops them. Limited to this session; their preset is unchanged. */
+function setChat(meeting: Meeting, peer: RTKParticipant, on: boolean): Promise<void> {
+  return meeting.participants.updatePermissions([peer.id], { chat: { public: { canSend: on, text: on } } });
 }
 
 /** Switches off whatever you are sending, quietly: leaving the stage has already stopped it reaching anyone. */

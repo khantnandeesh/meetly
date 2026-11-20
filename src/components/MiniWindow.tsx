@@ -62,7 +62,7 @@ function MiniView({ tile, onBack }: { tile: RtcTile | undefined; onBack: () => v
         <button className="ctrl" aria-label="Close mini window" title="Close mini window" onClick={onBack}>
           <Undo2 className="size-5" />
         </button>
-        <button className="ctrl ctrl-danger ml-1 w-14" aria-label="Leave meeting" title="Leave meeting" onClick={() => call.disconnect().catch(() => {})}>
+        <button className="ctrl ctrl-danger ml-1 w-14" aria-label={`Leave ${call.mode === "webinar" ? "webinar" : "meeting"}`} title={`Leave ${call.mode === "webinar" ? "webinar" : "meeting"}`} onClick={() => call.disconnect().catch(() => {})}>
           <PhoneOff className="size-5" />
         </button>
       </div>
@@ -143,6 +143,7 @@ export function MiniPlaceholder({
   onShare: boolean;
   onShareChange: (on: boolean) => void;
 }) {
+  const noun = useCall().mode === "webinar" ? "webinar" : "meeting";
   return (
     <div
       data-mini-placeholder
@@ -153,8 +154,8 @@ export function MiniPlaceholder({
           <PictureInPicture2 className="size-6" aria-hidden="true" />
         </span>
         <div className="flex flex-col gap-1.5">
-          <h2 className="font-display text-2xl font-semibold">The meeting is in a mini window</h2>
-          <p className="leading-relaxed text-muted">It stays on top of your other windows. You&apos;re still in the meeting.</p>
+          <h2 className="font-display text-2xl font-semibold">The {noun} is in a mini window</h2>
+          <p className="leading-relaxed text-muted">It stays on top of your other windows. You&apos;re still in the {noun}.</p>
         </div>
         <button className="btn btn-primary" onClick={onBack} autoFocus>
           <Undo2 className="size-[1.125rem]" aria-hidden="true" />

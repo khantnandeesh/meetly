@@ -8,8 +8,8 @@ import { POST as tokenRoute } from "../src/app/api/token/route";
 import { createCall as createLiveKitCall } from "../src/lib/rtc/livekit";
 import { RealtimeKitCall, type MeetingFactory } from "../src/lib/rtc/realtimekit";
 import type { HostApi } from "../src/lib/rtc/shared";
-import { DEFAULT_VIEWER_CAP, STAGE_ATTRIBUTE, STAGE_INVITED, viewerCap } from "../src/lib/rtc/stage";
-import type { JoinChoices, JoinGrant, RtcCall } from "../src/lib/rtc/types";
+import { DEFAULT_VIEWER_CAP, STAGE_ATTRIBUTE, STAGE_INVITED, audienceOrder, viewerCap } from "../src/lib/rtc/stage";
+import type { JoinChoices, JoinGrant, RtcCall, RtcParticipant } from "../src/lib/rtc/types";
 import { WEBINAR_FULL, webinarGate } from "../src/lib/webinarGate.server";
 import { FakeLiveKitServer } from "./fake-livekit-server";
 import { FakeMeeting, FakeParticipant, FakeSelf, installDom } from "./fake-realtimekit";
@@ -159,6 +159,18 @@ test("livekit: inviting someone on stage gives them the right to publish and mar
   assert.equal(person.attributes[STAGE_ATTRIBUTE], undefined);
 });
 
+test("livekit: nobody is ever seen with the right to publish and no invitation mark, on the way in or out", async () => {
+  const { host, viewer } = await webinarWithViewer();
+  const updates = () =>
+    lk.calls
+      .filter((call) => call.method === "UpdateParticipant")
+      .map((call) => (call.body.permission ? `publish:${!!(call.body.permission as { canPublish?: boolean }).canPublish}` : `mark:${(call.body.attributes as Record<string, string>)[STAGE_ATTRIBUTE]}`));
+  await stage(host.token, viewer.id, true);
+  assert.deepEqual(updates(), [`mark:${STAGE_INVITED}`, "publish:true"]);
+  await stage(host.token, viewer.id, false);
+  assert.deepEqual(updates().slice(2), ["publish:false", "mark:"]);
+});
+
 test("livekit: a viewer can step down by themselves but cannot invite anyone, themselves included, or move the host", async () => {
   const { host, viewer, person } = await webinarWithViewer();
   assert.equal((await stage(viewer.token, viewer.id, true)).status, 400, "nobody puts themselves on stage");
@@ -175,10 +187,38 @@ test("livekit: the audience reads the chat but cannot write in it; the host and 
   const { host, viewer } = await webinarWithViewer();
   const send = async (token: string) => (await chatRoute(post({ token, action: "send", text: "Hello" }))).status;
   const refused = await chatRoute(post({ token: viewer.token, action: "send", text: "Hello" }));
-  assert.deepEqual([refused.status, await refused.json()], [403, { error: "Only people on stage can send messages in this webinar." }]);
+  assert.deepEqual([refused.status, await refused.json()], [403, { error: "Only speakers and hosts can send messages." }]);
   assert.equal(await send(host.token), 200);
   await stage(host.token, viewer.id, true);
   assert.equal(await send(viewer.token), 200, "on stage, or invited");
+});
+
+test("livekit: a co-host chats from the audience; a speaker sent back to the audience cannot", async () => {
+  const { code, host, viewer } = await webinarWithViewer();
+  const meta = lk.meta(code);
+  const send = async (token: string) => (await chatRoute(post({ token, action: "send", text: "Hello" }))).status;
+  lk.rooms.get(code)!.metadata = JSON.stringify({ ...meta, cohosts: [viewer.id] });
+  assert.equal(await send(viewer.token), 200, "a co-host off stage");
+  lk.rooms.get(code)!.metadata = JSON.stringify({ ...meta, cohosts: [] });
+  await stage(host.token, viewer.id, true);
+  assert.equal(await send(viewer.token), 200, "on stage");
+  await stage(host.token, viewer.id, false);
+  assert.equal(await send(viewer.token), 403, "back in the audience, a forced send is refused");
+});
+
+test("livekit: someone whose role changed gets a fresh token for the same identity, keeping what they may publish", async () => {
+  const { host, viewer } = await webinarWithViewer();
+  const rejoin = async (token: string) => {
+    const response = await hostRoute(post({ token, action: "rejoin" }));
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  };
+  const off = await rejoin(viewer.token);
+  assert.equal(off.status, 200);
+  assert.deepEqual([claims(String(off.body.token)).sub, claims(String(off.body.token)).video.canPublish], [viewer.id, false]);
+  await stage(host.token, viewer.id, true);
+  const on = await rejoin(viewer.token);
+  assert.equal(claims(String(on.body.token)).video.canPublish, true, "on stage stays on stage");
+  assert.equal((await rejoin(host.token)).status, 400, "the host is not switched anywhere");
 });
 
 test("livekit: a meeting has no stage", async () => {
@@ -293,7 +333,8 @@ const rtkGrant: Extract<JoinGrant, { provider: "realtimekit" }> = {
 
 async function rtkWebinar(setup: { host?: boolean; canStage?: boolean } = {}) {
   const self = new FakeSelf("self", "Vic", { presetName: setup.host ? "meetly-webinar-host" : "meetly-webinar-viewer" });
-  self.permissions = { acceptWaitingRequests: false, canDisableParticipantVideo: false, acceptStageRequests: setup.canStage ?? !!setup.host };
+  const canStage = setup.canStage ?? !!setup.host;
+  self.permissions = { acceptWaitingRequests: false, canDisableParticipantVideo: false, acceptStageRequests: canStage, canChangeParticipantPermissions: canStage };
   const meeting = new FakeMeeting(self);
   meeting.stage.direct = !!setup.host;
   if (setup.host) meeting.stage.status = "ACCEPTED_TO_JOIN_STAGE";
@@ -397,6 +438,102 @@ test("rtk: the host invites with grantAccess, sends a speaker back with kick, an
   await assert.rejects(call.moderate({ action: "stage", identity: "m-gone", on: true }), /already left/);
 });
 
+const chatOn = { chat: { public: { canSend: true, text: true } } };
+const chatOff = { chat: { public: { canSend: false, text: false } } };
+
+test("rtk: inviting turns the speaker's chat on with the stage; sending back turns it off; never one without the other", async () => {
+  const { call, meeting } = await rtkWebinar({ host: true });
+  const vic = meeting.arrive(new FakeParticipant("v", "Vic", { presetName: "meetly-webinar-viewer" }));
+  await call.moderate({ action: "stage", identity: "m-v", on: true });
+  assert.deepEqual(meeting.participants.permissionCalls, [{ ids: ["v"], patch: chatOn }]);
+  assert.deepEqual(meeting.stage.granted, [[vic.userId]]);
+  vic.setStage("ON_STAGE");
+  await call.moderate({ action: "stage", identity: "m-v", on: false });
+  assert.deepEqual(meeting.participants.permissionCalls.at(-1), { ids: ["v"], patch: chatOff });
+  assert.deepEqual(meeting.stage.kicked, [[vic.userId]]);
+});
+
+test("rtk: a stage grant that fails takes the chat back; a chat change that fails grants nothing", async () => {
+  const { call, meeting } = await rtkWebinar({ host: true });
+  const vic = meeting.arrive(new FakeParticipant("v", "Vic", { presetName: "meetly-webinar-viewer" }));
+  meeting.stage.failNext = "grant";
+  await assert.rejects(call.moderate({ action: "stage", identity: "m-v", on: true }), /grant refused/);
+  assert.deepEqual(meeting.participants.permissionCalls.map((c) => c.patch), [chatOn, chatOff], "rolled back");
+  assert.deepEqual(meeting.stage.granted, []);
+  meeting.participants.failPermissions = true;
+  await assert.rejects(call.moderate({ action: "stage", identity: "m-v", on: true }));
+  assert.deepEqual(meeting.stage.granted, [], "no stage without chat");
+  // On stage, a kick that fails leaves them a full speaker: chat back on.
+  await call.moderate({ action: "stage", identity: "m-v", on: true });
+  vic.setStage("ON_STAGE");
+  meeting.stage.failNext = "kick";
+  await assert.rejects(call.moderate({ action: "stage", identity: "m-v", on: false }), /kick refused/);
+  assert.deepEqual(meeting.participants.permissionCalls.slice(-2).map((c) => c.patch), [chatOff, chatOn]);
+});
+
+test("rtk: someone who leaves the stage by themselves has their chat turned off by whoever invited them", async () => {
+  const { call, meeting } = await rtkWebinar({ host: true });
+  const vic = meeting.arrive(new FakeParticipant("v", "Vic", { presetName: "meetly-webinar-viewer" }));
+  await call.moderate({ action: "stage", identity: "m-v", on: true });
+  vic.setStage("ACCEPTED_TO_JOIN_STAGE");
+  vic.setStage("ON_STAGE");
+  assert.equal(meeting.participants.permissionCalls.length, 1);
+  vic.setStage("OFF_STAGE");
+  await tick();
+  assert.deepEqual(meeting.participants.permissionCalls.at(-1), { ids: ["v"], patch: chatOff });
+});
+
+test("rtk: a co-host whose preset cannot change someone's chat is not offered the stage", async () => {
+  const self = new FakeSelf("self", "Cy", { presetName: "meetly-webinar-cohost" });
+  self.permissions = { acceptWaitingRequests: true, canDisableParticipantVideo: true, acceptStageRequests: true, canChangeParticipantPermissions: false };
+  const meeting = new FakeMeeting(self);
+  const call = new RealtimeKitCall(rtkGrant, choices, (async () => meeting) as unknown as MeetingFactory, async () => ({}));
+  call.connect();
+  await tick();
+  await tick();
+  assert.equal(call.supports.stage, false);
+  meeting.arrive(new FakeParticipant("v", "Vic", { presetName: "meetly-webinar-viewer" }));
+  await assert.rejects(call.moderate({ action: "stage", identity: "m-v", on: true }), /Only the host/);
+  assert.deepEqual([meeting.participants.permissionCalls, meeting.stage.granted], [[], []]);
+});
+
+test("rtk: made co-host, the client rejoins with a fresh token for the same person, saying so, without ending the call", async () => {
+  const presets = { viewer: "meetly-webinar-viewer", cohost: "meetly-webinar-cohost" };
+  const first = new FakeMeeting(new FakeSelf("self", "Cy", { presetName: presets.viewer }));
+  const second = new FakeMeeting(new FakeSelf("self", "Cy", { presetName: presets.cohost }));
+  const tokens: string[] = [];
+  const factory = (async (options: { authToken: string }) => {
+    tokens.push(options.authToken);
+    return tokens.length === 1 ? first : second;
+  }) as unknown as MeetingFactory;
+  const asked: Record<string, unknown>[] = [];
+  const api: HostApi = async (body) => {
+    asked.push(body);
+    if (body.action === "roles") return { coHosts: ["m-self"], access: "open" };
+    if (body.action === "rejoin") return { authToken: "co-host-token" };
+    return {};
+  };
+  const call = new RealtimeKitCall({ ...rtkGrant, webinarPresets: presets }, choices, factory, api);
+  const seen: string[] = [];
+  call.on("status", () => seen.push(`${call.status}/${call.switching}`));
+  let ended = false;
+  call.on("disconnected", () => (ended = true));
+  call.connect();
+  await tick();
+  await tick();
+  // Someone (the host) says the co-hosts changed.
+  first.participants.emit("broadcastedMessage", { type: "meetly-roles", payload: { peerId: "host" } });
+  for (let i = 0; i < 6; i++) await tick();
+  assert.deepEqual(tokens, ["not-a-real-token", "co-host-token"]);
+  assert.equal(first.leaveCalls, 1);
+  assert.equal(ended, false, "not the call ending");
+  assert.ok(seen.includes("connecting/cohost"), seen.join());
+  assert.equal(call.switching, null);
+  assert.equal(call.status, "connected");
+  assert.equal(call.native, second);
+  assert.deepEqual(asked.map((body) => body.action), ["roles", "rejoin"]);
+});
+
 test("rtk: a co-host whose preset cannot change the stage is told so, and nothing is asked", async () => {
   const { call, meeting, requests } = await rtkWebinar({ canStage: false });
   meeting.arrive(new FakeParticipant("v", "Otto", { presetName: "meetly-webinar-viewer" }));
@@ -419,4 +556,43 @@ test("rtk: in a meeting the stage is never touched and everyone is a speaker", a
   assert.equal(call.local.role, "speaker");
   assert.equal(call.participant("m-g")?.role, "speaker");
   assert.equal(meeting.stage.joinCalls, 0);
+});
+
+/* ------------------------------------------------------- for the interface */
+
+test("supports.stage: any webinar on LiveKit; on RealtimeKit only where the preset can change the stage", async () => {
+  const lkWebinar = createLiveKitCall({ provider: "livekit", token: "t", serverUrl: "ws://127.0.0.1:1", mode: "webinar" }, choices);
+  const lkMeeting = createLiveKitCall({ provider: "livekit", token: "t", serverUrl: "ws://127.0.0.1:1" }, choices);
+  assert.deepEqual([lkWebinar.supports.stage, lkMeeting.supports.stage], [true, false]);
+  const host = await rtkWebinar({ host: true });
+  const coHost = await rtkWebinar({ canStage: false });
+  assert.deepEqual([host.call.supports.stage, coHost.call.supports.stage], [true, false]);
+});
+
+test("rtk: the host is shown who has an invitation out, and it clears when they answer", async () => {
+  const { call, meeting } = await rtkWebinar({ host: true });
+  const vic = meeting.arrive(new FakeParticipant("v", "Vic", { presetName: "meetly-webinar-viewer" }));
+  assert.equal(call.participant("m-v")?.stageInvite, false);
+  vic.setStage("ACCEPTED_TO_JOIN_STAGE");
+  assert.deepEqual([call.participant("m-v")?.stageInvite, call.participant("m-v")?.role], [true, "viewer"]);
+  vic.setStage("ON_STAGE");
+  assert.deepEqual([call.participant("m-v")?.stageInvite, call.participant("m-v")?.role], [false, "speaker"]);
+});
+
+test("livekit: someone else's invitation is seen too, from their permissions and mark", () => {
+  const { call, local, serverSets } = liveKitWebinar();
+  serverSets(true, STAGE_INVITED);
+  // The local participant stands in for anyone: the same reading applies to every participant.
+  assert.equal(call.participant(local.identity)?.stageInvite, true);
+});
+
+test("the audience is listed with raised hands first, in the order they went up, then A–Z", () => {
+  const person = (name: string, handRaised = false) => ({ identity: `m-${name}`, name, handRaised }) as unknown as RtcParticipant;
+  const zed = person("Zed");
+  const amy = person("Amy");
+  const bo = person("Bo", true);
+  const cy = person("Cy", true);
+  // Bo's hand went up first; Cy's after.
+  assert.deepEqual(audienceOrder([zed, bo, amy]).map((p) => p.name), ["Bo", "Amy", "Zed"]);
+  assert.deepEqual(audienceOrder([zed, cy, bo, amy]).map((p) => p.name), ["Bo", "Cy", "Amy", "Zed"]);
 });

@@ -28,6 +28,11 @@ module.exports = async function ratingSuite(browser) {
   await guest.page.getByText("You left the meeting").waitFor();
   await rating(guest).waitFor();
   H.ok("the leave screen asks how the call was, with two answers", /How were the sound and video\?/.test(await rating(guest).innerText()) && (await rating(guest).getByRole("button").count()) === 2);
+  // The leave screen rises into place; measuring while it moves can read a 44 px button as
+  // 43.99997 px. Wait for its entrance (every finite animation) to finish, then measure.
+  await guest.page.evaluate(() =>
+    Promise.all(document.getAnimations().filter((a) => a.effect?.getTiming().iterations !== Infinity).map((a) => a.finished.catch(() => {}))),
+  );
   const sizes = await rating(guest).getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().height));
   H.ok("on a 390 px phone it fits and the answers are at least 44 px tall", (await H.noOverflow(guest)) && sizes.every((height) => height >= 44), sizes.join());
   await H.shot(guest, "rating-phone");

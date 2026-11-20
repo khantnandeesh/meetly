@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 export type LayoutMode = "auto" | "tiled" | "spotlight" | "sidebar";
 export type SelfView = "grid" | "float" | "hidden";
@@ -14,10 +14,22 @@ export type CallSettings = {
   shortcuts: boolean;
   /** Open the mini window whenever you start presenting. Offered after the mini window was first used. */
   miniOnShare: boolean;
+  /** Show a new chat message as a notification while chat is closed (src/lib/notices.ts decides which). On unless switched off. */
+  chatPreviews: boolean;
+  /** This viewer does not see other people's reactions, on their tiles or in the lane. Off unless switched on. */
+  reactionsHidden: boolean;
 };
 
 const KEY = "meetly:call-settings";
-const DEFAULTS: CallSettings = { layout: "auto", maxTiles: 16, selfView: "grid", shortcuts: true, miniOnShare: false };
+const DEFAULTS: CallSettings = {
+  layout: "auto",
+  maxTiles: 16,
+  selfView: "grid",
+  shortcuts: true,
+  miniOnShare: false,
+  chatPreviews: true,
+  reactionsHidden: false,
+};
 
 function load(): CallSettings {
   try {
@@ -32,23 +44,51 @@ function load(): CallSettings {
         : DEFAULTS.selfView,
       shortcuts: saved.shortcuts !== false,
       miniOnShare: saved.miniOnShare === true,
+      chatPreviews: saved.chatPreviews !== false,
+      reactionsHidden: saved.reactionsHidden === true,
     };
   } catch {
     return DEFAULTS;
   }
 }
 
+/*
+ * One copy for the whole page, so a switch in a menu and the part of the call it affects (the
+ * chat previews, the reactions) always agree, wherever each of them reads it from.
+ */
+let current: CallSettings | null = null;
+const listeners = new Set<() => void>();
+
+/** The settings right now, outside React (in an event handler). */
+export function callSettings(): CallSettings {
+  if (current) return current;
+  if (typeof window === "undefined") return DEFAULTS;
+  return (current = load());
+}
+
+function updateCallSettings(patch: Partial<CallSettings>): void {
+  current = { ...callSettings(), ...patch };
+  try {
+    localStorage.setItem(KEY, JSON.stringify(current));
+  } catch {}
+  listeners.forEach((listener) => listener());
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 /** Per-user call preferences, remembered in this browser. Client-only (used after join). */
 export function useCallSettings() {
-  const [settings, setSettings] = useState<CallSettings>(load);
-  const update = useCallback((patch: Partial<CallSettings>) => {
-    setSettings((current) => {
-      const next = { ...current, ...patch };
-      try {
-        localStorage.setItem(KEY, JSON.stringify(next));
-      } catch {}
-      return next;
-    });
-  }, []);
-  return [settings, update] as const;
+  const settings = useSyncExternalStore(subscribe, callSettings, () => DEFAULTS);
+  return [settings, updateCallSettings] as const;
+}
+
+/**
+ * Whether this viewer has switched other people's reactions off (More › Reactions). For the
+ * reaction feed: a reaction from someone else is then neither shown nor announced.
+ */
+export function useReactionsHidden(): boolean {
+  return useSyncExternalStore(subscribe, () => callSettings().reactionsHidden, () => false);
 }

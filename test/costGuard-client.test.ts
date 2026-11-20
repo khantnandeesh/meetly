@@ -147,3 +147,33 @@ test("the host asks once a minute while in the webinar, and stops on leaving", a
   await tick();
   assert.equal(asked.length, 2);
 });
+
+test("a co-host switch is not a removal: the old connection going, even as \"kicked\", asks nothing and ends nothing", async () => {
+  const presets = { viewer: "meetly-webinar-viewer", cohost: "meetly-webinar-cohost" };
+  const first = new FakeMeeting(new FakeSelf("self", "Cy", { presetName: presets.viewer }));
+  const second = new FakeMeeting(new FakeSelf("self", "Cy", { presetName: presets.cohost }));
+  let made = 0;
+  const factory = (async () => (++made === 1 ? first : second)) as unknown as MeetingFactory;
+  const asked: Record<string, unknown>[] = [];
+  const api = async (body: Record<string, unknown>) => {
+    asked.push(body);
+    if (body.action === "roles") return { coHosts: ["m-self"], access: "open" };
+    if (body.action === "rejoin") return { authToken: "co-host-token" };
+    return { stopped: "limit" };
+  };
+  const call = new RealtimeKitCall({ ...grant, webinarPresets: presets }, choices, factory, api);
+  const ended: DisconnectReason[] = [];
+  call.on("disconnected", (reason) => ended.push(reason));
+  call.connect();
+  await tick();
+  await tick();
+  first.participants.emit("broadcastedMessage", { type: "meetly-roles", payload: { peerId: "host" } });
+  for (let i = 0; i < 6; i++) await tick();
+  assert.equal(call.native, second);
+  // RealtimeKit dropping the old connection after the new one came in.
+  first.self.emit("roomLeft", { state: "kicked" });
+  for (let i = 0; i < 4; i++) await tick();
+  assert.deepEqual(ended, []);
+  assert.deepEqual(asked.map((body) => body.action), ["roles", "rejoin"]);
+  assert.equal(call.status, "connected");
+});

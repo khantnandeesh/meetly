@@ -215,19 +215,19 @@ test("you may send one reaction per 400 ms; each sender is shown at most one per
   assert.equal(limits.mayReceive("a"), true);
 });
 
-test("the lane takes twelve entries, then folds same-emoji reactions into a count", () => {
+test("the lane takes four entries, then folds same-emoji reactions into a count", () => {
   let lane = [] as ReturnType<typeof addToLane>;
   for (let i = 0; i < LANE_LIMIT; i++) lane = addToLane(lane, { id: i, emoji: i % 2 ? "👏" : "🎉", name: `P${i}` });
   assert.equal(lane.length, LANE_LIMIT);
   lane = addToLane(lane, { id: 100, emoji: "👏", name: "Late" });
   lane = addToLane(lane, { id: 101, emoji: "👏", name: "Later" });
   assert.equal(lane.length, LANE_LIMIT);
-  assert.deepEqual(lane.at(-1), { id: 11, emoji: "👏", name: "", count: 3 });
-  // An emoji nobody in the lane is showing pushes the oldest entry out instead.
+  assert.deepEqual(lane.at(-1), { id: LANE_LIMIT - 1, emoji: "👏", name: "", count: 3, touched: 101, since: 0 });
+  // An emoji nobody in the lane is showing pushes out the entry that changed longest ago instead.
   lane = addToLane(lane, { id: 102, emoji: "😮", name: "New" });
   assert.equal(lane.length, LANE_LIMIT);
   assert.equal(lane[0].id, 1);
-  assert.deepEqual(lane.at(-1), { id: 102, emoji: "😮", name: "New", count: 1 });
+  assert.deepEqual(lane.at(-1), { id: 102, emoji: "😮", name: "New", count: 1, touched: 102, since: 0 });
 });
 
 test("reactions are described for screen readers by who and, when they agree, what", () => {
@@ -490,7 +490,7 @@ test("stopping a camera is done by the SDK on that participant, after the server
 
 test("what depends on presets is offered only when the preset allows it", async () => {
   const plain = await connected({ selfPreset: "meetly-host", grant: { role: "host" } });
-  assert.deepEqual(plain.call.supports, { askToJoin: false, stopCamera: false, polls: false, createPolls: false });
+  assert.deepEqual(plain.call.supports, { askToJoin: false, stopCamera: false, polls: false, createPolls: false, stage: false });
   const able = await connected({
     selfPreset: "meetly-host",
     grant: { role: "host", canAsk: true },
@@ -498,7 +498,7 @@ test("what depends on presets is offered only when the preset allows it", async 
       meeting.self.permissions = { acceptWaitingRequests: true, canDisableParticipantVideo: true };
     },
   });
-  assert.deepEqual(able.call.supports, { askToJoin: true, stopCamera: true, polls: false, createPolls: false });
+  assert.deepEqual(able.call.supports, { askToJoin: true, stopCamera: true, polls: false, createPolls: false, stage: false });
   // The host may accept, but the app has no preset that makes anyone wait: still not offered.
   const noPreset = await connected({
     before: (meeting) => {

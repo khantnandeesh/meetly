@@ -17,6 +17,7 @@ const ENV = {
   REALTIMEKIT_GUEST_PRESET: "meetly-guest",
   REALTIMEKIT_WEBINAR_HOST_PRESET: "meetly-webinar-host",
   REALTIMEKIT_WEBINAR_VIEWER_PRESET: "meetly-webinar-viewer",
+  REALTIMEKIT_WEBINAR_COHOST_PRESET: "meetly-webinar-cohost",
   CLOUDFLARE_API_TOKEN: "token",
   MEETLY_SESSION_SECRET: "a-long-random-test-secret-a-long-random-test-secret",
 };

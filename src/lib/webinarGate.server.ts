@@ -1,4 +1,4 @@
-import { viewerCap } from "./rtc/stage";
+import { WEBINAR_FULL_MESSAGE, viewerCap } from "./rtc/stage";
 import { WEBINAR_LIMIT_REACHED, WEBINARS_PAUSED, webinarsEnabled } from "./webinarLimit";
 
 /**
@@ -22,7 +22,7 @@ export type WebinarRefusal = { reason: "full" | "paused" | "limit"; message: str
 export const WEBINAR_FULL: WebinarRefusal = {
   reason: "full",
   // Not an error: the webinar is going well. Said as it is, with what the person can do about it.
-  message: "This webinar is full. Try again in a few minutes.",
+  message: WEBINAR_FULL_MESSAGE,
 };
 
 export const WEBINAR_PAUSED: WebinarRefusal = { reason: "paused", message: WEBINARS_PAUSED };

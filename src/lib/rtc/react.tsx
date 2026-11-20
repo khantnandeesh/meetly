@@ -149,6 +149,25 @@ export function useWaiting(): RtcWaiter[] {
   return useCallValue(call, WAITING, () => call.waiting());
 }
 
+const REACTIONS_ALLOWED = ["reactionsAllowed"] as const;
+const MAY_REACT = ["reactionsAllowed", "host", "status"] as const;
+
+/** The host lets everyone send reactions (the meeting's setting, whoever you are). */
+export function useReactionsAllowed(): boolean {
+  const call = useCall();
+  return useCallValue(call, REACTIONS_ALLOWED, () => call.reactionsAllowed);
+}
+
+/** You may send a reaction now: reactions are allowed, or you are the host or a co-host. */
+export function useCanReact(): boolean {
+  const call = useCall();
+  return useCallValue(call, MAY_REACT, () => {
+    if (call.reactionsAllowed) return true;
+    const me = call.local.identity;
+    return !!me && (call.hostIdentity === me || call.coHosts().includes(me));
+  });
+}
+
 export function useLocalMedia(): LocalMedia {
   const call = useCall();
   return useCallValue(call, LOCAL_MEDIA, () => call.localMedia());

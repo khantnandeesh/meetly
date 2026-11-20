@@ -1,3 +1,6 @@
+import { handQueue } from "../handQueue";
+import { displayName, type RtcParticipant } from "./types";
+
 /**
  * Webinars: what both sides of the LiveKit stage agree on, and the audience limit. Kept apart
  * from the adapters and the server so either can import it without the other's dependencies.
@@ -20,4 +23,18 @@ export const DEFAULT_VIEWER_CAP = 250;
 export function viewerCap(value: string | undefined = process.env.MEETLY_WEBINAR_VIEWER_CAP): number {
   const cap = Number(value);
   return value && Number.isInteger(cap) && cap > 0 ? cap : DEFAULT_VIEWER_CAP;
+}
+
+/**
+ * What someone is told when the audience is at its limit. Shared with the viewer's pre-join
+ * screen, which shows it as a state to wait out ("Try again"), not as an error.
+ */
+export const WEBINAR_FULL_MESSAGE = "This webinar is full. Try again in a few minutes.";
+
+/** The audience as the host's list shows it: raised hands first, in the order they went up, then A–Z. */
+export function audienceOrder(audience: RtcParticipant[]): RtcParticipant[] {
+  const hands = handQueue(audience);
+  const raised = new Set(hands);
+  const rest = audience.filter((p) => !raised.has(p)).sort((a, b) => displayName(a).localeCompare(displayName(b)));
+  return [...hands, ...rest];
 }

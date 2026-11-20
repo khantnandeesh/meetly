@@ -13,9 +13,12 @@ import {
   UserX,
   VideoOff,
 } from "lucide-react";
-import { createContext, useCallback, useContext, useMemo, useRef, useState } from "react";
-import { useAccess, useCall, useCoHosts, useHostIdentity, useWaiting } from "@/lib/rtc/react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { FIRST_ROWS, people, recordJoin, recordLeave, type Departure } from "@/lib/hostLists";
+import { useAccess, useCall, useCoHosts, useHostIdentity, useReactionsAllowed, useWaiting } from "@/lib/rtc/react";
+import { bulkFailures } from "@/lib/rtc/shared";
 import { displayName, type HostAction, type JoinAccess, type RtcParticipant, type RtcWaiter } from "@/lib/rtc/types";
+import { BackToAudienceItem } from "./AudienceSection";
 import { Dropdown } from "./ui/Menu";
 import { useToast } from "./ui/Toaster";
 
@@ -42,10 +45,27 @@ type HostState = {
   setAccess: (access: JoinAccess) => void;
   admit: (waiter: RtcWaiter) => void;
   deny: (waiter: RtcWaiter) => void;
-  admitAll: () => void;
+  /** One request for everyone given, however many. Asking first above `BULK_CONFIRM` is the caller's part. */
+  admitAll: (waiters: RtcWaiter[]) => void;
+  denyAll: (waiters: RtcWaiter[]) => void;
+  /** The meeting's setting: everyone may send reactions. */
+  reactionsAllowed: boolean;
+  setReactionsAllowed: (allowed: boolean) => void;
   /** Asks first: ending the call for everyone cannot be undone. */
   askEnd: () => void;
+  /** What the People panel shows: everyone, or one section's "See all" view. */
+  peopleView: PeopleView;
+  setPeopleView: (view: PeopleView) => void;
+  /**
+   * For the knock card's View: People opens at who is waiting, on the "Waiting to join" view when
+   * more are waiting than the panel's section shows. The caller opens the panel itself.
+   */
+  openWaiting: () => void;
+  /** People this browser saw leave since it joined, newest first. */
+  departures: readonly Departure[];
 };
+
+export type PeopleView = "main" | "waiting" | "hands" | "audience";
 
 const nothing = () => {};
 const HostContext = createContext<HostState>({
@@ -67,7 +87,14 @@ const HostContext = createContext<HostState>({
   admit: nothing,
   deny: nothing,
   admitAll: nothing,
+  denyAll: nothing,
+  reactionsAllowed: true,
+  setReactionsAllowed: nothing,
   askEnd: nothing,
+  peopleView: "main",
+  setPeopleView: nothing,
+  openWaiting: nothing,
+  departures: [],
 });
 export const useHost = () => useContext(HostContext);
 
@@ -87,11 +114,21 @@ const dialogClass =
  */
 export function HostProvider({ localIdentity, children }: { localIdentity: string; children: React.ReactNode }) {
   const call = useCall();
+  const webinar = call.mode === "webinar";
   const hostId = useHostIdentity();
   const coHosts = useCoHosts();
   const access = useAccess();
   const waiting = useWaiting();
+  const reactionsAllowed = useReactionsAllowed();
   const toast = useToast();
+  const [peopleView, setPeopleView] = useState<PeopleView>("main");
+  const departures = useDepartures();
+  // Read when the knock card's View is pressed, so `openWaiting` never changes identity.
+  const waitingNow = useRef(waiting);
+  useEffect(() => {
+    waitingNow.current = waiting;
+  });
+  const openWaiting = useCallback(() => setPeopleView(waitingNow.current.length > FIRST_ROWS ? "waiting" : "main"), []);
   const [removing, setRemoving] = useState<RtcParticipant | null>(null);
   const [alsoAsk, setAlsoAsk] = useState(false);
   const [ending, setEnding] = useState(false);
@@ -105,7 +142,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
 
   /** One request, one answer: a quiet confirmation, or what went wrong. */
   const run = useCallback(
-    async (action: HostAction, done: { icon: React.ReactNode; title: string } | null, failed: string) => {
+    async (action: HostAction, done: { icon: React.ReactNode; title: string; tag?: string } | null, failed: string) => {
       try {
         await call.moderate(action);
         if (done) toast.push({ ...done, priority: "you" });
@@ -120,6 +157,38 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
           body: error instanceof Error ? error.message : undefined,
         });
         return false;
+      }
+    },
+    [call, toast],
+  );
+
+  /**
+   * Admit all and Deny all: one request, and at most one notification, however many fail. Its
+   * Try again answers only the people it failed for who are still waiting.
+   */
+  const answerAll = useCallback(
+    async function answer(verb: "admit" | "deny", ids: string[]): Promise<void> {
+      if (ids.length === 0) return;
+      try {
+        await call.moderate({ action: verb === "admit" ? "admitAll" : "denyAll", identities: ids });
+      } catch (error) {
+        const failed = bulkFailures(error);
+        const left = failed.length > 0 ? failed : ids;
+        toast.push({
+          tag: "host-error",
+          tone: "danger",
+          icon: <CircleAlert className="size-5" />,
+          title: `Couldn't ${verb} ${people(left.length)}`,
+          // Some failing leaves them waiting; a refused request says why in its own words.
+          body: failed.length > 0 ? "They're still waiting." : error instanceof Error ? error.message : undefined,
+          action: {
+            label: "Try again",
+            onClick: () => {
+              const still = new Set(call.waiting().map((person) => person.id));
+              void answer(verb, left.filter((id) => still.has(id)));
+            },
+          },
+        });
       }
     },
     [call, toast],
@@ -155,6 +224,8 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
         void run(
           { action: "coHost", identity: p.identity, on },
           {
+            // One per person: the latest answer replaces the one before ("now", then "no longer").
+            tag: `role:${p.identity}`,
             icon: on ? <ShieldCheck className="size-5" /> : <ShieldMinus className="size-5" />,
             title: on ? `${named(p)} is now a co-host` : `${named(p)} is no longer a co-host`,
           },
@@ -166,17 +237,27 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
         setRemoving(participant);
       },
       muteAll: () =>
-        void run({ action: "muteAll" }, { icon: <MicOff className="size-5" />, title: "You muted everyone" }, "Couldn't mute everyone"),
+        void run({ action: "muteAll" }, { tag: "mute-all", icon: <MicOff className="size-5" />, title: "You muted everyone" }, "Couldn't mute everyone"),
       lowerAllHands: () => void run({ action: "lowerAllHands" }, null, "Couldn't lower everyone's hands"),
       // The control showing the new choice is the confirmation.
       setAccess: (next) => void run({ action: "access", access: next }, null, "Couldn't change who can join"),
       // Their tile arriving, or their row going, is the confirmation.
       admit: (person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`),
       deny: (person) => void run({ action: "deny", identity: person.id }, null, `Couldn't deny ${waiter(person)}`),
-      admitAll: () => waiting.forEach((person) => void run({ action: "admit", identity: person.id }, null, `Couldn't admit ${waiter(person)}`)),
+      // The list emptying is the confirmation.
+      admitAll: (list) => void answerAll("admit", list.map((person) => person.id)),
+      denyAll: (list) => void answerAll("deny", list.map((person) => person.id)),
+      reactionsAllowed,
+      // The switch moving is the confirmation.
+      setReactionsAllowed: (allowed) =>
+        void run({ action: "reactions", allowed }, null, allowed ? "Couldn't turn reactions on" : "Couldn't turn reactions off"),
       askEnd: () => setEnding(true),
+      peopleView,
+      setPeopleView,
+      openWaiting,
+      departures,
     };
-  }, [hostId, coHosts, isHost, canModerate, access, waiting, supports, run]);
+  }, [hostId, coHosts, isHost, canModerate, access, waiting, supports, run, answerAll, reactionsAllowed, peopleView, openWaiting, departures]);
 
   async function remove(participant: RtcParticipant, thenAsk: boolean) {
     const name = displayName(participant);
@@ -243,7 +324,7 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                   setRemoving(null);
                 }}
               >
-                Remove from meeting
+                Remove from {webinar ? "webinar" : "meeting"}
               </button>
             </div>
           </Dialog.Content>
@@ -255,9 +336,13 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
           <Dialog.Overlay className="dialog-overlay fixed inset-0 z-50 bg-black/70" />
           <Dialog.Content className={dialogClass}>
             <div className="flex flex-col gap-2">
-              <Dialog.Title className="font-display text-xl font-semibold">End the meeting for everyone?</Dialog.Title>
+              <Dialog.Title className="font-display text-xl font-semibold">
+                {webinar ? "End webinar for everyone?" : "End the meeting for everyone?"}
+              </Dialog.Title>
               <Dialog.Description className="text-[0.9375rem] leading-relaxed text-muted">
-                Everyone leaves the meeting, including you. The link still works if you want to meet again.
+                {webinar
+                  ? "Everyone leaves the webinar, including you and the audience. The link still works for another one."
+                  : "Everyone leaves the meeting, including you. The link still works if you want to meet again."}
               </Dialog.Description>
             </div>
             <div className="flex justify-end gap-2">
@@ -267,11 +352,11 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
                 onClick={() => {
                   setEnding(false);
                   // The goodbye screen is the confirmation.
-                  void run({ action: "end" }, null, "Couldn't end the meeting");
+                  void run({ action: "end" }, null, webinar ? "Couldn't end the webinar" : "Couldn't end the meeting");
                 }}
               >
                 <PhoneOff className="size-[1.125rem]" aria-hidden="true" />
-                End meeting
+                {webinar ? "End webinar for everyone" : "End meeting"}
               </button>
             </div>
           </Dialog.Content>
@@ -279,6 +364,29 @@ export function HostProvider({ localIdentity, children }: { localIdentity: strin
       </Dialog.Root>
     </HostContext.Provider>
   );
+}
+
+/**
+ * Who left, as this browser saw it happen: neither provider remembers departures for us, and
+ * RealtimeKit's list of who has been in the meeting is rate-limited. Someone who comes back is
+ * taken off the list.
+ */
+function useDepartures(): readonly Departure[] {
+  const call = useCall();
+  const [list, setList] = useState<readonly Departure[]>([]);
+  useEffect(() => {
+    const stops = [
+      call.on("participantLeft", (person) => {
+        // Webinars: the list is of speakers and co-hosts. The audience comes and goes as a
+        // change in its count; who watched waits for an attendance export.
+        if (call.mode === "webinar" && person.role === "viewer" && !call.coHosts().includes(person.identity)) return;
+        setList((current) => recordLeave(current, { identity: person.identity, name: person.name, at: Date.now() }));
+      }),
+      call.on("participantJoined", (person) => setList((current) => recordJoin(current, person))),
+    ];
+    return () => stops.forEach((stop) => stop());
+  }, [call]);
+  return list;
 }
 
 /**
@@ -299,6 +407,7 @@ export function HostMenu({
   variant: "row" | "tile";
 }) {
   const { canModerate, isHost, hostId, coHosts, supports, mute, stopCamera, lowerHand, setCoHost, askRemove } = useHost();
+  const webinar = useCall().mode === "webinar";
   if (!canModerate || participant.isLocal || participant.identity === hostId) return null;
   const name = displayName(participant);
   const isCoHost = coHosts.includes(participant.identity);
@@ -318,11 +427,14 @@ export function HostMenu({
       <Dropdown.Portal>
         <Dropdown.Content align="end" sideOffset={6} collisionPadding={12} className="menu">
           <Dropdown.Label className="menu-label">{name}</Dropdown.Label>
-          <Dropdown.Item className="menu-item" disabled={!micOn} onSelect={() => mute(participant)}>
-            <MicOff className="size-4 text-muted" aria-hidden="true" />
-            {micOn ? "Mute microphone" : "Already muted"}
-          </Dropdown.Item>
-          {supports.stopCamera && (
+          {/* The audience has no microphone or camera to turn off. */}
+          {participant.role !== "viewer" && (
+            <Dropdown.Item className="menu-item" disabled={!micOn} onSelect={() => mute(participant)}>
+              <MicOff className="size-4 text-muted" aria-hidden="true" />
+              {micOn ? "Mute microphone" : "Already muted"}
+            </Dropdown.Item>
+          )}
+          {supports.stopCamera && participant.role !== "viewer" && (
             <Dropdown.Item className="menu-item" disabled={!camOn} onSelect={() => stopCamera(participant)}>
               <VideoOff className="size-4 text-muted" aria-hidden="true" />
               {camOn ? "Turn off camera" : "Camera already off"}
@@ -344,10 +456,11 @@ export function HostMenu({
               {isCoHost ? "Remove as co-host" : "Make co-host"}
             </Dropdown.Item>
           )}
+          <BackToAudienceItem participant={participant} />
           <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={() => askRemove(participant, variant)}>
             <UserX className="size-4" aria-hidden="true" />
-            Remove from meeting
+            Remove from {webinar ? "webinar" : "meeting"}
           </Dropdown.Item>
         </Dropdown.Content>
       </Dropdown.Portal>

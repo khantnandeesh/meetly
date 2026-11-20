@@ -32,6 +32,7 @@ import {
 } from "lucide-react";
 import { Fragment, useEffect, useRef, useState } from "react";
 import { saveEffectSettings } from "@/lib/effects/settings";
+import { badgeCount, fullCount } from "@/lib/counts";
 import { useCopied } from "@/lib/hooks";
 import { noteOwnCameraToggle } from "@/lib/ownToggles";
 import { useActiveDevice, useCall, useCallQuality, useLocalEffects, useLocalToggle } from "@/lib/rtc/react";
@@ -39,13 +40,17 @@ import type { BackgroundMode } from "@/lib/rtc/types";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
-import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
+import { deviceError } from "@/lib/notices";
+import { noteOwnMicToggle, useOffByHost, useSoundSettings } from "@/lib/useSounds";
+import { useCallNoun, useOnStage } from "@/lib/useWebinar";
 import { DataSaverBadge, setDataSaver } from "./CallQuality";
 import { useUnread } from "./ChatStore";
 import { useHost } from "./HostTools";
 import { LayoutMenuItems } from "./LayoutMenu";
 import { useMini } from "./MiniWindow";
+import { ChatPreviewsSwitch, ReactionsSwitch } from "./NoticeSwitches";
 import { ReactMenu } from "./Reactions";
+import { OnStageChip } from "./StageInvite";
 import { DeviceRadioGroup, Dropdown } from "./ui/Menu";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -93,23 +98,23 @@ export function ControlBar({
   const toast = useToast();
   const copyState = useCopied(onCopyLink);
   const { isHost, waiting, askEnd } = useHost();
+  // "Leave webinar", "End webinar for everyone": the call is named as what it is.
+  const noun = useCallNoun();
+  const onStage = useOnStage();
   const mini = useMini();
 
-  const deviceError = (what: string) => () =>
-    toast.push({
-      title: `Couldn't start your ${what}`,
-      body: "Check your browser's permissions for this site and try again.",
-      tone: "danger",
-      icon: <CircleAlert className="size-5" />,
-      duration: 7000,
-    });
-  const mic = useLocalToggle("microphone", deviceError("microphone"));
-  const cam = useLocalToggle("camera", deviceError("camera"));
+  // Tagged per device: tapping a failing button again updates the one notification.
+  const deviceProblem = (kind: "microphone" | "camera") => () => toast.push({ ...deviceError(kind), icon: <CircleAlert className="size-5" /> });
+  const mic = useLocalToggle("microphone", deviceProblem("microphone"));
+  const cam = useLocalToggle("camera", deviceProblem("camera"));
   // Dismissing the browser's screen picker is not an error worth a message.
   const share = useLocalToggle("screen_share");
 
-  const micLabel = mic.enabled ? "Mute microphone" : "Unmute microphone";
-  const camLabel = cam.enabled ? "Turn off camera" : "Turn on camera";
+  // Why it is off stays on the control until you turn it back on (the notification is long gone).
+  const micByHost = useOffByHost("microphone");
+  const camByHost = useOffByHost("camera");
+  const micLabel = mic.enabled ? "Mute microphone" : micByHost ? "Muted by the host. Unmute microphone" : "Unmute microphone";
+  const camLabel = cam.enabled ? "Turn off camera" : camByHost ? "Turned off by the host. Turn on camera" : "Turn on camera";
   const handLabel = handRaised ? "Lower hand" : "Raise hand";
 
   const micButton = (
@@ -157,8 +162,8 @@ export function ControlBar({
   );
   const chatButton = <ChatButton open={panel === "chat"} phone={phone} onToggle={onTogglePanel} />;
   const leaveButton = (
-    <Tip label="Leave meeting">
-      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label="Leave meeting" onClick={() => call.disconnect().catch(() => {})}>
+    <Tip label={`Leave ${noun}`}>
+      <button className="ctrl ctrl-danger max-md:ml-2 md:w-16" aria-label={`Leave ${noun}`} onClick={() => call.disconnect().catch(() => {})}>
         <PhoneOff className="size-5" />
       </button>
     </Tip>
@@ -200,6 +205,8 @@ export function ControlBar({
                 <Gauge className="size-4 text-muted" aria-hidden="true" />
                 Connection quality…
               </Dropdown.Item>
+              <ViewerSwitches />
+              <div className="menu-sep" />
               <Dropdown.Item className="menu-item" onSelect={onShowShortcuts}>
                 <Keyboard className="size-4 text-muted" aria-hidden="true" />
                 Keyboard shortcuts
@@ -215,7 +222,7 @@ export function ControlBar({
   if (phone) {
     return (
       <footer className="px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label="Meeting controls">
+        <div className="mx-auto flex max-w-md items-center justify-between" role="toolbar" aria-label={noun === "webinar" ? "Webinar controls" : "Meeting controls"}>
           {micButton}
           {camButton}
           {reactButton}
@@ -228,14 +235,17 @@ export function ControlBar({
   }
 
   return (
-    <footer className="grid grid-cols-[1fr_auto_1fr] items-center gap-4 px-4 pt-1 pb-4">
-      <div className="flex min-w-0 items-center gap-1 text-sm text-muted">
-        <Clock />
-        <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" aria-hidden="true" />
-        <Tip label="Copy meeting link">
+    <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-4 px-4 pt-1 pb-4">
+      {/* At the narrowest large screens the controls take the room: the clock goes first, so the
+          bar's right-hand buttons never slide over the leave button (see the grid's third column). */}
+      <div className="@container flex min-w-0 items-center gap-1 text-sm text-muted @max-[5rem]:*:hidden">
+        {/* On a webinar's stage the clock's place says so, with the way back to the audience. */}
+        {onStage ? <OnStageChip /> : <Clock className="@max-[11rem]:hidden" />}
+        <span className="mx-2 h-4 w-px shrink-0 bg-border-strong @max-[11rem]:hidden" aria-hidden="true" />
+        <Tip label={`Copy ${noun} link`}>
           <button
             onClick={copyState.copy}
-            aria-label={`Copy meeting link, code ${code}`}
+            aria-label={`Copy ${noun} link, code ${code}`}
             className="-ml-2 inline-flex h-10 min-w-0 cursor-pointer items-center gap-2 rounded-xl px-2 font-mono text-[0.8125rem] transition-colors hover:bg-surface-2 hover:text-text"
           >
             {/* Both labels share one cell, so the confirmation does not change the button's width. */}
@@ -251,7 +261,7 @@ export function ControlBar({
         <DataSaverBadge onOpen={onShowQuality} />
       </div>
 
-      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label="Meeting controls">
+      <div className="flex items-center justify-center gap-2" role="toolbar" aria-label={noun === "webinar" ? "Webinar controls" : "Meeting controls"}>
         <div className="ctrl-split">
           {micButton}
           <DeviceMenu label="Audio settings" kinds={["audioinput", "audiooutput"]} off={!mic.enabled} />
@@ -288,11 +298,11 @@ export function ControlBar({
                 <Dropdown.Content side="top" align="end" sideOffset={10} collisionPadding={12} className="menu">
                   <Dropdown.Item className="menu-item" onSelect={() => call.disconnect().catch(() => {})}>
                     <LogOut className="size-4 text-muted" aria-hidden="true" />
-                    Leave meeting
+                    Leave {noun}
                   </Dropdown.Item>
                   <Dropdown.Item className="menu-item text-danger-text" onSelect={askEnd}>
                     <PhoneOff className="size-4" aria-hidden="true" />
-                    End meeting for everyone
+                    End {noun} for everyone
                   </Dropdown.Item>
                 </Dropdown.Content>
               </Dropdown.Portal>
@@ -326,16 +336,16 @@ export function ControlBar({
           >
             <Users className="size-5" aria-hidden="true" />
             <span className="sr-only">People, </span>
-            <span className="text-sm font-semibold tabular-nums">{headcount}</span>
-            <span className="sr-only">{waiting.length > 0 ? " in the meeting, " : " in the meeting"}</span>
+            <span className="text-sm font-semibold tabular-nums">{fullCount(headcount)}</span>
+            <span className="sr-only">{waiting.length > 0 ? ` in the ${noun}, ` : ` in the ${noun}`}</span>
             {waiting.length > 0 && (
               // Stays for as long as somebody is waiting; the notification is what announces them.
               <span
-                className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+                className="absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink tabular-nums ring-3 ring-bg"
                 data-waiting-count
               >
-                {waiting.length > 9 ? "9+" : waiting.length}
-                <span className="sr-only"> waiting to join</span>
+                <span aria-hidden="true">{badgeCount(waiting.length)}</span>
+                <span className="sr-only">{fullCount(waiting.length)} waiting to join</span>
               </span>
             )}
           </button>
@@ -363,6 +373,7 @@ function PhoneMoreItems({
   onEnd?: () => void;
 }) {
   const [view, setView] = useState<"main" | "layout" | "devices">("main");
+  const noun = useCallNoun();
   const first = useRef<HTMLDivElement>(null);
   const moved = useRef(false);
   // Changing level keeps the menu open and puts focus at the top of the new level (not when the
@@ -392,14 +403,15 @@ function PhoneMoreItems({
     );
   }
   const layoutName = { auto: "Auto", tiled: "Tiled", spotlight: "Spotlight", sidebar: "Sidebar" }[settings.layout];
+  // Audio and video first: moving between earpiece, speaker and headset is the most frequent
+  // thing done here on a phone, whose controls have no device menu of their own.
   return (
     <>
-      <DataSaverSwitch />
-      <Dropdown.Item ref={first} className="menu-item" onSelect={onShowQuality}>
-        <Gauge className="size-4 text-muted" aria-hidden="true" />
-        Connection quality…
+      <Dropdown.Item ref={first} className="menu-item" onSelect={open("devices")}>
+        <Settings2 className="size-4 text-muted" aria-hidden="true" />
+        Audio and video
+        <ChevronRight className="ml-auto size-4 text-muted" aria-hidden="true" />
       </Dropdown.Item>
-      <div className="menu-sep" />
       <Dropdown.Item className="menu-item" onSelect={open("layout")}>
         <LayoutGrid className="size-4 text-muted" aria-hidden="true" />
         Layout
@@ -408,20 +420,37 @@ function PhoneMoreItems({
           <ChevronRight className="size-4" aria-hidden="true" />
         </span>
       </Dropdown.Item>
-      <Dropdown.Item className="menu-item" onSelect={open("devices")}>
-        <Settings2 className="size-4 text-muted" aria-hidden="true" />
-        Audio and video
-        <ChevronRight className="ml-auto size-4 text-muted" aria-hidden="true" />
+      <div className="menu-sep" />
+      <DataSaverSwitch />
+      <Dropdown.Item className="menu-item" onSelect={onShowQuality}>
+        <Gauge className="size-4 text-muted" aria-hidden="true" />
+        Connection quality…
       </Dropdown.Item>
+      <ViewerSwitches />
       {onEnd && (
         <>
           <div className="menu-sep" />
           <Dropdown.Item className="menu-item text-danger-text" onSelect={onEnd}>
             <PhoneOff className="size-4" aria-hidden="true" />
-            End meeting for everyone
+            End {noun} for everyone
           </Dropdown.Item>
         </>
       )}
+    </>
+  );
+}
+
+/**
+ * What you see of other people's activity: chat previews and reactions, each a switch that only
+ * affects this browser (src/components/NoticeSwitches.tsx). Their own group, after the
+ * connection group, in both More menus.
+ */
+function ViewerSwitches() {
+  return (
+    <>
+      <div className="menu-sep" />
+      <ChatPreviewsSwitch />
+      <ReactionsSwitch />
     </>
   );
 }
@@ -443,17 +472,19 @@ function ChatButton({
         id="toggle-chat"
         className="ctrl"
         aria-expanded={open}
-        aria-label={unread ? `Chat, ${unread} unread` : "Chat"}
+        aria-label={unread ? `Chat, ${fullCount(unread)} unread` : "Chat"}
         onClick={() => onToggle("chat")}
       >
         <MessageSquare className="size-5" />
         {unread > 0 && (
-          // Pops in for the first unread message only; after that the number just changes.
+          // Pops in for the first unread message only; after that the number just changes. The
+          // button's own name carries the whole number.
           <span
-            className="anim-pop absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink ring-3 ring-bg"
+            className="anim-pop absolute -top-1.5 -right-1.5 grid h-5 min-w-5 place-items-center rounded-full bg-accent px-1 text-[0.6875rem] font-bold text-accent-ink tabular-nums ring-3 ring-bg"
             aria-hidden="true"
+            data-unread-count
           >
-            {unread > 9 ? "9+" : unread}
+            {badgeCount(unread)}
           </span>
         )}
       </button>
@@ -571,6 +602,7 @@ function BackgroundGroup() {
       () => saveEffectSettings({ background: mode }),
       (error) =>
         toast.push({
+          tag: "blur-error",
           title: "Couldn't start background blur",
           body: error instanceof Error ? error.message : undefined,
           tone: "danger",
@@ -689,6 +721,7 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
         onSelect={(id) =>
           call.setDevice(kind, id).catch(() =>
             toast.push({
+              tag: "device-switch",
               title: `Couldn't switch ${meta.label.toLowerCase()}`,
               tone: "danger",
               icon: <CircleAlert className="size-5" />,
@@ -700,7 +733,7 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
   );
 }
 
-function Clock() {
+function Clock({ className = "" }: { className?: string }) {
   const [now, setNow] = useState<Date | null>(null);
   useEffect(() => {
     const tick = () => setNow(new Date());
@@ -712,7 +745,7 @@ function Clock() {
     };
   }, []);
   return (
-    <time className="shrink-0 font-medium tabular-nums">
+    <time className={`shrink-0 font-medium tabular-nums ${className}`}>
       {now ? now.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : " "}
     </time>
   );

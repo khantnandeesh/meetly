@@ -4,17 +4,19 @@ import { CalendarPlus, CircleAlert, CirclePause, DoorClosed, Download, Home, Hou
 import Link from "next/link";
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { saveChat } from "@/lib/chatExport";
+import { fullCount } from "@/lib/counts";
 import { useMounted } from "@/lib/hooks";
 import { loadProvider, peekMeeting, requestJoin } from "@/lib/rtc/provider";
 import { CallRoom } from "@/lib/rtc/react";
 import { NOTICE } from "@/lib/rtc/shared";
-import type { ConnectionStatus, DisconnectReason, JoinAccess, JoinChoices, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
+import type { ConnectionStatus, DisconnectReason, JoinChoices, MeetingPeek, RtcCall, RtcChatMessage } from "@/lib/rtc/types";
 import { sounds } from "@/lib/sounds";
 import { deviceClass, lengthBucket, sendUsageEvent, sizeBucket } from "@/lib/usage";
 import { playCallEndedSound } from "@/lib/useSounds";
 import { Conference } from "./Conference";
 import { PreJoin, PreJoinSkeleton } from "./PreJoin";
 import { ScheduleDialog } from "./ScheduleDialog";
+import { ViewerPreJoin } from "./ViewerPreJoin";
 import { Logo } from "./ui/Logo";
 import { useToast } from "./ui/Toaster";
 
@@ -31,6 +33,8 @@ type Departure = {
   pinned: RtcChatMessage | null;
   /** The most people who were in the call at once while you were. */
   people: number;
+  /** What it was called: the screen names a webinar as one. */
+  noun: "meeting" | "webinar";
 };
 
 /** The status of a call that is not (yet) provided through context. */
@@ -54,7 +58,7 @@ export function Meeting({ code }: { code: string }) {
   /** The pre-join screen is still on top (it leaves once `ready`). */
   const [covered, setCovered] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, host: false, chat: [], pinned: null, people: 1 });
+  const [departure, setDeparture] = useState<Departure>({ minutes: 0, reason: "left", byYou: false, host: false, chat: [], pinned: null, people: 1, noun: "meeting" });
   // The most people the call held while you were in it: a size for the rating, not a list of anyone.
   const mostPeople = useRef(1);
   const currentCall = session?.call;
@@ -65,19 +69,35 @@ export function Meeting({ code }: { code: string }) {
       mostPeople.current = Math.max(mostPeople.current, currentCall.participants().length);
     });
   }, [currentCall]);
-  /** Who may join, and whether this browser is the host. Asked each time the pre-join screen is up. */
-  const [seen, setSeen] = useState<{ access: JoinAccess; host: boolean } | null>(null);
+  /**
+   * Who may join, whether this browser is the host, and how many people are in already (null
+   * where the provider can't say). Asked each time the pre-join screen is up.
+   */
+  const [seen, setSeen] = useState<MeetingPeek | null>(null);
+  /**
+   * The first answer has come (or could not). Until then neither pre-join is drawn: a webinar's
+   * audience must never be asked for a camera, and which screen it is depends on the answer.
+   */
+  const [peeked, setPeeked] = useState(false);
 
   useEffect(() => {
     if (stage !== "prejoin") return;
     let current = true;
+    // A server that does not answer in time leaves the meeting's own screen, as before webinars.
+    const fallback = setTimeout(() => setPeeked(true), 4000);
     void peekMeeting(code).then((answer) => {
-      if (current && answer) setSeen(answer);
+      clearTimeout(fallback);
+      if (!current) return;
+      if (answer) setSeen(answer);
+      setPeeked(true);
     });
     return () => {
       current = false;
+      clearTimeout(fallback);
     };
   }, [code, stage]);
+  // A webinar's audience joins without devices (see ViewerPreJoin); its host as to any meeting.
+  const watching = seen?.mode === "webinar" && !seen.host;
 
   async function join(choices: JoinChoices) {
     // Still inside the click that joins: the only moment a browser lets audio be switched on.
@@ -134,14 +154,19 @@ export function Meeting({ code }: { code: string }) {
               chat: call.chatMessages(),
               pinned: call.pinnedMessage(),
               people: mostPeople.current,
+              noun: call.mode === "webinar" ? "webinar" : "meeting",
             });
             setStage("left");
           }}
           onError={(e) =>
             toast.push({
+              tag: "call-error",
               title: "Something went wrong",
               // Only our own sentences are shown; anything else is the provider's, and not for reading.
-              body: e.name === NOTICE ? e.message : "If it keeps happening, leave and rejoin the meeting.",
+              body:
+                e.name === NOTICE
+                  ? e.message
+                  : `If it keeps happening, leave and rejoin the ${session.call.mode === "webinar" ? "webinar" : "meeting"}.`,
               tone: "danger",
               icon: <CircleAlert className="size-5" />,
               duration: 8000,
@@ -164,16 +189,32 @@ export function Meeting({ code }: { code: string }) {
               if (ready && event.target === event.currentTarget) setCovered(false);
             }}
           >
-            <PreJoin
-              code={code}
-              joining={joining || inCall}
-              waiting={waiting}
-              access={seen?.access ?? "open"}
-              isHost={seen?.host ?? false}
-              error={error}
-              onJoin={join}
-              onCancel={backToPreJoin}
-            />
+            {!peeked ? (
+              <PreJoinSkeleton />
+            ) : watching ? (
+              <ViewerPreJoin
+                code={code}
+                joining={joining || inCall}
+                waiting={waiting}
+                access={seen.access}
+                error={error}
+                onJoin={join}
+                onCancel={backToPreJoin}
+              />
+            ) : (
+              <PreJoin
+                code={code}
+                joining={joining || inCall}
+                waiting={waiting}
+                access={seen?.access ?? "open"}
+                isHost={seen?.host ?? false}
+                peopleHere={seen?.count ?? null}
+                noun={seen?.mode === "webinar" ? "webinar" : "meeting"}
+                error={error}
+                onJoin={join}
+                onCancel={backToPreJoin}
+              />
+            )}
           </div>
         ) : (
           <PreJoinSkeleton />
@@ -182,28 +223,29 @@ export function Meeting({ code }: { code: string }) {
   );
 }
 
-const ENDINGS: Record<DisconnectReason, { icon: typeof LogOut; title: string; note: string }> = {
-  left: { icon: LogOut, title: "You left the meeting", note: "The meeting stays open for others until everyone has left." },
+/** What the screen says for each way the call ended. A webinar is named as one. */
+const endings = (noun: "meeting" | "webinar"): Record<DisconnectReason, { icon: typeof LogOut; title: string; note: string }> => ({
+  left: { icon: LogOut, title: `You left the ${noun}`, note: `The ${noun} stays open for others until everyone has left.` },
   dropped: {
     icon: Unplug,
     title: "You were disconnected",
-    note: "The meeting stays open for others until everyone has left.",
+    note: `The ${noun} stays open for others until everyone has left.`,
   },
-  removed: { icon: UserX, title: "The host removed you", note: "You can't rejoin this meeting from this browser." },
+  removed: { icon: UserX, title: "The host removed you", note: `You can't rejoin this ${noun} from this browser.` },
   denied: {
     icon: DoorClosed,
     title: "The host didn't let you in",
     note: "If that was a mistake, ask again or check with whoever sent you the link.",
   },
-  ended: { icon: PhoneOff, title: "The host ended the meeting", note: "The link still works if people want to meet again." },
-  // Ended by our server's watchdog, not by the host (see src/lib/costGuard.server.ts).
+  ended: { icon: PhoneOff, title: `The host ended the ${noun}`, note: "The link still works if people want to meet again." },
+  // Ended by our server's watchdog, not by the host (see src/lib/costGuard.server.ts). Only ever a webinar.
   limit: {
     icon: Hourglass,
     title: "This webinar reached its free time limit",
     note: "Webinars are free for now, so each one has a time limit. This link can't be joined again.",
   },
   paused: { icon: CirclePause, title: "Webinars are paused right now", note: "The webinar was ended for everyone. Try again later." },
-};
+});
 
 function LeftScreen({
   code,
@@ -214,15 +256,15 @@ function LeftScreen({
   departure: Departure;
   onRejoin: () => void;
 }) {
-  const { minutes, reason, byYou, host, chat, pinned, people } = departure;
-  const canSaveChat = chat.some((message) => !message.deleted);
-  const { icon: Icon, title, note } = ENDINGS[reason];
+  const { minutes, reason, byYou, host, chat, pinned, people, noun } = departure;
+  const said = chat.filter((message) => !message.deleted).length;
+  const { icon: Icon, title, note } = endings(noun)[reason];
   const [planning, setPlanning] = useState(false);
   // Someone the host turned away is shown the way out first; coming back is the quieter option,
   // and for someone who was removed it is not an option at all. When the host ended the meeting
   // there is nobody to go back to, so the way out leads there too.
   const turnedAway = reason === "removed" || reason === "denied";
-  // A webinar our server ended: there is nothing to rejoin.
+  // A webinar our server ended: there is nothing to rejoin, and no follow-up on a closed link.
   const closed = reason === "limit" || reason === "paused";
   const homeFirst = turnedAway || closed || (reason === "ended" && !byYou);
   const home = (
@@ -236,20 +278,24 @@ function LeftScreen({
       <header className="mx-auto flex w-full max-w-6xl px-5 py-5 sm:px-8">
         <Logo />
       </header>
-      <main className="anim-rise mx-auto flex w-full max-w-2xl flex-1 flex-col items-center justify-center gap-8 px-5 pb-28 text-center">
-        <span className="grid size-16 place-items-center rounded-3xl bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)]">
+      {/* One column, top to bottom: what happened, the two ways on, what can still be kept, and
+          only then the question about the call. On a phone it starts at the top, so the rating is
+          on screen without scrolling; on a large screen it sits in the middle. */}
+      <main className="anim-rise mx-auto flex w-full max-w-[34rem] flex-1 flex-col items-center gap-[1.125rem] px-4 pt-2 pb-10 text-center sm:justify-center sm:gap-6 sm:pb-28">
+        <span className="grid size-16 shrink-0 place-items-center rounded-3xl bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)]">
           <Icon className="size-7" aria-hidden="true" />
         </span>
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2.5">
           <h1 className="font-display text-4xl leading-[1.05] font-semibold tracking-[-0.02em] sm:text-5xl">
-            {byYou ? "You ended the meeting" : title}
+            {byYou ? `You ended the ${noun}` : title}
           </h1>
           <p className="text-lg text-muted">
             <span className="font-mono text-[0.9em]">{code}</span>
             {minutes >= 1 && ` · ${minutes} min`}
           </p>
         </div>
-        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:flex-wrap sm:justify-center">
+        {/* Exactly two ways on (one for someone who was removed, or whose webinar our server ended): leaving, or coming back. */}
+        <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:justify-center" data-leave-actions>
           {homeFirst && home}
           {reason !== "removed" && !closed && (
             <button className={`btn ${homeFirst ? "btn-secondary" : "btn-primary"}`} onClick={onRejoin} autoFocus={!homeFirst}>
@@ -258,26 +304,78 @@ function LeftScreen({
             </button>
           )}
           {!homeFirst && home}
-          {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
-              who sends it. It keeps this link, so the host stays the host. */}
-          {host && !closed && (
-            <button className="btn btn-quiet" onClick={() => setPlanning(true)}>
-              <CalendarPlus className="size-[1.125rem]" aria-hidden="true" />
-              Schedule a follow-up
-            </button>
-          )}
-          {canSaveChat && (
-            <button className="btn btn-quiet" onClick={() => saveChat(code, chat, pinned)}>
-              <Download className="size-[1.125rem]" aria-hidden="true" />
-              Save chat
-            </button>
-          )}
         </div>
+        {(said > 0 || (host && !closed)) && (
+          // Keeping things is a different decision from where to go next, so it gets its own shape.
+          <section
+            aria-label={`Keep from this ${noun}`}
+            className="w-full divide-y divide-border rounded-[1.25rem] bg-surface p-1.5 text-left shadow-[inset_0_0_0_1px_var(--border)]"
+            data-keep
+          >
+            {/* First, because it is the only thing that is lost when this page closes. */}
+            {said > 0 && (
+              <KeepRow
+                icon={Download}
+                title="Save the chat"
+                help={`${said === 1 ? "1 message" : `${fullCount(said)} messages`}. It's gone once you close this page.`}
+                action="Save"
+                actionLabel="Save chat"
+                onAction={() => saveChat(code, chat, pinned)}
+              />
+            )}
+            {/* The moment a follow-up is decided is when the meeting ends, and the host is the one
+                who sends it. It keeps this link, so the host stays the host. */}
+            {host && !closed && (
+              <KeepRow
+                icon={CalendarPlus}
+                title="Schedule a follow-up"
+                help="Same link. Add it to your calendar."
+                action="Schedule"
+                actionLabel="Schedule a follow-up"
+                onAction={() => setPlanning(true)}
+              />
+            )}
+          </section>
+        )}
         {host && <ScheduleDialog code={code} mode="follow-up" open={planning} onOpenChange={setPlanning} />}
-        <p className="text-sm text-faint">{byYou ? "Everyone has left the meeting. The link still works." : note}</p>
+        <p className="text-sm text-faint">{byYou ? `Everyone has left the ${noun}. The link still works.` : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
         {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>
+    </div>
+  );
+}
+
+/** One thing that can be kept from the meeting: what it is, a line on why, and a quiet button. */
+function KeepRow({
+  icon: Icon,
+  title,
+  help,
+  action,
+  actionLabel,
+  onAction,
+}: {
+  icon: typeof Download;
+  title: string;
+  help: string;
+  /** The button's visible word. */
+  action: string;
+  /** The button's full name, for screen readers and voice control; it starts with `action`. */
+  actionLabel: string;
+  onAction: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 py-3 pr-3 pl-2.5 sm:gap-3.5 sm:pl-3.5" data-keep-row>
+      <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-accent">
+        <Icon className="size-5" aria-hidden="true" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[0.9375rem] font-semibold">{title}</span>
+        <span className="mt-0.5 block text-[0.8125rem] text-muted">{help}</span>
+      </span>
+      <button className="btn btn-secondary h-11 rounded-xl px-3.5 text-sm" onClick={onAction} aria-label={actionLabel}>
+        {action}
+      </button>
     </div>
   );
 }
@@ -297,7 +395,7 @@ function CallRating({ minutes, people }: { minutes: number; people: number }) {
     setRated(true);
   };
   return (
-    <div data-call-rating className="flex min-h-11 flex-wrap items-center justify-center gap-x-3 gap-y-2 border-t border-border pt-6 text-sm text-muted">
+    <div data-call-rating className="flex min-h-11 w-full flex-wrap items-center justify-center gap-x-3 gap-y-2 border-t border-border pt-6 text-sm text-muted max-sm:[&>p]:w-full">
       {rated ? (
         <p role="status" className="anim-fade">
           Thanks.

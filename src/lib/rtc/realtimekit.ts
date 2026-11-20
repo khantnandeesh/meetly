@@ -9,17 +9,16 @@ import {
   SAVER_FPS,
   SAVER_HEIGHT,
   SAVER_WIDTH,
-  answerEach,
+  bulkError,
   checkNewPoll,
   createReactionLimits,
   isReaction,
-  notAvailableYet,
   postHost,
   withSince,
   type HostApi,
   notice,
 } from "./shared";
-import { RealtimeKitStage, stageRole } from "./stage.realtimekit";
+import { RealtimeKitStage, mayChangeStage, stageRole } from "./stage.realtimekit";
 import { POLL_LIMITS } from "./types";
 import type {
   BackgroundMode,
@@ -279,7 +278,9 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "realtimekit" as const;
   readonly mode: CallMode;
 
-  private readonly grant: Grant;
+  /** Replaced only when a new role brings a new token (see `switchRole`). */
+  private grant: Grant;
+  switching: "cohost" | "audience" | null = null;
   private readonly choices: JoinChoices;
   private readonly factory: MeetingFactory;
   private readonly api: HostApi;
@@ -303,6 +304,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private readonly removed = new Map<string, RtcChatMessage>();
   private cohosts: string[];
   private gate: JoinAccess;
+  /** Reactions allowed, as our server recorded it: at the moment of joining, and again whenever a client says it changed. */
+  private reactionsOn: boolean;
   /** You asked to join and are in RealtimeKit's waiting room. */
   private waitlisted = false;
   private waiters: RtcWaiter[] = [];
@@ -392,6 +395,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.gate = grant.access ?? "open";
     this.pinId = grant.pin ?? null;
     this.closedPolls = new Set(grant.closedPolls ?? []);
+    this.reactionsOn = grant.reactions !== false;
     const unavailable = effects.blurUnavailable();
     this.fx = {
       noiseSuppression: choices.noiseSuppression !== false,
@@ -616,6 +620,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.emit("speakers");
     // Webinars: the host takes the stage. Failing to is said, since nobody would see or hear them.
     this.stage.joined(meeting, this.isHost()).catch(() => this.fail(notice("Couldn't put you on stage. Leave and rejoin the webinar.")));
+    if (this.switching) {
+      this.switching = null;
+      this.emit("status");
+    }
   }
 
   /**
@@ -635,6 +643,12 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   private finish(reason: DisconnectReason): void {
     if (this.ended) return;
     this.ended = true;
+    this.release();
+    this.emit("disconnected", reason);
+  }
+
+  /** Lets go of the meeting object and everything attached to it. The conversation is kept. */
+  private release(): void {
     this.joined = false;
     this.waitlisted = false;
     this.waiters = [];
@@ -667,7 +681,41 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.statusChanged();
     this.rosterChanged();
     this.tilesChanged();
-    this.emit("disconnected", reason);
+  }
+
+  /**
+   * Webinars: a co-host moderates from the audience with a preset of their own, and a preset is
+   * fixed when a token is made. So someone made co-host (or no longer one) gets a fresh token for
+   * the same participant record from our server, and this client leaves and joins again with it:
+   * "Switching to co-host…" for a second or two. Should RealtimeKit apply a preset change to a
+   * live participant, the server's PATCH alone would do and this could go; that is untested.
+   */
+  private syncPreset(): void {
+    const presets = this.grant.webinarPresets;
+    const me = this.meeting?.self;
+    if (this.mode !== "webinar" || !presets || !me || !this.joined || this.switching || this.isHost()) return;
+    const want = this.cohosts.includes(this.self.identity) ? presets.cohost : presets.viewer;
+    if (me.presetName && me.presetName !== want) void this.switchRole(want === presets.cohost);
+  }
+
+  private async switchRole(coHost: boolean): Promise<void> {
+    this.switching = coHost ? "cohost" : "audience";
+    this.emit("status");
+    try {
+      const data = await this.api({ session: this.grant.session, action: "rejoin" });
+      if (typeof data.authToken !== "string") throw new Error("No token");
+      const meeting = this.meeting;
+      // Quietly: listeners go first, so leaving is not taken for the call ending.
+      this.release();
+      this.meeting = null;
+      await meeting?.leave().catch(() => {});
+      this.grant = { ...this.grant, authToken: data.authToken };
+      this.connect();
+    } catch {
+      this.switching = null;
+      this.emit("status");
+      this.fail(notice(coHost ? "Couldn't switch you to co-host. Leave and rejoin the webinar." : "Couldn't update your role. Leave and rejoin the webinar."));
+    }
   }
 
   /* ------------------------------------------------------------------ people */
@@ -728,7 +776,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * Both depend on the presets the app was given: letting people in from the waiting room and
    * stopping a camera are done by RealtimeKit itself, for participants whose preset allows it.
    */
-  get supports(): { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean } {
+  get supports(): { askToJoin: boolean; stopCamera: boolean; polls: boolean; createPolls: boolean; stage: boolean } {
     const permissions = this.meeting?.self.permissions;
     return {
       askToJoin: !!this.grant.canAsk && !!permissions?.acceptWaitingRequests,
@@ -736,6 +784,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       // RealtimeKit's own polls: each preset says whether its holders see them, vote and start them.
       polls: !!permissions?.polls?.canView,
       createPolls: !!permissions?.polls?.canCreate,
+      // Both the stage and the speaker's chat (see stage.realtimekit.ts): the host, and co-hosts if their preset allows both.
+      stage: this.mode === "webinar" && !!this.meeting && mayChangeStage(this.meeting),
     };
   }
 
@@ -753,9 +803,13 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     return !!me && (this.hostIdentity === me || this.cohosts.includes(me));
   }
 
-  /** Always true for now: there is no switch to turn reactions off yet. */
   get reactionsAllowed(): boolean {
-    return true;
+    return this.reactionsOn;
+  }
+
+  /** While reactions are off, the host and co-hosts can still send them. */
+  private maySendReactions(identity: string): boolean {
+    return this.reactionsOn || (!!identity && (identity === this.hostIdentity || this.cohosts.includes(identity)));
   }
 
   /** RealtimeKit's waiting room, as far as your preset lets you answer it. */
@@ -777,6 +831,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     const closed = Array.isArray(data.closedPolls) ? data.closedPolls.filter((id): id is string => typeof id === "string") : [];
     this.stopped = data.stopped === "limit" || data.stopped === "paused" ? data.stopped : null;
     this.readWarning(data.warning);
+    const reactions = data.reactions !== false;
+    if (reactions !== this.reactionsOn) {
+      this.reactionsOn = reactions;
+      this.emit("reactionsAllowed");
+    }
     if (closed.slice().sort().join() !== Array.from(this.closedPolls).sort().join()) {
       this.closedPolls = new Set(closed);
       this.readPolls();
@@ -789,6 +848,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     if (coHosts.join() !== this.cohosts.join()) {
       this.cohosts = coHosts;
       this.emit("host");
+      this.syncPreset();
     }
     if (access !== this.gate) {
       this.gate = access;
@@ -851,7 +911,6 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
    * camera; lowering hands is a message between clients, as raising one is.
    */
   async moderate(action: HostAction): Promise<void> {
-    if (action.action === "reactions") throw notAvailableYet(action.action);
     const meeting = this.meeting;
     if (!meeting || !this.joined) throw new Error("You're not connected right now. Try again in a moment.");
     if (action.action === "stage") {
@@ -862,8 +921,26 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       });
     }
     if (action.action === "admitAll" || action.action === "denyAll") {
-      const verb = action.action === "admitAll" ? "admit" : "deny";
-      return answerEach(action.identities, verb, (identity) => this.moderate({ action: verb, identity }));
+      // One request to our server however many are waiting; then the waiting room is answered
+      // from here. Anyone who stopped asking in the meantime is left out: that is not a failure.
+      await this.api({ session: this.grant.session, ...action });
+      const present = new Set(meeting.participants.waitlisted.toArray().map((p) => p.id));
+      const asking = action.identities.filter((id) => present.has(id));
+      if (asking.length === 0) return;
+      if (action.action === "admitAll") {
+        // RealtimeKit lets everyone in with one message; it does not say who, if anyone, it missed.
+        // Some builds of the SDK return nothing here rather than a promise; `await` takes either.
+        try {
+          await meeting.participants.acceptAllWaitingRoomRequest(asking);
+        } catch {
+          throw bulkError("admit", asking);
+        }
+        return;
+      }
+      const failed: string[] = [];
+      for (const id of asking) await meeting.participants.rejectWaitingRoomRequest(id).catch(() => failed.push(id));
+      if (failed.length > 0) throw bulkError("deny", failed);
+      return;
     }
     // Sent first: afterwards there is nobody left to tell.
     if (action.action === "end") await this.tell(ENDING_MESSAGE);
@@ -874,6 +951,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       case "remove":
       case "pin":
       case "closePoll":
+      case "reactions":
         await this.refreshRoles().catch(() => {});
         await this.tell(ROLES_MESSAGE);
         break;
@@ -912,7 +990,11 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       }),
       () => !!peer.audioEnabled && (this.voice ? this.voice.speaking(peer.id) : this.speaker === peer.id),
       () => this.lastHost,
-      { mode: this.mode, status: () => peer.stageStatus },
+      {
+        mode: this.mode,
+        status: () => peer.stageStatus,
+        invited: () => this.mode === "webinar" && peer.stageStatus === "ACCEPTED_TO_JOIN_STAGE" && peer.presetName !== this.grant.hostPreset,
+      },
     );
     person.camera = new RemoteCamera(peer);
     person.screen = new DirectVideo(
@@ -958,7 +1040,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     peer.on("mediaScoreUpdate", onScore);
     // Webinars: coming on stage, or going back to the audience. Statuses arrive with the
     // participant and with this event; nobody is asked who is on stage.
-    const onStage = () => this.stageChanged();
+    const onStage = () => {
+      this.stageChanged();
+      if (this.meeting) this.stage.peerStageChanged(this.meeting, peer);
+    };
     if (this.mode === "webinar") peer.on("stageStatusUpdate", onStage);
     const stop = () => {
       peer.off("stageStatusUpdate", onStage);
@@ -993,6 +1078,27 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.tilesChanged();
     if (wasSpeaker) this.emit("speakers");
     this.emit("participantLeft", entry.person);
+  }
+
+  /**
+   * The SDK emptied its list of who is here. Everyone still leaves one by one, but the roster and
+   * the tiles change once: announced per person, each "roster" makes every reader rebuild a list
+   * of everyone left, which in a meeting of thousands is millions of steps in one task.
+   */
+  private removeEveryone(): void {
+    if (this.peers.size === 0) return;
+    const gone = Array.from(this.peers.values());
+    for (const entry of gone) entry.stop();
+    this.peers.clear();
+    this.receiving.clear();
+    this.roster = null;
+    this.tileList = null;
+    const hadSpeaker = this.speaker !== null;
+    this.speaker = null;
+    this.rosterChanged();
+    this.tilesChanged();
+    if (hadSpeaker) this.emit("speakers");
+    for (const entry of gone) this.emit("participantLeft", entry.person);
   }
 
   /* ---------------------------------------------------------------- pictures */
@@ -1434,7 +1540,8 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
 
   async sendReaction(emoji: string): Promise<void> {
     const meeting = this.meeting;
-    if (!isReaction(emoji) || !meeting || !this.joined || !this.limits.maySend()) return;
+    if (!isReaction(emoji) || !meeting || !this.joined) return;
+    if (!this.maySendReactions(this.self.identity) || !this.limits.maySend()) return;
     this.emit("reaction", this.self, emoji);
     await meeting.participants.broadcastMessage(REACTION_MESSAGE, { peerId: meeting.self.id, emoji });
   }
@@ -1755,9 +1862,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       if (this.joined) this.addPeer(peer, true);
     });
     on(participants.joined, "participantLeft", (peer: RTKParticipant) => this.removePeer(peer.id));
-    on(participants.joined, "participantsCleared", () => {
-      for (const peerId of Array.from(this.peers.keys())) this.removePeer(peerId);
-    });
+    on(participants.joined, "participantsCleared", () => this.removeEveryone());
     // Entering or leaving the active set is when a camera starts or stops being received.
     on(participants.active, "participantJoined", () => this.tilesChanged());
     on(participants.active, "participantLeft", () => this.tilesChanged());
@@ -1780,7 +1885,10 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
       const own = payload.peerId === self.id;
       if (type === REACTION_MESSAGE) {
         const sender = typeof payload.peerId === "string" ? this.peers.get(payload.peerId) : undefined;
-        if (sender && isReaction(payload.emoji) && this.limits.mayReceive(payload.peerId as string)) {
+        // Off means off: a reaction from somebody who may not send one is dropped, whatever sent it.
+        // RealtimeKit does not say who sent a broadcast, so this trusts the `peerId` it names.
+        if (!sender || !isReaction(payload.emoji) || !this.maySendReactions(sender.person.identity)) return;
+        if (this.limits.mayReceive(payload.peerId as string)) {
           this.emit("reaction", sender.person, payload.emoji);
         }
         return;

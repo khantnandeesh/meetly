@@ -119,6 +119,8 @@ export class FakeSelf extends FakeParticipant {
     polls?: { canCreate: boolean; canVote: boolean; canView: boolean };
     /** PermissionPreset.acceptStageRequests (`can_accept_production_requests`): may change who is on stage. */
     acceptStageRequests?: boolean;
+    /** PermissionPreset.canChangeParticipantPermissions: may use `participants.updatePermissions`. */
+    canChangeParticipantPermissions?: boolean;
   } = { acceptWaitingRequests: false, canDisableParticipantVideo: false };
   /** RTKSelfMedia.updateVideoConstraints: what the running camera was asked to become. */
   videoConstraintCalls: unknown[] = [];
@@ -203,11 +205,36 @@ export class FakeParticipants extends EventEmitter {
   waitlisted = new FakeParticipantMap();
   accepted: string[] = [];
   rejected: string[] = [];
+  /**
+   * Participants.updatePermissions: what someone may do for the rest of the session. The calls
+   * are recorded; set `failPermissions` to make the next one fail. What a real session does
+   * with them has not been tried.
+   */
+  permissionCalls: { ids: string[]; patch: unknown }[] = [];
+  failPermissions = false;
+  async updatePermissions(ids: string[], patch: unknown) {
+    if (this.failPermissions) {
+      this.failPermissions = false;
+      throw new Error("permissions update failed");
+    }
+    this.permissionCalls.push({ ids, patch });
+  }
   acceptWaitingRoomRequest(id: string) {
     this.accepted.push(id);
     this.waitlisted.remove(id);
   }
+  /** Calls to acceptAllWaitingRoomRequest, each with the ids it was given. `failAccept` makes the next one reject. */
+  acceptAllCalls: string[][] = [];
+  failAccept = false;
+  async acceptAllWaitingRoomRequest(ids: string[]) {
+    this.acceptAllCalls.push(ids);
+    if (this.failAccept) throw new Error("socket closed");
+    for (const id of ids) this.acceptWaitingRoomRequest(id);
+  }
+  /** Ids for which rejectWaitingRoomRequest rejects. */
+  failReject = new Set<string>();
   async rejectWaitingRoomRequest(id: string) {
+    if (this.failReject.has(id)) throw new Error("socket closed");
     this.rejected.push(id);
     this.waitlisted.remove(id);
   }
@@ -270,18 +297,28 @@ export class FakeStage extends EventEmitter {
   joinCalls = 0;
   leaveCalls = 0;
   requests: { displayName: string; userId: string; peerId: string }[] = [];
+  /** Set to make the next grantAccess or kick fail, as a refused socket request would. */
+  failNext: "grant" | "kick" | null = null;
   private set(status: FakeStageStatus) {
     if (status === this.status) return;
     this.status = status;
     this.emit("stageStatusUpdate", status);
   }
   async grantAccess(userIds: string[]) {
+    if (this.failNext === "grant") {
+      this.failNext = null;
+      throw new Error("grant refused");
+    }
     this.granted.push(userIds);
   }
   async denyAccess(userIds: string[]) {
     this.denied.push(userIds);
   }
   async kick(userIds: string[]) {
+    if (this.failNext === "kick") {
+      this.failNext = null;
+      throw new Error("kick refused");
+    }
     this.kicked.push(userIds);
     return { id: "kick", payload: new Uint8Array() };
   }
