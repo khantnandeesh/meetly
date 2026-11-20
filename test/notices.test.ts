@@ -1,7 +1,22 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { handQueue } from "../src/lib/handQueue";
-import { DESKTOP_MODE, crowdSentence, order, overflow, place, waitingSentence, type NoticeEntry } from "../src/lib/notices";
+import {
+  CHAT_PREVIEW_EVERY_MS,
+  DESKTOP_MODE,
+  QUEUE_MS,
+  createChatPreviewGate,
+  crowdSentence,
+  deviceError,
+  laneSurface,
+  order,
+  overflow,
+  place,
+  queueUntil,
+  statusBanner,
+  waitingSentence,
+  type NoticeEntry,
+} from "../src/lib/notices";
 
 /** The notification rules (src/lib/notices.ts): what shows, what makes way, what waits, what is dropped. */
 
@@ -77,4 +92,120 @@ test("hands: listed in the order they went up, not by name", () => {
   // Lowered and raised again goes to the back.
   handQueue([p("amy", true), p("zoe", false)]);
   assert.deepEqual(handQueue([p("amy", true), p("zoe", true)]).map((x) => x.identity), ["amy", "zoe"]);
+});
+
+/* ---------------------------------------------------------------- C16: never dropped */
+
+test("notices: a change to your own state waits for room for as long as it takes; errors expire", () => {
+  for (const tag of ["muted-by-host", "cam-by-host", "role-self", "blur-slow"]) {
+    assert.equal(queueUntil({ tag }, 1000), Infinity, tag);
+  }
+  // A request to join waits too: it stays until answered.
+  assert.equal(queueUntil({ tag: "knock", duration: Infinity }, 1000), Infinity);
+  // Errors and confirmations go stale.
+  assert.equal(queueUntil({ tag: "device-microphone" }, 1000), 1000 + QUEUE_MS);
+  assert.equal(queueUntil({ tag: "mute-all" }, 1000), 1000 + QUEUE_MS);
+  // "Couldn't admit 3 people" (one tagged notice, replaced in place) is an error too.
+  assert.equal(queueUntil({ tag: "host-error" }, 1000), 1000 + QUEUE_MS);
+  assert.equal(queueUntil({}, 1000), 1000 + QUEUE_MS);
+});
+
+test("notices: with two notifications up, 'the host muted you' queues instead of being dropped", () => {
+  const full = [n(1, "you"), n(2, "you")];
+  assert.deepEqual(place(full, { id: 3, priority: "you", tag: "muted-by-host" }, DESKTOP_MODE), { kind: "queue" });
+});
+
+/* ---------------------------------------------------------------- C9: one per device */
+
+test("notices: a failing device is one tagged notification per device", () => {
+  assert.equal(deviceError("microphone").tag, "device-microphone");
+  assert.equal(deviceError("camera").tag, "device-camera");
+  assert.equal(deviceError("microphone").title, "Couldn't start your microphone");
+  assert.equal(deviceError("camera").tone, "danger");
+});
+
+/* ---------------------------------------------------------------- C8: chat previews */
+
+/** Feeds `count` messages spread evenly over `ms`, returns how many were previewed. */
+function previews(headcount: number, count: number, ms: number, enabled = true, start = 0): number {
+  const gate = createChatPreviewGate();
+  let shown = 0;
+  for (let i = 0; i < count; i++) if (gate(start + (i * ms) / count, headcount, enabled)) shown++;
+  return shown;
+}
+
+test("chat previews: 300 messages in 10 s with 51 people give at most one preview", () => {
+  assert.ok(previews(51, 300, 10_000) <= 1);
+  assert.equal(previews(51, 300, 10_000), 1);
+});
+
+test("chat previews: switched off, none at any size", () => {
+  for (const size of [2, 24, 51, 199, 500]) assert.equal(previews(size, 50, 600_000, false), 0, `${size} people`);
+});
+
+test("chat previews: none from 200 people", () => {
+  assert.equal(previews(200, 50, 600_000), 0);
+  assert.equal(previews(1204, 50, 600_000), 0);
+});
+
+test("chat previews: up to 24 people, every message after a 4 s lull; from 25, at most one per 30 s", () => {
+  // One message every 5 s for a minute: each follows a lull.
+  assert.equal(previews(24, 12, 60_000), 12);
+  // The same in a 25-person meeting: one every 30 s at most.
+  assert.equal(previews(25, 12, 60_000), 2);
+  const gate = createChatPreviewGate();
+  assert.equal(gate(0, 51, true), true);
+  assert.equal(gate(CHAT_PREVIEW_EVERY_MS - 1, 51, true), false);
+  assert.equal(gate(2 * CHAT_PREVIEW_EVERY_MS, 51, true), true);
+});
+
+test("chat previews: the lull is measured from the last message, shown or not", () => {
+  const gate = createChatPreviewGate();
+  assert.equal(gate(0, 5, true), true);
+  // A steady stream every 3 s never leaves a 4 s lull.
+  for (let t = 3000; t <= 30_000; t += 3000) assert.equal(gate(t, 5, true), false);
+  assert.equal(gate(35_000, 5, true), true);
+});
+
+/* ---------------------------------------------------------------- C3 + C4: the status lane */
+
+test("status lane: one banner, Reconnecting › Turn on sound › Weak connection", () => {
+  assert.equal(statusBanner({ reconnecting: true, soundBlocked: true, weak: true }), "reconnecting");
+  assert.equal(statusBanner({ reconnecting: true, soundBlocked: false, weak: true }), "reconnecting");
+  assert.equal(statusBanner({ reconnecting: false, soundBlocked: true, weak: true }), "sound");
+  assert.equal(statusBanner({ reconnecting: false, soundBlocked: false, weak: true }), "weak");
+  assert.equal(statusBanner({ reconnecting: false, soundBlocked: false, weak: false }), null);
+});
+
+test("status lane: on a phone the banner counts toward the two", () => {
+  assert.deepEqual(laneSurface(false, false, "weak"), DESKTOP_MODE);
+  assert.deepEqual(laneSurface(true, false, null), DESKTOP_MODE);
+  assert.deepEqual(laneSurface(true, false, "weak"), { max: 1, info: true });
+  // A sheet open: the one line, unless Reconnecting or Turn on sound has taken it.
+  assert.deepEqual(laneSurface(true, true, null), { max: 1, info: false, compact: true, strip: true });
+  assert.deepEqual(laneSurface(true, true, "reconnecting"), { max: 0, info: false, compact: true, strip: true });
+  assert.deepEqual(laneSurface(true, true, "sound"), { max: 0, info: false, compact: true, strip: true });
+});
+
+test("status lane: a short screen (a phone held sideways) gets one line, where notifications normally go", () => {
+  // 844 x 390: the large-screen layout, but one notification, one line, only what concerns you.
+  assert.deepEqual(laneSurface(false, false, null, true), { max: 1, info: false, compact: true });
+  assert.deepEqual(laneSurface(false, false, "weak", true), { max: 1, info: false, compact: true });
+  // A phone-width short screen without a sheet: the same, below the banner, not over the top bar.
+  assert.deepEqual(laneSurface(true, false, "weak", true), { max: 1, info: false, compact: true });
+  // With a sheet open the strip rules still apply.
+  assert.deepEqual(laneSurface(true, true, "reconnecting", true), { max: 0, info: false, compact: true, strip: true });
+  // A chat preview never interrupts there; a request to join does.
+  const mode = laneSurface(false, false, null, true);
+  assert.equal(place([], n(1, "info"), mode).kind, "drop");
+  assert.equal(place([], n(2, "action"), mode).kind, "show");
+});
+
+test("status lane: weak, then a knock, then a chat message on a phone: banner, knock, no chat", () => {
+  const mode = laneSurface(true, false, "weak");
+  let showing: NoticeEntry[] = [];
+  const knock = place(showing, n(1, "action"), mode);
+  assert.equal(knock.kind, "show");
+  showing = [n(1, "action")];
+  assert.equal(place(showing, n(2, "info"), mode).kind, "drop");
 });

@@ -143,6 +143,7 @@ export function Meeting({ code }: { code: string }) {
           }}
           onError={(e) =>
             toast.push({
+              tag: "call-error",
               title: "Something went wrong",
               // Only our own sentences are shown; anything else is the provider's, and not for reading.
               body: e.name === NOTICE ? e.message : "If it keeps happening, leave and rejoin the meeting.",

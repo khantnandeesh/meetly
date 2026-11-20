@@ -2,8 +2,10 @@
 
 import { MessageSquare, Pin } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { useChat, useConnectionStatus, usePolls } from "@/lib/rtc/react";
+import { createChatPreviewGate } from "@/lib/notices";
+import { useCall, useChat, useConnectionStatus, usePolls } from "@/lib/rtc/react";
 import type { RtcPoll } from "@/lib/rtc/types";
+import { useCallSettings } from "@/lib/useCallSettings";
 import { playChatMessageSound } from "@/lib/useSounds";
 import { useToast } from "./ui/Toaster";
 
@@ -70,10 +72,21 @@ export function useUnread(open: boolean): number {
 /**
  * Toasts the latest incoming message while the panel is closed, and a message being pinned
  * (with the panel open, the pinned message appearing at its top is the signal). Renders nothing.
+ * Which messages are previewed depends on the size of the meeting and the viewer's "Chat
+ * previews" switch (see createChatPreviewGate in src/lib/notices.ts); pins always are.
  */
 export function ChatToasts({ open, onReply }: { open: boolean; onReply: () => void }) {
   const { chatMessages, pinned } = useChatStore();
   const toast = useToast();
+  const call = useCall();
+  const [{ chatPreviews }] = useCallSettings();
+  const previews = useRef(chatPreviews);
+  const gate = useRef<ReturnType<typeof createChatPreviewGate> | null>(null);
+  useEffect(() => {
+    previews.current = chatPreviews;
+    // Switched off: a preview already on screen goes too.
+    if (!chatPreviews) toast.dismissTag("chat");
+  }, [chatPreviews, toast]);
   const openNow = useRef(open);
   // By id, not by count: history can arrive after newer messages, and lands in front of them.
   const known = useRef(new Set<string>());
@@ -90,9 +103,12 @@ export function ChatToasts({ open, onReply }: { open: boolean; onReply: () => vo
     if (openNow.current) return;
     const last = fresh.findLast((message) => message.from && !message.from.isLocal && !message.earlier && !message.deleted);
     if (!last) return;
-    // The first message after a quiet spell is shown and heard. In a busy chat the rest are
-    // counted on the chat button instead: a preview that kept changing could not be read.
-    if (!playChatMessageSound()) return;
+    // The first message after a quiet spell is shown and heard (fewer in a large meeting, none
+    // with previews off). The rest are counted on the chat button instead: a preview that kept
+    // changing could not be read.
+    gate.current ??= createChatPreviewGate();
+    if (!gate.current(performance.now(), call.remoteIds().length + 1, previews.current)) return;
+    playChatMessageSound();
     toast.push({
       tag: "chat",
       icon: <MessageSquare className="size-5" />,
@@ -101,7 +117,7 @@ export function ChatToasts({ open, onReply }: { open: boolean; onReply: () => vo
       duration: 6000,
       action: { label: "Reply", onClick: onReply },
     });
-  }, [chatMessages, toast, onReply]);
+  }, [chatMessages, toast, onReply, call]);
 
   // What was pinned when you arrived is waiting in the panel; only a change while you are here is news.
   const pinnedId = pinned?.id ?? null;

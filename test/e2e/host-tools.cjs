@@ -473,6 +473,8 @@ async function atScale(browser) {
     const card = hana.page.locator("[data-toast]").filter({ hasText: "10 people want to join" });
     await card.getByRole("button", { name: "View" }).click();
     H.ok("C5: the knock card's View opens the waiting view with more than 5 waiting", await H.until(async () => (await panel.getByRole("button", { name: "Back to everyone" }).count()) === 1, 4000));
+    // Back to the main view, where the phone checks below start.
+    await panel.getByRole("button", { name: "Back to everyone" }).click();
   } else {
     console.log("SKIP  C5: knock card View → openWaiting() (applied by E1 in ModerationNotices.tsx)");
   }

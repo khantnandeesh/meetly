@@ -726,6 +726,11 @@ body {
  * corner of the stage instead, next to the people and chat buttons they usually lead to.
  * Conference.tsx keeps --toast-inset (an open side panel) and --toast-lift (something already in
  * that corner) up to date.
+ *
+ * The region sits at z-45 (Toaster.tsx): above the status lane and the phone scrim (40), so the
+ * one-line strip over a phone's top bar stays visible over an open sheet's scrim, and below
+ * menus, tooltips and dialog overlays (50), which are deliberate stops: a dialog's overlay dims
+ * notifications too, and they can't be clicked until it closes.
  */
 .toast-region {
   inset-inline: 0;
@@ -741,11 +746,21 @@ body {
   :root:has([data-in-call] [data-invite-card]:not([data-leaving="true"])) {
     --toast-top: calc(max(0.5rem, env(safe-area-inset-top)) + 13rem);
   }
+  /* A status banner ("Reconnecting…", "Turn on sound", "Weak connection") heads the column:
+     notifications start below it. StatusLane.tsx measures it into --status-bottom. */
+  .toast-region:not([data-strip]) {
+    top: max(var(--toast-top, 1rem), var(--status-bottom, 0px));
+  }
   /* A sheet is open: the one notification allowed sits over the top bar, above the sheet, so it
-     never covers the sheet's own header or its close button. One line, no body. */
-  .toast-region[data-compact] {
+     never covers the sheet's own header or its close button. */
+  .toast-region[data-strip] {
     top: max(0.25rem, env(safe-area-inset-top));
   }
+}
+/* One line, no body: over a phone's top bar while a sheet is open, and on any screen under
+   30rem tall (a phone held sideways), where two cards or one with a body would run off the top
+   or over the status banner. Toaster.tsx sets data-compact; StatusLane.tsx decides when. */
+@media (width < 48rem), (height < 30rem) {
   .toast-region[data-compact] .toast {
     padding-block: 0.25rem;
   }
@@ -777,8 +792,11 @@ body {
     /* The most important notification sits nearest the controls and stays put; anything newer
        or less important appears above it (see src/lib/notices.ts). */
     flex-direction: column-reverse;
-    /* Moved by transform, so toasts on screen ride along with an opening panel instead of jumping. */
-    translate: calc(var(--toast-inset, 0rem) * -1) calc(var(--toast-lift, 0rem) * -1);
+    /* Moved by transform, so toasts on screen ride along with an opening panel instead of jumping.
+       The sideways move is capped so a whole notice (24rem, with the region's 0.75rem gutters and
+       0.75rem from the screen's left edge) always stays on screen: on a narrow screen with a panel
+       and a filmstrip open it would otherwise be pushed off the left edge. */
+    translate: calc(min(var(--toast-inset, 0rem), max(0rem, 100vw - 26.25rem)) * -1) calc(var(--toast-lift, 0rem) * -1);
     transition: translate var(--dur-move) var(--ease-enter);
   }
 }

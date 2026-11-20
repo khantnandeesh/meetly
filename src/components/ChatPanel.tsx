@@ -325,6 +325,7 @@ export function ChatPanel({ autoFocus }: { autoFocus: boolean }) {
   const problem = useCallback(
     (title: string, error: unknown) =>
       toast.push({
+        tag: "chat-error",
         tone: "danger",
         icon: <CircleAlert className="size-5" />,
         title,

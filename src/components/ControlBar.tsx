@@ -40,7 +40,8 @@ import type { BackgroundMode } from "@/lib/rtc/types";
 import { useDeviceList } from "@/lib/usePreviewMedia";
 import { sounds, type SoundLevel, type SoundName } from "@/lib/sounds";
 import type { CallSettings } from "@/lib/useCallSettings";
-import { noteOwnMicToggle, useSoundSettings } from "@/lib/useSounds";
+import { deviceError } from "@/lib/notices";
+import { noteOwnMicToggle, useOffByHost, useSoundSettings } from "@/lib/useSounds";
 import { DataSaverBadge, setDataSaver } from "./CallQuality";
 import { useUnread } from "./ChatStore";
 import { useHost } from "./HostTools";
@@ -97,21 +98,18 @@ export function ControlBar({
   const { isHost, waiting, askEnd } = useHost();
   const mini = useMini();
 
-  const deviceError = (what: string) => () =>
-    toast.push({
-      title: `Couldn't start your ${what}`,
-      body: "Check your browser's permissions for this site and try again.",
-      tone: "danger",
-      icon: <CircleAlert className="size-5" />,
-      duration: 7000,
-    });
-  const mic = useLocalToggle("microphone", deviceError("microphone"));
-  const cam = useLocalToggle("camera", deviceError("camera"));
+  // Tagged per device: tapping a failing button again updates the one notification.
+  const deviceProblem = (kind: "microphone" | "camera") => () => toast.push({ ...deviceError(kind), icon: <CircleAlert className="size-5" /> });
+  const mic = useLocalToggle("microphone", deviceProblem("microphone"));
+  const cam = useLocalToggle("camera", deviceProblem("camera"));
   // Dismissing the browser's screen picker is not an error worth a message.
   const share = useLocalToggle("screen_share");
 
-  const micLabel = mic.enabled ? "Mute microphone" : "Unmute microphone";
-  const camLabel = cam.enabled ? "Turn off camera" : "Turn on camera";
+  // Why it is off stays on the control until you turn it back on (the notification is long gone).
+  const micByHost = useOffByHost("microphone");
+  const camByHost = useOffByHost("camera");
+  const micLabel = mic.enabled ? "Mute microphone" : micByHost ? "Muted by the host. Unmute microphone" : "Unmute microphone";
+  const camLabel = cam.enabled ? "Turn off camera" : camByHost ? "Turned off by the host. Turn on camera" : "Turn on camera";
   const handLabel = handRaised ? "Lower hand" : "Raise hand";
 
   const micButton = (
@@ -597,6 +595,7 @@ function BackgroundGroup() {
       () => saveEffectSettings({ background: mode }),
       (error) =>
         toast.push({
+          tag: "blur-error",
           title: "Couldn't start background blur",
           body: error instanceof Error ? error.message : undefined,
           tone: "danger",
@@ -715,6 +714,7 @@ function DeviceGroup({ kind, separated }: { kind: MediaDeviceKind; separated: bo
         onSelect={(id) =>
           call.setDevice(kind, id).catch(() =>
             toast.push({
+              tag: "device-switch",
               title: `Couldn't switch ${meta.label.toLowerCase()}`,
               tone: "danger",
               icon: <CircleAlert className="size-5" />,
