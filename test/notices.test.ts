@@ -105,6 +105,8 @@ test("notices: a change to your own state waits for room for as long as it takes
   // Errors and confirmations go stale.
   assert.equal(queueUntil({ tag: "device-microphone" }, 1000), 1000 + QUEUE_MS);
   assert.equal(queueUntil({ tag: "mute-all" }, 1000), 1000 + QUEUE_MS);
+  // "Couldn't admit 3 people" (one tagged notice, replaced in place) is an error too.
+  assert.equal(queueUntil({ tag: "host-error" }, 1000), 1000 + QUEUE_MS);
   assert.equal(queueUntil({}, 1000), 1000 + QUEUE_MS);
 });
 

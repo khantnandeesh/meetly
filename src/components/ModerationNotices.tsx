@@ -40,12 +40,12 @@ export function ModerationNotices({
 }) {
   const call = useCall();
   const toast = useToast();
-  const { waiting, canModerate, coHosts, admit, deny } = useHost();
+  const { waiting, canModerate, coHosts, admit, deny, openWaiting } = useHost();
 
   // Read when a notification's button is pressed, so a new function identity never re-raises one.
-  const answers = useRef({ admit, deny, onShowPeople });
+  const answers = useRef({ admit, deny, onShowPeople, openWaiting });
   useEffect(() => {
-    answers.current = { admit, deny, onShowPeople };
+    answers.current = { admit, deny, onShowPeople, openWaiting };
   });
 
   const known = useRef(new Set<string>());
@@ -73,12 +73,12 @@ export function ModerationNotices({
     const [first] = waiting;
     const title = waitingSentence(waiting.length, first.name || "Guest");
     const ids = waiting.map((person) => person.id);
-    // View opens the people list, where everyone waiting is listed with Admit all.
-    // INTEGRATOR, with E2's openWaiting(): with more than 5 waiting, View opens the "Waiting to
-    // join" view directly (placement spec, N1). Add `openWaiting` from useHost() to `answers`
-    // above, and make this line:
-    //   const view = () => (ids.length > 5 ? answers.current.openWaiting() : answers.current.onShowPeople());
-    const view = () => answers.current.onShowPeople();
+    // View opens the people list: with more than 5 waiting, straight at the "Waiting to join"
+    // view (openWaiting decides which), otherwise at the top, where they are listed with Admit all.
+    const view = () => {
+      answers.current.openWaiting();
+      answers.current.onShowPeople();
+    };
     const common = {
       tag: "knock",
       priority: "action" as const,
