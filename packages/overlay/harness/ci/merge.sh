@@ -6,7 +6,10 @@
 # Owner: E-harness.
 set -uo pipefail
 out="${1:-merged.json}"
-branches=(overlay-transport overlay-media overlay-congestion overlay-coordinator)
+# The coordinator first: until the composition root exists, the pages run the harness's stand-in
+# peer, so the coordinator is the only module a swarm really exercises. A branch that conflicts
+# with one merged before it is the one left out.
+branches=(overlay-coordinator overlay-transport overlay-media overlay-congestion)
 git config user.name "overlay-swarm"
 git config user.email "overlay-swarm@users.noreply.github.com"
 entries=()
