@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import { LATENCY_BUCKET_EDGES_MS, decodeMetricsSample, emptyHistogram, latencyBucket, type MetricsEvent, type MetricsSample } from "@meetly/overlay";
 import { buildReport, exactQuantiles, histogramQuantiles, largestValid, renderReport, renderSizes, reportJson } from "@meetly/overlay/harness/report";
 import { GATE_MIX, PROFILES, churnSteps, gateChurn, joinAtS, profileOf, scenario, shardOf } from "@meetly/overlay/harness/scenarios";
-import { pickPeer } from "@meetly/overlay/harness/shard";
+import { ntpBoundMs, pickPeer } from "@meetly/overlay/harness/shard";
 import type { ShardResult } from "@meetly/overlay/harness/types";
 
 const hist = (values: number[]): number[] => {
@@ -222,12 +222,32 @@ describe("harness report", () => {
     results[1].clock = { source: null, viewers: [16, 17, 25] };
     const report = buildReport(results);
     assert.deepEqual(report.clockByShard, [
-      { shard: 0, viewers: 3, p95: 7, max: 7 },
-      { shard: 1, viewers: 3, p95: 27, max: 27 },
+      { shard: 0, viewers: 3, p95: 7, max: 7, measuredP95: null, ntpBoundMs: null },
+      { shard: 1, viewers: 3, p95: 27, max: 27, measuredP95: null, ntpBoundMs: null },
     ]);
     assert.equal(report.gate.valid, false);
     assert.ok(report.gate.notes.some((note) => /^shard 1: clock uncertainty p95 27 ms/.test(note)));
     assert.match(renderReport(report), /\| 1 \| 4 \| 2 \| 10 \| 27 \|/);
+  });
+
+  it("measures how far apart viewers' clocks and the source's really were, against wall clocks", () => {
+    const results = goodRun();
+    results[0].clock = { source: 2, viewers: [3, 4, 5], sourceVsWallMs: -1000, viewersVsWallMs: [-1000.5, -999] };
+    results[1].clock = { source: null, viewers: [20, 21, 22], viewersVsWallMs: [-1004, -996, -1003] };
+    results[0].host.ntp = { boundMs: 0.5, text: "" };
+    results[1].host.ntp = { boundMs: 1.5, text: "" };
+    const report = buildReport(results);
+    assert.deepEqual(
+      report.clockByShard.map((c) => [c.shard, c.measuredP95, c.ntpBoundMs]),
+      [[0, 1, 1], [1, 4, 2]],
+    );
+    assert.match(renderReport(report), /Clocks apart, measured p95/);
+  });
+
+  it("reads chrony's own error bound", () => {
+    const text = "Reference ID    : A9FEA97B (169.254.169.123)\nSystem time     : 0.000012345 seconds fast of NTP time\nRoot delay      : 0.000400000 seconds\nRoot dispersion : 0.000150000 seconds\n";
+    assert.ok(Math.abs((ntpBoundMs(text) as number) - 0.362345) < 1e-9);
+    assert.equal(ntpBoundMs("nothing"), null);
   });
 
   it("finds the largest size that was a valid measurement (H4)", () => {

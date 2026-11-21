@@ -105,6 +105,8 @@ function state(): PageState {
   const status = real?.status() ?? null;
   const uncertainty = standin ? standin.clockUncertaintyMs() : (real?.sessionClock()?.uncertaintyMs ?? Infinity);
   if (Number.isFinite(uncertainty)) uncertaintyMax = Math.max(uncertaintyMax, uncertainty);
+  const session = standin ? standin.sessionTime() : (real?.sessionClock()?.now() ?? null);
+  const wall = Date.now();
   const taken = lag;
   lag = emptyHistogram();
   return {
@@ -115,6 +117,7 @@ function state(): PageState {
     // Infinity does not survive the trip to the driver as JSON.
     clockUncertaintyMs: Number.isFinite(uncertainty) ? uncertainty : -1,
     clockUncertaintyMaxMs: uncertaintyMax,
+    sessionMinusWallMs: session === null || !Number.isFinite(session) ? null : session - wall,
     lag: taken,
     links: linkCounts(),
     impairment: { ...impairment },

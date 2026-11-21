@@ -62,3 +62,47 @@ through the tunnel. Peers use STUN only.
   also given shard by shard: off shard 0 every sum is between two machines.
 - D29: the decoding viewers' latency against the light ones'. More than 15 ms apart at p50 is a
   note against the light viewers' numbers.
+
+## H5: can shards on separate runners share one coordinator and reach each other?
+
+Measured in `overlay-swarm.yml` run
+[44944170529](https://github.com/khantnandeesh/meetly/actions/runs/44944170529) (`experiment`):
+two GitHub-hosted runners, 8 peers each, the harness's stand-in peer and coordinator, STUN only
+(Google's and Cloudflare's), no churn, no impairment.
+
+- **One coordinator: yes, through a Cloudflare quick tunnel.** The Node coordinator ran on shard
+  0's runner on 127.0.0.1, with `cloudflared tunnel --url` in front of it. All 8 peers on the
+  other runner were admitted and rendered. Join p95 was 1,050 ms, against 120 ms on one machine:
+  ICE between machines and signalling through the tunnel. No account is needed. A quick tunnel
+  is documented to carry at most 200 requests in flight, and a 200-peer gate with 175 remote
+  WebSockets sits just under that. The deployed Worker (K4) would replace the tunnel; it does
+  not exist yet.
+- **Peers on different runners link directly: yes, no TURN was needed.** 13 links between the
+  runners, every one `srflx-srflx` (hole-punched through both runners' NAT), 0 through TURN, 0
+  failed. There was no TURN server to fall back on in any case: the repository has no TURN key.
+- **But the session clock across the tunnel is too loose for the gate.** A viewer on the other
+  runner reaches the coordinator in a round trip of about 50 ms, so its uncertainty (half of
+  that) was 24–30 ms. With the source's added, the p95 of the sum was 30.8 ms, against the 20 ms
+  that SPEC §12.3 allows. Shard 0's viewers, beside the coordinator, were at 1 ms. **Every sharded
+  run through a tunnel is therefore invalid by §12.3**, however well the overlay does. The report
+  now also reads every session clock against its machine's wall clock, so that the real
+  disagreement between a remote viewer's clock and the source's can be set beside the bound,
+  with chrony's own error bound for the wall clocks. Whether the 20 ms rule should use that
+  measurement instead is the architect's decision, not the harness's.
+
+## H4: how many peers fit on one runner
+
+Same run, `sizes`: gate-small (the gate's mix and churn, 120 s of it, with one 30 s coordinator
+outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in engine.
+
+| Peers | Load (1 min, max) | Event-loop lag p99 | Valid? |
+| ---: | ---: | ---: | --- |
+| 30 | 4.8 | 30 ms | yes |
+| 40 | 9.5 | 50 ms | yes, at the limit |
+| 50 | 19.5 | 70 ms | no: starved |
+| 60 | 41 | 470 ms | no: starved, and clocks at 37.8 ms |
+
+**40 is the largest valid size** (PLAN H4), with no margin; a shard of 25 has plenty. The 30- and
+40-peer runs were valid and failed the gate on join time. At 30–60 peers, the six viewers who
+arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
+under 2%.

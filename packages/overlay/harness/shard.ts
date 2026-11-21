@@ -9,6 +9,7 @@
  *
  * Owner: E-harness.
  */
+import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { availableParallelism, loadavg } from "node:os";
 import { dirname, join } from "node:path";
@@ -74,9 +75,35 @@ type PeerHandle = {
   state: PageState | null;
   links: { peer: PeerId; open: boolean; failed: boolean; turn: boolean; candidates: string | null }[];
   clockMax: number;
+  /** Session clock minus wall clock, at the last poll. */
+  vsWall: number | null;
   /** Decodes for real (D29); the rest are light. */
   decode: boolean;
 };
+
+/** This machine's time sync, from chrony, if it has it. A shard's wall clock is only as good as this. */
+export function readNtp(): { boundMs: number | null; text: string } | undefined {
+  let text: string;
+  try {
+    text = execFileSync("chronyc", ["-n", "tracking"], { encoding: "utf8", timeout: 3000, stdio: ["ignore", "pipe", "ignore"] });
+  } catch {
+    return undefined;
+  }
+  return { boundMs: ntpBoundMs(text), text: text.trim().slice(0, 2000) };
+}
+
+/** |system time offset| + root delay / 2 + root dispersion, in ms, from `chronyc tracking`. */
+export function ntpBoundMs(text: string): number | null {
+  const seconds = (label: string): number | null => {
+    const match = new RegExp(`^${label}\\s*:\\s*([0-9.]+) seconds`, "m").exec(text);
+    return match ? Number(match[1]) : null;
+  };
+  const offset = seconds("System time");
+  const delay = seconds("Root delay");
+  const dispersion = seconds("Root dispersion");
+  if (offset === null || delay === null || dispersion === null) return null;
+  return 1000 * (offset + delay / 2 + dispersion);
+}
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const SERVER_SECRET = "harness-server-secret";
@@ -193,7 +220,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     try {
       const page = await newPage();
       const decode = role === "viewer" && config.decodeEvery > 0 && (index - 1) % config.decodeEvery === 0;
-      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1, decode };
+      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1, vsWall: null, decode };
       page.on("crash", () => {
         if (!handle.alive) return;
         handle.alive = false;
@@ -239,6 +266,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
             p.links = got.links;
             engine = got.state.engine;
             if (got.state.clockUncertaintyMs >= 0) p.clockMax = Math.max(p.clockMax, got.state.clockUncertaintyMs);
+            if (typeof got.state.sessionMinusWallMs === "number") p.vsWall = got.state.sessionMinusWallMs;
             mergeHistogram(pageLag, got.state.lag);
             for (const sample of got.samples) {
               try {
@@ -412,7 +440,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     peersStarted: peers.size,
     peersFailed: failed.sort((a, b) => a.index - b.index),
     samples,
-    host: { cores: availableParallelism(), loadAvg1: loads, maxEventLoopLagMs: loopDelay.max / 1e6, driverLag, pageLag },
+    host: { cores: availableParallelism(), loadAvg1: loads, maxEventLoopLagMs: loopDelay.max / 1e6, driverLag, pageLag, ntp: readNtp() },
     peers: config.peers,
     durationS: config.durationS,
     scenario: config.scenario,
@@ -421,7 +449,12 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     engine: engine ?? undefined,
     coordinator: wanted === "external" || !ownsCoordinator ? "external" : useReal ? "real" : "standin",
     stubbed: [...new Set(stubbed)].sort(),
-    clock: { source: source && source.clockMax >= 0 ? source.clockMax : null, viewers: viewers.map((p) => p.clockMax) },
+    clock: {
+      source: source && source.clockMax >= 0 ? source.clockMax : null,
+      viewers: viewers.map((p) => p.clockMax),
+      sourceVsWallMs: source?.vsWall ?? null,
+      viewersVsWallMs: viewers.filter((p) => p.vsWall !== null).map((p) => p.vsWall as number),
+    },
     links,
     decoders: [...peers.values()].filter((p) => p.decode && p.state?.peer).map((p) => p.state!.peer as PeerId),
     impairment,

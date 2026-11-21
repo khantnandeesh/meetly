@@ -164,10 +164,22 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const peers = first?.peers ?? peersStarted;
   const clockSums = sourceClock === null ? [] : viewerClocks.map((viewer) => viewer + (sourceClock as number));
   const clockUncertaintyMs = exactQuantiles(clockSums);
+  // The source's session clock against its wall clock: what every viewer's is compared with.
+  const sourceVsWall = shards.find((shard) => typeof shard.clock?.sourceVsWallMs === "number")?.clock?.sourceVsWallMs ?? null;
+  const sourceNtp = shards.find((shard) => shard.clock?.source !== null && shard.clock?.source !== undefined)?.host.ntp?.boundMs ?? null;
   for (const shard of shards) {
     const sums = sourceClock === null || !shard.clock ? [] : shard.clock.viewers.map((viewer) => viewer + (sourceClock as number));
     const q = exactQuantiles(sums);
-    clockByShard.push({ shard: shard.shard.index, viewers: q.n, p95: q.p95, max: q.max });
+    const apart = sourceVsWall === null ? [] : (shard.clock?.viewersVsWallMs ?? []).map((v) => Math.abs(v - sourceVsWall));
+    const own = shard.host.ntp?.boundMs ?? null;
+    clockByShard.push({
+      shard: shard.shard.index,
+      viewers: q.n,
+      p95: q.p95,
+      max: q.max,
+      measuredP95: apart.length ? exactQuantiles(apart).p95 : null,
+      ntpBoundMs: own === null || sourceNtp === null ? null : own + sourceNtp,
+    });
   }
   const worstShardClock = clockByShard.filter((c) => c.p95 !== null && c.p95 > VALIDITY.clockSumP95Ms);
   for (const c of worstShardClock) notes.push(`shard ${c.shard}: clock uncertainty p95 ${Math.round((c.p95 as number) * 10) / 10} ms is over ${VALIDITY.clockSumP95Ms} ms: its viewers' latencies cannot be trusted`);
@@ -287,11 +299,18 @@ export function renderReport(report: SwarmReport): string {
     lines.push(`Impairment shim: ${i.sent} packets, ${lossPct}% dropped as loss, ${i.queueDropped} dropped at a full queue; delivered ${ms(i.lateMsMean)} ms late on average, ${ms(i.lateMsMax)} ms at worst.`);
   }
   lines.push(`Clock uncertainty (viewer + source): p50 ${ms(report.clockUncertaintyMs.p50)}, p95 ${ms(report.clockUncertaintyMs.p95)}, max ${ms(report.clockUncertaintyMs.max)} ms over ${report.clockUncertaintyMs.n} viewers.`);
-  lines.push("", "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Peers started | Failed | First frames |", "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  lines.push(
+    "",
+    "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+  );
   for (const host of report.hosts) {
     const clock = report.clockByShard.find((c) => c.shard === host.shard);
-    lines.push(`| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} |`);
+    lines.push(
+      `| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} |`,
+    );
   }
+  lines.push("", "\"Clock\" is SPEC §4.1's bound, half the best probe's round trip: the validity check. \"Clocks apart\" reads each viewer's session clock and the source's against their machines' wall clocks; it is the real disagreement give or take the last column.");
   if (report.failed.length) {
     lines.push("", "Peers that failed:");
     for (const f of report.failed.slice(0, 20)) lines.push(`- shard ${f.shard}, peer ${f.index}: ${f.why}`);

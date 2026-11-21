@@ -155,6 +155,8 @@ export type ShardResult = {
     cores: number;
     loadAvg1: number[];
     maxEventLoopLagMs: number;
+    /** This machine's own time sync (chrony), if it could be read: `boundMs` = |offset| + root delay / 2 + root dispersion. */
+    ntp?: { boundMs: number | null; text: string };
     /** The driver's own event-loop lag, and its pages', as histograms on the 97 latency buckets. */
     driverLag?: number[];
     pageLag?: number[];
@@ -175,7 +177,17 @@ export type ShardResult = {
    * and each viewer's, at their worst during the run. Latency between two peers is wrong by up
    * to the sum of theirs.
    */
-  clock?: { source: number | null; viewers: number[] };
+  clock?: {
+    source: number | null;
+    viewers: number[];
+    /**
+     * Each page's session clock minus this machine's wall clock (`Date.now()`), at its last poll:
+     * an independent check of the bound above. Two pages' values differ by their clocks' real
+     * disagreement plus how far apart their machines' wall clocks are (`host.ntp` bounds that).
+     */
+    sourceVsWallMs?: number | null;
+    viewersVsWallMs?: number[];
+  };
   /** Links the shard's peers opened, and how: what ICE chose. */
   links?: LinkCounts;
   /** The viewers that decoded for real (D29); every other viewer ran the light player. */
@@ -241,7 +253,16 @@ export type SwarmReport = {
    * cross-shard one: two machines, two clocks, both reading the session clock through their own
    * path to the coordinator.
    */
-  clockByShard: { shard: number; viewers: number; p95: number | null; max: number | null }[];
+  clockByShard: {
+    shard: number;
+    viewers: number;
+    p95: number | null;
+    max: number | null;
+    /** |viewer's session clock − source's|, both read against wall clocks: what the clocks really disagreed by, give or take `ntpBoundMs`. */
+    measuredP95?: number | null;
+    /** The two machines' wall clocks may differ by up to this (theirs plus shard 0's). */
+    ntpBoundMs?: number | null;
+  }[];
   /** Latency of the viewers that decoded for real, and of the light ones (D29). */
   glassToGlassDecoding: Quantiles;
   glassToGlassLight: Quantiles;
@@ -306,6 +327,8 @@ export type PageState = {
   /** The first frame has been rendered (a viewer), or the program is being sent (the source). */
   started: boolean;
   error: string | null;
+  /** Session clock minus `Date.now()`, now: see `ShardResult.clock.viewersVsWallMs`. Null before the clock is known. */
+  sessionMinusWallMs?: number | null;
   /** The session clock's uncertainty now, and at its worst since the first probes. */
   clockUncertaintyMs: number;
   clockUncertaintyMaxMs: number;

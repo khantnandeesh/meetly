@@ -89,6 +89,8 @@ export interface StandinPeer {
   readonly started: boolean;
   readonly error: string | null;
   clockUncertaintyMs(): number;
+  /** Session time now, or null before the clock is known. */
+  sessionTime(): number | null;
   links(): LinkInfo[];
   parent(): PeerId | null;
   backup(): PeerId | null;
@@ -1485,6 +1487,7 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
       return error;
     },
     // Half the best round trip, plus however far the offset still has to slew to the best estimate (SPEC §4.1).
+    sessionTime: () => (uncertaintyMs === Infinity ? null : sessionNow()),
     clockUncertaintyMs: () => (uncertaintyMs === Infinity ? Infinity : uncertaintyMs + Math.abs(offsetTarget - currentOffset(clock.now()))),
     links: () => everLinked.map((l) => ({ peer: l.peer, open: l.open, failed: l.failed, turn: l.turn, candidates: l.candidates })),
     parent: () => up.parent,
