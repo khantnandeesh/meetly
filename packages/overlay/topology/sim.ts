@@ -106,7 +106,12 @@ export function audioFrame(frameId: number, captureUs: number): EncodedFrame {
   };
 }
 
-type Wire = { latencyMs: number; lossPct: number };
+/**
+ * One direction of a link. `kbps`: a rate cap, packets leaving one after another at that rate
+ * from a queue `queueMs` deep (300 if not given) and lost when it is full; what waits in it is
+ * the sender's `bufferedAmount`, as a data channel's is.
+ */
+type Wire = { latencyMs: number; lossPct: number; kbps?: number; queueMs?: number };
 
 class SimLink implements Link {
   state: LinkState = "connecting";
@@ -117,7 +122,16 @@ class SimLink implements Link {
   private readonly count: LinkCounters = { packetsSent: 0, packetsReceived: 0, bytesSent: 0, bytesReceived: 0, packetsShed: 0 };
   private outbox: PeerMessage[] = [];
   /** Tests set this to play a backed-up channel. */
-  bufferedAmount = 0;
+  get bufferedAmount(): number {
+    return this.played + this.held;
+  }
+  set bufferedAmount(bytes: number) {
+    this.played = bytes;
+  }
+  private played = 0;
+  /** Bytes waiting for the wire's rate cap, and when the last of them leaves. */
+  private held = 0;
+  private leavesAt = 0;
   /** Packets handed to `sendPacket` while open, by class and packet type: what a test reads the send path from. */
   readonly sent: Record<SendClass, number> = { control: 0, audio: 0, video: 0, replay: 0 };
   readonly sentByType = new Map<number, Map<SendClass, number>>();
@@ -167,12 +181,21 @@ class SimLink implements Link {
     const wire = this.wire;
     if (!other || this.owner.dead || (wire.lossPct > 0 && net.random() * 100 < wire.lossPct)) return true;
     const copy = packet.slice();
+    let waitMs = 0;
+    if (wire.kbps !== undefined) {
+      const now = net.clock.now();
+      if (this.held > 0 && this.held + copy.byteLength > (wire.kbps * (wire.queueMs ?? 300)) / 8) return true; // the queue is full
+      this.leavesAt = Math.max(now, this.leavesAt) + (copy.byteLength * 8) / wire.kbps;
+      waitMs = this.leavesAt - now;
+      this.held += copy.byteLength;
+      net.clock.setTimeout(() => (this.held -= copy.byteLength), waitMs);
+    }
     net.clock.setTimeout(() => {
       if (other.state !== "open" || other.owner.dead) return;
       other.count.packetsReceived++;
       other.count.bytesReceived += copy.byteLength;
       other.events.emit("packet", copy, net.clock.now());
-    }, wire.latencyMs);
+    }, wire.latencyMs + waitMs);
     return true;
   }
 

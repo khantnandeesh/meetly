@@ -85,6 +85,13 @@ export const OVER_FANOUT_FACTOR = 2;
 export const REPLAY_MIN_INTERVAL_MS = 1000;
 /** A parent spends at most this share of a stream's bitrate on retransmissions to one child (SPEC §4.6). */
 export const RETRANSMIT_SHARE = 0.2;
+/**
+ * SPEC §4.6, D36: over this much backlog on a child's link, in ms of the stream's bitrate (§11.2's
+ * strained line), its NACKs for the enhancement layers are not answered. (Proposed by E-congestion.)
+ */
+export const RETRANSMIT_BACKLOG_MS = 50;
+/** D36: a base-layer or keyframe packet asked for over the line waits at most this long for the backlog to clear. */
+export const RETRANSMIT_HOLD_MS = 500;
 /** How often a peer compares its parent with the alternatives (SPEC §7.6). */
 export const REBALANCE_COMPARE_MS = 10_000;
 /** A parent that has held this peer at the base layer for this long may be left at once (SPEC §7.6). */
@@ -292,6 +299,8 @@ type ChildSub = {
   lastReplayAt: number;
   /** Bytes of retransmission this child may still be sent. */
   retransmitTokens: number;
+  /** D36: base-layer and keyframe packets asked for while the link was backed up, sent when it clears. */
+  held: { packet: Uint8Array; at: number }[];
   tokensAt: number;
 };
 
@@ -908,7 +917,18 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       const perSecond = RETRANSMIT_SHARE * stream.config.bitrateKbps * 125;
       sub.retransmitTokens = Math.min(perSecond, sub.retransmitTokens + ((now - sub.tokensAt) / 1000) * perSecond);
       sub.tokensAt = now;
+      // D36: a link that overflowed asks for what it lost, and answering at once refills the queue
+      // it lost it from. Over the strained line (50 ms of B, §11.2) an enhancement layer is not sent
+      // again; the base layer and keyframes (losing one costs the whole GOP) are held, and sent
+      // when the backlog clears (`flushHeld`), within the same budget.
+      const backlogged = backlogOver(peer, stream);
       for (const packet of cache.fragments(item.streamId, item.frameId, nackFragments(item))) {
+        if (backlogged) {
+          if ((packet[4] & 0x0f) === 0 || packet[1] & MediaFlag.Key) {
+            if (!sub.held.some((held) => held.packet === packet) && sub.held.length < 256) sub.held.push({ packet, at: now });
+          }
+          continue;
+        }
         if (sub.retransmitTokens < packet.byteLength) return;
         const layer = packet[4];
         if ((layer & 0x0f) > sub.gate.cap.maxTemporal || layer >> 4 > sub.gate.cap.maxSpatial || !sub.stripes.includes(packet[3])) continue;
@@ -916,6 +936,34 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         writeHopFields(packet, { hopFlags: HopFlag.Retransmit, hops: Math.min(255, myHops()), linkSeq: 0, sendMs: 0 });
         if (sendPacket(peer, packet, stream.sendClass, now)) retransmitsSent++;
       }
+    }
+  }
+
+  const backlogOver = (peer: Peer, stream: StreamCtx) => peer.link.bufferedAmount > (stream.config.bitrateKbps * RETRANSMIT_BACKLOG_MS) / 8;
+
+  /** D36: the base-layer and keyframe packets a backed-up child asked for, once its backlog has cleared. */
+  function flushHeld(peer: Peer, now: number): void {
+    for (const [id, sub] of peer.subs) {
+      if (sub.held.length === 0) continue;
+      const stream = streams.get(id);
+      if (!stream || sub.mode !== "active") {
+        sub.held = [];
+        continue;
+      }
+      sub.held = sub.held.filter((held) => now - held.at <= RETRANSMIT_HOLD_MS);
+      if (sub.held.length === 0 || backlogOver(peer, stream)) continue;
+      const perSecond = RETRANSMIT_SHARE * stream.config.bitrateKbps * 125;
+      sub.retransmitTokens = Math.min(perSecond, sub.retransmitTokens + ((now - sub.tokensAt) / 1000) * perSecond);
+      sub.tokensAt = now;
+      let sent = 0;
+      for (const { packet } of sub.held) {
+        if (sub.retransmitTokens < packet.byteLength || backlogOver(peer, stream)) break;
+        sub.retransmitTokens -= packet.byteLength;
+        writeHopFields(packet, { hopFlags: HopFlag.Retransmit, hops: Math.min(255, myHops()), linkSeq: 0, sendMs: 0 });
+        if (sendPacket(peer, packet, stream.sendClass, now)) retransmitsSent++;
+        sent++;
+      }
+      sub.held.splice(0, sent);
     }
   }
 
@@ -944,6 +992,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       lastReplayAt: -Infinity,
       retransmitTokens: RETRANSMIT_SHARE * stream.config.bitrateKbps * 125,
       tokensAt: now,
+      held: [],
     };
     peer.subs.set(id, sub);
     return sub;
@@ -1825,7 +1874,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     sendNacks(now);
     runProbe(now);
     repeatAudio(now);
-    for (const child of peers.values()) if (child.subs.size > 0) pumpReplay(child, now);
+    for (const child of peers.values()) {
+      if (child.subs.size === 0) continue;
+      pumpReplay(child, now);
+      flushHeld(child, now);
+    }
     for (const stream of streams.values()) if (!stream.audio) stream.tracker.classify((frameId) => reassembler.neverSent(stream.config.id, frameId));
     finishRepairs(now);
 

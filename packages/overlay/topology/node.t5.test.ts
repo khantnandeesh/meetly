@@ -78,6 +78,49 @@ describe("node: NACK and retransmission (SPEC §4.6, D5)", () => {
   });
 });
 
+describe("node: NACK into a backlog (SPEC §4.6, D36)", () => {
+  it("a backed-up child is not sent an enhancement layer again; its lost keyframe packet is, once the backlog clears", async () => {
+    const net = new SimNet({ backups: false, latencyMs: 5 });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    const leaf = net.join("1", "leaf", ["0"]);
+    await net.runAsync(2500);
+    const link = source.links.map.get("1")!;
+    const head = net.published - 1;
+    const keyframe = head - (head % 60);
+    const enhancement = head % 2 === 1 ? head : head - 1;
+    // The link to the child holds 100 ms of the stream: over the strained line of 50 ms.
+    link.bufferedAmount = (1200 * 100) / 8;
+    source.node.takeStats();
+    const ask = (frameId: number) => link.events.emit("packet", encodeNack({ linkSeq: 0, sendMs: 0, items: [{ streamId: 0, frameId, firstFrag: 0, mask: 0 }] }), net.clock.now());
+    ask(keyframe);
+    ask(enhancement);
+    await net.runAsync(100);
+    assert.equal(source.node.takeStats().relay!.retransmitsSent, 0, "nothing goes into the backlog");
+    // The backlog clears: the keyframe packet goes, the enhancement packet never does.
+    link.bufferedAmount = 0;
+    await net.runAsync(100);
+    assert.equal(source.node.takeStats().relay!.retransmitsSent, 1);
+    void leaf;
+  });
+
+  it("with no backlog, both are answered at once", async () => {
+    const net = new SimNet({ backups: false, latencyMs: 5 });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    net.join("1", "leaf", ["0"]);
+    await net.runAsync(2500);
+    const link = source.links.map.get("1")!;
+    const head = net.published - 1;
+    source.node.takeStats();
+    for (const frameId of [head - (head % 60), head % 2 === 1 ? head : head - 1]) link.events.emit("packet", encodeNack({ linkSeq: 0, sendMs: 0, items: [{ streamId: 0, frameId, firstFrag: 0, mask: 0 }] }), net.clock.now());
+    await net.runAsync(20);
+    assert.equal(source.node.takeStats().relay!.retransmitsSent, 2);
+  });
+});
+
 describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
   /** A probe that asks for `perTick` packets of 1,000 bytes for `forMs`, then reports what the parent's feedback said was delivered. */
   function fakeProbe(perTick: number, forMs: number) {
