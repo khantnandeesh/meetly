@@ -47,6 +47,13 @@ assumes 40 ms). Glass-to-glass is then §10.2's encode + hops + *D* + playout. S
   (light against decoding viewers; a parent's death and the replay). `OVERLAY_MEDIA_JSON=1`
   prints everything measured.
 
-  On a 4-core machine shared with other work, Chromium's VP8 encoder at 1280 wide (where it
-  uses 4 threads) can fall to 5–15 fps; 1272 wide (2 threads) does not. Pass `"width":1272`, or
-  a smaller program, to measure the rest.
+  `.github/workflows/overlay-media.yml` runs them all on a GitHub runner (4 cores, otherwise
+  idle) whenever media changes on `overlay-media`; the numbers are in the job summary.
+
+  **1280 wide.** Chromium's VP8 encoder uses 4 threads from 1280 wide, 2 below. On a 4-core
+  development machine shared with other work it fell to 5–15 fps at 1280, and not at 1272. On
+  the runner it holds: 1,121 kbps of 1,200, capture to frame p95 7.1 ms, 4 frames skipped in 60 s.
+  With a second 720p decoder in the same page it still makes its rate (1,056 kbps) but p95 is
+  82 ms and 85 frames are skipped, where 1272 wide is 6.1 ms and none. So the default stays
+  1280×720, as SPEC §9.2 says; a host machine that is also decoding the stage and composing it
+  is the case to watch, and 1272×720 is the fallback (it travels in `StreamConfig`).
