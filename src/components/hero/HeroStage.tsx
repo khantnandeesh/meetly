@@ -11,10 +11,10 @@ import { COMPACT_BELOW, MeetingScene, POSTER, SIZE, type HeroState } from "./sce
  * and never under reduced motion (HeroArt.tsx). The stage plays only while it is on screen and
  * the tab is visible, and stops its CSS animations when it is not.
  *
- * The loop, about 11 seconds, opens and ends on the poster (Pat asking to join):
+ * The loop, about 11 seconds, opens and ends on the poster (Pat asking to join a one-to-one call):
  *   1. The pointer goes to Admit and presses it.
- *   2. The notification and the "1 waiting" badge go; the tiles make room, Pat's grows in, and
- *      People counts five.
+ *   2. The notification and the "1 waiting" badge go; the two tiles make room, Pat's grows in
+ *      under them, and People counts three.
  *   3. Pat says hello: the speaking ring moves from Maya to Pat, then back.
  *   4. Pat leaves (their tile fades and the others close up), and a moment later knocks again,
  *      which is the opening frame.

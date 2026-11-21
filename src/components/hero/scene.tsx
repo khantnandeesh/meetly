@@ -38,7 +38,7 @@ export const POSTER: HeroState = { asking: true, admitted: false, speaker: "maya
 
 export const SIZE = {
   wide: { width: 558, height: 440 },
-  compact: { width: 358, height: 464 },
+  compact: { width: 358, height: 434 },
 } as const;
 /** Below this container width the phone design shows (the kit's `compact.below`, and hero.css's container query). */
 export const COMPACT_BELOW = 400;
@@ -46,19 +46,22 @@ export const COMPACT_BELOW = 400;
 type Person = { id: string; name: string; you?: boolean; host?: boolean; muted?: boolean };
 
 // You first, then everyone else in the order they joined, as the call orders them (useSpeakers.ts).
-// Colours come from Meetly's own avatar palette, keyed so the five are five different colours.
+// Colours come from Meetly's own avatar palette, keyed so the three are three different colours.
+//
+// A one-to-one call, on purpose. Two people get two tall tiles side by side (the call's own grid,
+// below), which leaves a band of plain tile between each avatar and its name chip. The notification
+// sits in that band, so on the poster and in every held frame no avatar or chip is cut by it: on a
+// phone it is where the app puts it, under the top bar, over the tiles' plain tops; on a computer
+// it is at the bottom right, a little higher than the app's 28px over the controls (at 28px the
+// name chip under it would show a 4px sliver below its edge).
 const PEOPLE: Person[] = [
   { id: "alex", name: "Alex Chen", you: true, host: true },
   { id: "maya", name: "Maya Okafor" },
-  { id: "jonas", name: "Jonas Weber", muted: true },
-  { id: "priya", name: "Priya Nair" },
 ];
 const PAT: Person = { id: "pat", name: "Pat Moreno" };
 const COLORS: Record<string, string> = {
   alex: "#f5d67a",
   maya: "#9fe0c2",
-  jonas: "#f4b9a3",
-  priya: "#a9d6f5",
   pat: "#f4a9c8",
 };
 const colorOf = (p: Person) => COLORS[p.id] ?? avatarColor(p.id);
@@ -103,8 +106,8 @@ function gridRects(count: number, w: number, h: number, gap: number, minRatio: n
 
 /**
  * The inset every edge keeps. On a computer the call runs to the stage's edges: the page around it
- * is the gutter, and five tiles across three columns stay wider than 11rem, the width under which
- * Meetly shrinks a tile's name chip (globals.css), so the chips never jump as Pat comes and goes.
+ * is the gutter, and every tile stays wider than 11rem, the width under which Meetly shrinks a
+ * tile's name chip (globals.css), so the chips never jump as Pat comes and goes.
  * On a phone one full 16px gutter (the phone call's is 12px; 16 keeps the notification, which
  * spans the screen, a clear gutter from the frame), which also leaves room for the "1 waiting"
  * badge that hangs off People's corner.
@@ -129,10 +132,10 @@ const LAYOUTS = (["wide", "compact"] as const).reduce(
     const area = tileArea(layout);
     // Stage.tsx: tiles may be as tall as 0.7:1 in a stage under 640 wide.
     const place = (n: number) => gridRects(n, area.w, area.h, GAP, 0.7).map((r) => ({ ...r, x: r.x + area.x, y: r.y + area.y }));
-    out[layout] = { four: place(4), five: place(5) };
+    out[layout] = { two: place(2), three: place(3) };
     return out;
   },
-  {} as Record<HeroLayout, { four: Box[]; five: Box[] }>,
+  {} as Record<HeroLayout, { two: Box[]; three: Box[] }>,
 );
 
 /* --------------------------------------------------------------------- scene */
@@ -152,8 +155,8 @@ export function MeetingScene({
 }) {
   const headcount = PEOPLE.length + (s.admitted ? 1 : 0);
   const shown = count ? count(headcount) : headcount;
-  const rects = LAYOUTS[layout][s.admitted ? "five" : "four"];
-  const patRect = LAYOUTS[layout].five[4];
+  const rects = LAYOUTS[layout][s.admitted ? "three" : "two"];
+  const patRect = LAYOUTS[layout].three[2];
   return (
     // The call screen is the product's own surface and fills the stage. Its ground is Meetly's
     // --bg, which is the page's, so it is not painted: a painted rectangle would read as a plate

@@ -8,7 +8,7 @@ The stageshow skill's hand-over note for `HeroArt` (`src/components/HeroArt.tsx`
   the page's dark ground (a transparent stage, no plate). The slot is the old illustration's: at
   most 34rem, 483px wide at 1440, 421px at 1024 and 544px at 768. The phone column is 358px at
   390 (the wrapper's gutter is now 16px, so the compact design draws 1:1).
-- **Designs.** Wide is 558 × 440 (shown at 0.86 on a 1440 screen). Compact is 358 × 464, a
+- **Designs.** Wide is 558 × 440 (shown at 0.86 on a 1440 screen). Compact is 358 × 434, a
   redesign as Meetly's phone call (top bar with the code and People, the phone's six controls,
   notifications under the top bar), not the wide one squeezed. It switches below 400px.
 - **Story.** In a meeting that asks people to knock, somebody opens the link and asks to join.
@@ -16,17 +16,27 @@ The stageshow skill's hand-over note for `HeroArt` (`src/components/HeroArt.tsx`
   People join from their browser"), and the knock with Deny and Admit is distinctive to Meetly.
   The hands queue was the alternative, but the feature row under the hero already says "raise a
   hand", and it does not pay off the hero copy.
+- **The call.** One-to-one: you (the host) and Maya. Two people get two tall tiles side by side
+  (Stage.tsx's own grid rule, at both widths), which leaves a band of plain tile between each
+  avatar and its name chip. The notification sits in that band, so on the poster and in every
+  held frame it cuts no avatar and no chip (measured: about 8px clear of Maya's speaking halo and
+  of her chip on a computer; 27px clear of both avatars on a phone).
+  - On a phone it is exactly where the app puts it: under the top bar, over the tiles' plain tops.
+  - On a computer it stays at the bottom right, but sits higher than the app's 28px over the
+    controls. At 28px, whichever chip is under it shows a 4px sliver below its edge.
 - **Beats (about 11 s).** (0) The request: "Pat wants to join · Deny · Admit", and People showing
   1 waiting. (1) The pointer presses Admit (on a phone, a fingertip). (2) The notification and
-  badge go, the tiles glide 2×2 → 3+2, Pat's tile grows in, and People rolls 4 → 5. (3) Pat speaks
-  (the speaking ring moves from Maya to Pat, then back). (4) Pat leaves (their tile fades, the
-  others close up, 5 → 4), then knocks again, which is the opening frame. The loop has no seam.
+  badge go, the two tiles make room (side by side → 2+1), Pat's tile grows in under them, and
+  People rolls 2 → 3. (3) Pat speaks (the speaking ring moves from Maya to Pat, then back). (4) Pat
+  leaves (their tile fades, the others grow back, 3 → 2), then knocks again, which is the opening
+  frame. The loop has no seam.
 - **Poster.** Beat 0: the request on screen with Admit one press away. It is what the page paints
   first, and all it shows under reduced motion.
 - **Fidelity.** Realistic: real names on every tile, no placeholder bars. Five real strings carry
   the story: the notification, Deny, Admit, the count and the badge.
 - **Left out.** Video (avatars are the real camera-off tile), reactions, More, layout, chat
-  panels, and a raised hand (kept off so the frame stays calm; the feature row covers hands).
+  panels, a muted participant and a raised hand (kept off so the frame stays calm; the feature
+  row covers hands).
 
 ## Gold
 
@@ -71,11 +81,19 @@ The gate does not count those gaps, but motion inside them was not judged.
 
 ## Film lines → fix
 
-- `framing: tile ends 7px short of the edge` and `jump: chip … height +6px` (wide): the 8px inset
-  was neither a gutter nor a bleed, and it put 5-tile columns under Meetly's 11rem dense-chip
-  width, so every chip changed size as Pat came and went. The wide call now runs to the stage's
-  edges, at 558 wide so both grids divide exactly (3 × 178 + 24, 2 × 273 + 12). Chat was added
-  after People (its real place), so the waiting badge stays in frame.
+- **Integrator review: the notification sliced avatars.** The first version was a four-person
+  call. On a computer the notification cut Priya's avatar in half; on a phone, Alex's and Maya's.
+  No film line names this; it was found by eye. With 182px or 154px tiles the notification always
+  lands on the centred avatar. The call is now one-to-one, and the notification sits in the band
+  between avatars and chips (see "The call" above). The gap from the notification to every avatar
+  (with its halo) and chip was measured in the browser at 1440, 1024, 768 and 390, poster and
+  live, with a throwaway Playwright script.
+- `framing: tile ends 7px short of the edge` and `jump: chip … height +6px` (wide, first
+  version): the 8px inset was neither a gutter nor a bleed, and five tiles in three columns fell
+  under Meetly's 11rem dense-chip width, so every chip changed size as Pat came and went. The wide
+  call now runs to the stage's edges, at 558 wide so the grid divides exactly (2 × 273 + 12).
+  Every tile stays over 11rem. Chat was added after People (its real place), so the waiting badge
+  stays in frame.
 - `half-pixel glyph` / `steps in its box` (bar): the count's text width put every control on
   fractions. The count now has a one-digit slot. People was sampled every frame for 13 s and
   never moves. The `steps in its box` line on People still prints: its Count strip rolls by
@@ -95,7 +113,7 @@ The gate does not count those gaps, but motion inside them was not judged.
 - `uneven padding: div.tile` (1024 only): the speaking bars are 2.5px, under 2px on screen at
   0.75, so the check could not see them. They are drawn 3px wide here, which also reads better.
 - `clipped: i … by span.hero-bars`: the bars now fade in after their room has opened.
-- An onion-skin frame seen in the states sheet (Priya gliding under Pat's fading tile): the others
+- An onion-skin frame seen in the states sheet (a tile gliding under Pat's fading one): the others
   now start closing up 160 ms after a leaving tile starts to fade.
 - Still printed, not gate lines: `half-pixel glyph: a 24px svg … in 105x22 span.chip` (390).
   Measured: the icons are 14px at whole-pixel offsets in their chip. The 24 is the SVG's `width`
@@ -108,10 +126,12 @@ The gate does not count those gaps, but motion inside them was not judged.
 No independent reviewer was available. This pass was the builder's, by `verify.md`, against the
 frames above, and it is not a fresh eye. What it found:
 
-1. Framing: the notification covers the lower-right tile (Priya's avatar and name in the poster).
-   This is where Meetly puts it, over the stage; kept.
-2. Motion: Jonas crosses Maya's tile on the 4 → 5 reflow (and back). Stage.tsx's real reflow does
-   the same, in a quarter second; kept.
+1. Framing: in my own pass I kept the notification covering half of an avatar, because that is
+   where Meetly puts it. The integrator's review sent it back (a shape cut mid-way reads as a
+   glitch), and it is fixed above. That was the largest fault, and I had passed it.
+2. Motion: on 2 → 3, the two tall tiles shrink to the top row before Pat's grows in under them.
+   For about a quarter second the lower half of the stage is empty (contact sheet, 1.6s). It is
+   the real reflow's order; kept.
 3. Hierarchy: the eye lands on the notification first, then the speaking ring; the payoff (Pat's
    tile, ringed) is the largest change. Nothing to fix.
 

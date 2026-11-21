@@ -39,7 +39,7 @@
 @container hero-art (width < 400px) {
   .hero-poster {
     max-width: 358px;
-    aspect-ratio: 358 / 464;
+    aspect-ratio: 358 / 434;
   }
   .hero-poster__scale[data-layout="wide"] {
     display: none;
@@ -64,7 +64,7 @@
 }
 .hero-scene[data-layout="compact"] {
   width: 358px;
-  height: 464px;
+  height: 434px;
 }
 
 /* Tiles: placed by transform, as the call places them, and gliding between places. */
@@ -160,13 +160,14 @@
   z-index: 40;
   transition: opacity var(--dur-fast) ease-out;
 }
-/* Where the call puts them. On a computer, at the right and 28px above the controls; the call
-   has it level with the tiles' edge, and here it keeps 24px clear of the frame (16 or more at
-   the smallest the frame is drawn) so it never reads as cut. On a phone, 8px under the top bar,
-   across the screen, level with the tiles. */
+/* Where the call puts them. On a computer, at the bottom right, over the controls. The call has it
+   28px above them and level with the tiles' edge; here it sits in the band between the avatars and
+   the name chips (see scene.tsx), so it cuts neither, and keeps 24px clear of the frame (16 or more
+   at the smallest the frame is drawn) so it never reads as cut. On a phone, where the call puts
+   it: 8px under the top bar, across the screen, level with the tiles. */
 .hero-scene .hero-toast-slot[data-layout="wide"] {
   right: 24px;
-  bottom: 76px;
+  bottom: 108px;
   width: 344px;
   --toast-dir: 1;
 }
@@ -212,7 +213,7 @@
 }
 .hero-scene[data-layout="compact"] .hero-rest {
   left: 179px;
-  top: 380px;
+  top: 345px;
 }
 
 /* ---------------------------------------------------------- the kit's look */
