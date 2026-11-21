@@ -118,6 +118,9 @@ class SimLink implements Link {
   private outbox: PeerMessage[] = [];
   /** Tests set this to play a backed-up channel. */
   bufferedAmount = 0;
+  /** Packets handed to `sendPacket` while open, by class and packet type: what a test reads the send path from. */
+  readonly sent: Record<SendClass, number> = { control: 0, audio: 0, video: 0, replay: 0 };
+  readonly sentByType = new Map<number, Map<SendClass, number>>();
 
   constructor(
     readonly owner: SimLinks,
@@ -139,12 +142,16 @@ class SimLink implements Link {
     this.events.emit("state", "open");
   }
 
-  sendPacket(packet: Uint8Array, _sendClass: SendClass): boolean {
+  sendPacket(packet: Uint8Array, sendClass: SendClass): boolean {
     if (this.state !== "open") {
       this.count.packetsShed++;
       return false;
     }
     const type = packet[0] & 0x0f;
+    this.sent[sendClass]++;
+    const byType = this.sentByType.get(type) ?? new Map<SendClass, number>();
+    byType.set(sendClass, (byType.get(sendClass) ?? 0) + 1);
+    this.sentByType.set(type, byType);
     const at = type === PacketType.Media || type === PacketType.Parity ? 26 : 2;
     const sendMs = ms16(this.owner.net.clock.now());
     packet[at] = this.linkSeq >> 8;
@@ -296,7 +303,7 @@ export type SimOptions = {
   backups?: boolean;
   keepFrames?: boolean;
   createLayerGate?: (options: LayerGateOptions) => OpenGate;
-  createLinkEstimator?: () => LinkEstimator;
+  createLinkEstimator?: (options?: { bitrateKbps: number }) => LinkEstimator;
 };
 
 /** The world: a clock, the peers, and what the coordinator was told. */

@@ -32,6 +32,7 @@ import {
   encodeFeedback,
   encodeHeartbeat,
   encodeNack,
+  encodeProbe,
   nackFragments,
   packetLinkFields,
   packetizeFrame,
@@ -52,7 +53,7 @@ import {
 } from "../protocol";
 import type { Cancel, Unsubscribe } from "../runtime";
 import type { EncodedFrame, LayerCap, LinkEstimate, ReceivedFrame } from "../types";
-import type { LayerGate, LinkEstimator } from "../congestion/types";
+import type { LayerGate, LinkEstimator, UplinkProbe } from "../congestion/types";
 import { Emitter } from "../transport/emitter";
 import { createReassembler } from "../transport/reassembler";
 import type { Link, SendClass } from "../transport/types";
@@ -90,6 +91,8 @@ export const STARVED_SWITCH_MS = 2000;
 export const SWITCH_TIMEOUT_MS = 2000;
 /** A repair's freeze is measured until this long after the new parent's first packet (SPEC §12.2). */
 export const REPAIR_WINDOW_MS = 1000;
+/** A peer that sent PROBE packets this recently is still probing, and is sent FEEDBACK. */
+export const PROBING_MS = 1000;
 /** How long `stop()` gives its goodbyes to leave before closing the links. */
 export const LEAVE_FLUSH_MS = 50;
 const REJOIN_BACKOFF_MS = [1000, 2000, 4000, 8000, 16_000, 30_000];
@@ -278,6 +281,10 @@ type Peer = {
   feedbackAt: number;
   /** This node opened the link for its own purposes (a candidate), so it may close it. */
   mine: boolean;
+  /** When a PROBE last came from it, and whether it is being sent FEEDBACK about them. */
+  lastProbeAt: number;
+  probeReporting: boolean;
+  probeFeedbackAt: number;
 };
 
 type Purpose = "join" | "repair" | "cold" | "switch" | "standby";
@@ -352,6 +359,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   const finishing: { record: RepairRecord; at: number }[] = [];
   const switchesFinishing: { from: PeerId; to: PeerId; at: number; until: number }[] = [];
   let uplinkAt = 0;
+  /** A probe of the link to the parent, while it runs (`runProbe`). */
+  let probing: { probe: UplinkProbe; parent: Peer } | null = null;
   let lastStatus = "";
 
   /* stats */
@@ -489,7 +498,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const peer: Peer = {
       id: link.peer,
       link,
-      estimator: options.createLinkEstimator(),
+      estimator: options.createLinkEstimator({ bitrateKbps: primary()?.config.bitrateKbps ?? 1200 }),
       offs: [],
       lastHeardAt: now,
       lastMediaAt: -Infinity,
@@ -502,6 +511,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       heartbeatAt: -Infinity,
       feedbackAt: -Infinity,
       mine,
+      lastProbeAt: -Infinity,
+      probeReporting: false,
+      probeFeedbackAt: -Infinity,
     };
     peers.set(peer.id, peer);
     peer.offs.push(
@@ -574,7 +586,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       case PacketType.Feedback: {
         const feedback = decodeFeedback(packet);
         if (!feedback) malformed++;
-        else onFeedback(peer, feedback, receivedAt);
+        else {
+          // From the parent only while this node is probing it: not media, so not a loss.
+          if (peer === parent || peer === next) reassembler.noteLinkPacket(peer.id, fields.linkSeq);
+          onFeedback(peer, feedback, receivedAt);
+        }
         return;
       }
       case PacketType.Nack: {
@@ -584,7 +600,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         return;
       }
       default:
-        // PROBE: counted by the estimator, and that is all.
+        // PROBE: counted by the estimator; a child probing this node is told how it fared (below).
+        if (fields.type === PacketType.Probe) peer.lastProbeAt = receivedAt;
         if (peer === parent || peer === next) reassembler.noteLinkPacket(peer.id, fields.linkSeq);
     }
   }
@@ -734,8 +751,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   }
 
   function onFeedback(peer: Peer, feedback: Feedback, now: number): void {
-    if (peer.subs.size === 0) return;
+    // From a child about what this node sends it; or from the parent about this node's probe.
     peer.estimator.onFeedback(feedback, now);
+    if (peer.subs.size === 0) return;
     const cap = { maxSpatial: feedback.maxSpatial, maxTemporal: feedback.maxTemporal };
     for (const [id, sub] of peer.subs) if (!streams.get(id)?.audio) sub.gate.setWanted(cap);
   }
@@ -782,6 +800,45 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     to(parent, params.feedbackMs, false);
     if (switching) to(switching.to, params.feedbackMs, false);
     to(backup, params.standbyHeartbeatMs, true);
+
+    // FEEDBACK goes down, too, to a peer probing this one, for as long as its PROBE packets keep
+    // coming: a prober must hear how its probe fared (SPEC §11.6; congestion's README, item 12).
+    // The first interval is thrown away, so the count starts with the probe.
+    for (const peer of peers.values()) {
+      const probingUs = now - peer.lastProbeAt < PROBING_MS && peer.link.state === "open";
+      if (!probingUs) {
+        peer.probeReporting = false;
+        continue;
+      }
+      if (!peer.probeReporting) {
+        peer.estimator.takeFeedback(now);
+        peer.probeReporting = true;
+        peer.probeFeedbackAt = now;
+        continue;
+      }
+      if (now - peer.probeFeedbackAt < params.feedbackMs - 1) continue;
+      peer.probeFeedbackAt = now;
+      const packet = encodeFeedback({ flags: 0, linkSeq: 0, sendMs: 0, ...peer.estimator.takeFeedback(now), playoutDelayMs: 0, bufferMs: 0, maxSpatial: 15, maxTemporal: 15 });
+      sendPacket(peer, packet, "control", now);
+    }
+  }
+
+  /** Runs a probe handed to `runProbe`: what it asks for, to the parent, in the lowest class. */
+  function runProbe(now: number): void {
+    if (!probing) return;
+    const { probe } = probing;
+    if (parent !== probing.parent || !parent || parent.link.state !== "open") {
+      probing = null;
+      events.emit("probe", null);
+      return;
+    }
+    parent.estimator.onBuffered(parent.link.bufferedAmount, now);
+    const view = parent.estimator.directed ? parent.estimator.directed("sent", now) : parent.estimator.estimate(now);
+    for (const size of probe.next(view, now)) sendPacket(parent, encodeProbe({ linkSeq: 0, sendMs: 0, size }), "replay", now);
+    if (probe.spareKbps !== null) {
+      probing = null;
+      events.emit("probe", probe.spareKbps);
+    }
   }
 
   /* ------------------------------ NACK ------------------------------ */
@@ -819,7 +876,13 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   /* ------------------------------ being a parent ------------------------------ */
 
   function makeSub(peer: Peer, stream: StreamCtx, stripes: number[], now: number): ChildSub {
-    const gate = options.createLayerGate({ bitrateKbps: stream.config.bitrateKbps, temporalLayers: temporalLayers(stream.config), frameIntervalMs: frameIntervalMs(stream.config) });
+    const gate = options.createLayerGate({
+      bitrateKbps: stream.config.bitrateKbps,
+      temporalLayers: temporalLayers(stream.config),
+      frameIntervalMs: frameIntervalMs(stream.config),
+      kind: stream.config.kind,
+      spatialLayers: 1,
+    });
     const id = stream.config.id;
     const tell = (cap: LayerCap, reason: "congestion" | "overload" | "restore") => {
       send(peer, { t: "layers", stream: id, maxSpatial: cap.maxSpatial, maxTemporal: cap.maxTemporal, reason });
@@ -1653,13 +1716,15 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     sendHeartbeats(now);
     sendFeedback(now);
     sendNacks(now);
+    runProbe(now);
     repeatAudio(now);
     for (const child of peers.values()) if (child.subs.size > 0) pumpReplay(child, now);
     finishRepairs(now);
 
     if (now - uplinkAt >= 1000) {
       uplinkAt = now;
-      if (parent) events.emit("uplink", parent.estimator.estimate(now));
+      // How what the parent sends arrives: the direction the player sizes its delay from.
+      if (parent) events.emit("uplink", parent.estimator.directed ? parent.estimator.directed("received", now) : parent.estimator.estimate(now));
     }
   }
 
@@ -1778,8 +1843,13 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
     takeStats,
 
-    runProbe() {
-      events.emit("probe", null);
+    runProbe(probe) {
+      if (role === "source" || !parent || state !== "active") {
+        events.emit("probe", null);
+        return;
+      }
+      if (probing) events.emit("probe", null);
+      probing = { probe, parent };
     },
 
     async stop() {

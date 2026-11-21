@@ -1,7 +1,10 @@
 /** PLAN T5: NACK and retransmission (SPEC §4.6, D5), and rebalancing with hysteresis (SPEC §7.6). */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { NACK_WHOLE_FRAME, encodeNack, type MetricsEvent } from "@meetly/overlay";
+import { NACK_WHOLE_FRAME, PacketType, encodeNack, type MetricsEvent } from "@meetly/overlay";
+import type { LinkEstimator, UplinkProbe } from "@meetly/overlay/congestion/types";
+import type { LinkEstimate } from "@meetly/overlay/types";
+import { createBasicEstimator } from "@meetly/overlay/topology/standins";
 import { SimNet, type SimPeer } from "@meetly/overlay/topology/sim";
 
 const stateOf = (peer: SimPeer) => peer.node.status().stripes[0];
@@ -72,6 +75,105 @@ describe("node: NACK and retransmission (SPEC §4.6, D5)", () => {
     assert.ok(sent > 50, `answered ${sent}`);
     // 20% of 1,200 kbps is 30 kB a second; the bucket starts full, so one second more.
     assert.ok(sent * 1000 <= 0.2 * 1200 * 125 * (seconds + 1), `answered ${sent} packets`);
+  });
+});
+
+describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
+  /** A probe that asks for `perTick` packets of 1,000 bytes for `forMs`, then reports what the parent's feedback said was delivered. */
+  function fakeProbe(perTick: number, forMs: number) {
+    let startedAt: number | null = null;
+    let spare: number | null = null;
+    const views: LinkEstimate[] = [];
+    const probe: UplinkProbe = {
+      next(view, now) {
+        views.push(view);
+        startedAt ??= now;
+        if (now - startedAt >= forMs) {
+          spare ??= view.deliveredKbps;
+          return [];
+        }
+        return Array.from({ length: perTick }, () => 1000);
+      },
+      get spareKbps() {
+        return spare;
+      },
+    };
+    return { probe, views };
+  }
+
+  it("sends PROBE packets to the parent in the lowest class, hears FEEDBACK back while they come, and reports the result", async () => {
+    const made: ({ bitrateKbps: number } | undefined)[] = [];
+    const heard = new Map<LinkEstimator, number>();
+    const net = new SimNet({
+      backups: false,
+      createLinkEstimator: (options?: { bitrateKbps: number }) => {
+        made.push(options);
+        const estimator = createBasicEstimator();
+        const onFeedback = estimator.onFeedback.bind(estimator);
+        estimator.onFeedback = (feedback, now) => {
+          heard.set(estimator, (heard.get(estimator) ?? 0) + 1);
+          onFeedback(feedback, now);
+        };
+        return estimator;
+      },
+    });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    const relay = net.join("1", "relay", ["0"]);
+    await net.runAsync(1500);
+    // Every estimator is made with the video stream's bitrate, B of SPEC §11.2.
+    assert.ok(made.length > 0 && made.every((options) => options?.bitrateKbps === 1200));
+
+    const toParent = relay.links.map.get("0")!;
+    const toChild = source.links.map.get("1")!;
+    const feedbackDown = () => toChild.sentByType.get(PacketType.Feedback)?.get("control") ?? 0;
+    assert.equal(feedbackDown(), 0, "no feedback goes down while nobody probes");
+
+    const results: (number | null)[] = [];
+    relay.node.on("probe", (spare) => results.push(spare));
+    const { probe, views } = fakeProbe(2, 1000);
+    relay.node.runProbe(probe);
+    await net.runAsync(1500);
+    // About 2 packets every 10 ms for a second, all in class "replay".
+    const probes = toParent.sentByType.get(PacketType.Probe)!;
+    assert.deepEqual([...probes.keys()], ["replay"]);
+    assert.ok(probes.get("replay")! >= 190 && probes.get("replay")! <= 210, `${probes.get("replay")} probes`);
+    // The parent told the prober how it fared: every feedbackMs while probes came, and for up to
+    // PROBING_MS after the last, the first interval thrown away.
+    assert.ok(feedbackDown() >= 8 && feedbackDown() <= 20, `${feedbackDown()} feedback packets down`);
+    assert.ok(views.length > 50);
+    assert.equal(results.length, 1);
+    assert.ok(results[0] !== null && results[0] > 0, `spare ${results[0]}`);
+    // Once the probes have stopped for PROBING_MS, so does the feedback.
+    await net.runAsync(1000);
+    const after = feedbackDown();
+    await net.runAsync(2000);
+    assert.equal(feedbackDown(), after);
+    // And media never stopped.
+    assert.deepEqual(missing(relay, Math.min(...relay.video), net.published - 3), []);
+  });
+
+  it("a probe with no parent, or cut short by a change of parent, reports null", async () => {
+    const net = new SimNet({ backups: true });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    net.join("1", "relay", ["0"]);
+    net.join("2", "relay", ["0"]);
+    await net.runAsync(300);
+    const leaf = net.join("3", "leaf", ["1"], ["2"]);
+    await net.runAsync(1500);
+    const results: (number | null)[] = [];
+    source.node.on("probe", (spare) => results.push(spare));
+    leaf.node.on("probe", (spare) => results.push(spare));
+    source.node.runProbe(fakeProbe(1, 1000).probe);
+    leaf.node.runProbe(fakeProbe(1, 1000).probe);
+    await net.runAsync(100);
+    net.kill("1");
+    await net.runAsync(1500);
+    assert.deepEqual(results, [null, null]);
+    assert.equal(stateOf(leaf).parent, "2");
   });
 });
 
