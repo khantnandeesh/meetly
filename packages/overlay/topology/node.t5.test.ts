@@ -115,6 +115,38 @@ describe("node: NACK under the gate mix's bad profile (SPEC §4.6, §12.3)", () 
   }
 });
 
+describe("node: a provisional relay (SPEC §8.1 [D38])", () => {
+  it("takes the fan-out it is given with its role, and its full one when confirmed", async () => {
+    const net = new SimNet({ backups: false, params: { sourceFanout: 3, maxFanout: 4 } });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    const relay = net.join("1", "leaf", ["0"]);
+    await net.runAsync(500);
+    net.setRole("1", "relay", 2);
+    await net.runAsync(100);
+    assert.deepEqual([relay.node.status().role, relay.node.status().freeSlots], ["relay", 2]);
+    // Two viewers fill it; a third, watching elsewhere (it asks from a frame of its own), is refused.
+    net.join("a", "leaf", ["1"]);
+    net.join("b", "leaf", ["1"]);
+    const c = net.join("c", "leaf", ["0"]);
+    await net.runAsync(800);
+    assert.deepEqual(relay.node.status().children.sort(), ["a", "b"]);
+    assert.equal(relay.node.status().freeSlots, 0);
+    net.assign("c", [{ stream: 0, stripe: 0, parents: [{ peer: "1", depth: 1, free: 1 }], backups: [] }], "move");
+    await net.runAsync(800);
+    assert.equal(stateOf(c).parent, "0");
+    // Confirmed past probation: role relay again, with no cap.
+    net.setRole("1", "relay");
+    await net.runAsync(100);
+    assert.equal(relay.node.status().freeSlots, 2);
+    net.assign("c", [{ stream: 0, stripe: 0, parents: [{ peer: "1", depth: 1, free: 1 }], backups: [] }], "move");
+    await net.runAsync(800);
+    assert.equal(stateOf(c).parent, "1");
+    assert.deepEqual(relay.node.status().children.sort(), ["a", "b", "c"]);
+  });
+});
+
 describe("node: its own stall is not its parent's death (SPEC §7.4)", () => {
   async function tree() {
     const net = new SimNet({ backups: true });

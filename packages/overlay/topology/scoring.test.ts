@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DEFAULT_PARAMS, type Capabilities } from "@meetly/overlay";
-import { createParentSelector, judgeRelay, parentCost } from "@meetly/overlay/topology/index";
+import { PROVISIONAL_FANOUT, createParentSelector, judgeProvisional, judgeRelay, parentCost } from "@meetly/overlay/topology/index";
 import { relayFanout, relayScore } from "@meetly/overlay/topology/scoring";
 import type { Candidate, Observed } from "@meetly/overlay/topology/types";
 
@@ -90,6 +90,36 @@ describe("judgeRelay: who may relay (SPEC §8.1)", () => {
     assert.equal(relayFanout(100_000, 1000, 4), 4);
     assert.equal(relayFanout(0, 1000, 4), 0);
     assert.equal(judge({}, { spareUplinkKbps: 5000 }).fanout, Math.floor((0.7 * 5000) / (1.15 * KBPS)));
+  });
+});
+
+describe("judgeProvisional: a relay before probation ends (SPEC §8.1 [D38])", () => {
+  const provisional = (caps: Partial<Capabilities> = {}, observed: Partial<Observed> = {}) => judgeProvisional({ ...good, ...caps }, { ...seen, ...observed }, KBPS, DEFAULT_PARAMS);
+
+  it("a peer that is only in probation may be a provisional relay, with a fan-out of 2", () => {
+    assert.equal(judge({}, { uptimeMs: 3000 }).eligible, false);
+    const verdict = provisional({}, { uptimeMs: 3000 });
+    assert.equal(verdict.eligible, true);
+    assert.deepEqual(verdict.reasons, []);
+    assert.equal(verdict.fanout, PROVISIONAL_FANOUT);
+  });
+
+  it("a fast, settled peer still gets no more than 2 from it: full fan-out is judgeRelay's", () => {
+    assert.equal(provisional().fanout, 2);
+    assert.equal(judge().fanout, 4);
+  });
+
+  it("every other check still holds: the hardware, the NAT, the uplink for two children, the loss", () => {
+    for (const [caps, reason] of [[{ desktop: false }, "mobile"], [{ nat: "symmetric" }, "nat"], [{ onPower: false }, "battery"], [{ visible: false }, "hidden"]] as const) {
+      const verdict = provisional(caps, { uptimeMs: 3000 });
+      assert.equal(verdict.eligible, false);
+      assert.deepEqual(verdict.reasons, [reason]);
+      assert.equal(verdict.fanout, 0);
+    }
+    // Room for two children is 2 × 1.15 × B; fan-out 2 needs 2 × 1.15 × B / 0.7.
+    assert.equal(provisional({}, { uptimeMs: 3000, spareUplinkKbps: 2 * 1.15 * KBPS + 1 }).eligible, false);
+    assert.equal(provisional({}, { uptimeMs: 3000, spareUplinkKbps: (2 * 1.15 * KBPS) / 0.7 + 1 }).eligible, true);
+    assert.deepEqual(provisional({}, { uptimeMs: 3000, lossPct: 3 }).reasons, ["lossy"]);
   });
 });
 

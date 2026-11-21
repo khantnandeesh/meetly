@@ -501,7 +501,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   };
   const primaryId = () => primary()?.config.id ?? 0;
 
-  const fanout = () => (role === "source" ? params.sourceFanout : role === "relay" ? params.maxFanout : 0);
+  /** What the coordinator capped this relay's fan-out at (a provisional relay, SPEC §8.1 [D38]), if it did. */
+  let fanoutCap: number | null = null;
+  const fanout = () => (role === "source" ? params.sourceFanout : role === "relay" ? Math.min(params.maxFanout, fanoutCap ?? Infinity) : 0);
   const isActiveChild = (peer: Peer) => {
     for (const sub of peer.subs.values()) if (sub.mode === "active") return true;
     return false;
@@ -1995,8 +1997,17 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     changed();
   }
 
-  function onRole(to: OverlayRole): void {
-    if (role === "source" || to === "source" || to === role) return;
+  function onRole(to: OverlayRole, cap?: number): void {
+    if (role === "source" || to === "source") return;
+    const nextCap = to === "relay" && cap !== undefined ? cap : null;
+    if (to === role && nextCap === fanoutCap) return;
+    // A provisional relay confirmed past probation is sent role relay again, without a cap.
+    fanoutCap = nextCap;
+    if (to === role) {
+      checkOverload();
+      changed();
+      return;
+    }
     role = to;
     if (to === "leaf") {
       // No longer a relay: its children are sent elsewhere (SPEC §6.6).

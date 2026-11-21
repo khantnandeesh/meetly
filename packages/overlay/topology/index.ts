@@ -15,4 +15,7 @@ export const createGopCache: (options: GopCacheOptions) => GopCache = createGopC
  */
 export { createParentSelector, judgeRelay, parentCost } from "./scoring";
 
+/** SPEC §8.1 [D38]: a provisional relay, before probation ends. For the coordinator's placement, as `judgeRelay` is. */
+export { judgeProvisional, PROVISIONAL_FANOUT } from "./scoring";
+
 export const createOverlayNode: (options: OverlayNodeOptions) => OverlayNode = createOverlayNodeImpl;

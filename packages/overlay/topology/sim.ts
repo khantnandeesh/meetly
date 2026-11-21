@@ -410,7 +410,7 @@ export class SimNet {
   /** Everything the coordinator was asked or told. */
   readonly coordinatorLog: { at: number; peer: PeerId; what: string; detail: string }[] = [];
   private readonly wires = new Map<string, Wire>();
-  private readonly listeners = new Map<PeerId, { assign: ((a: Assignment[], reason: "join" | "need" | "rebalance" | "move") => void)[]; role: ((role: OverlayRole) => void)[]; gone: ((peer: PeerId) => void)[] }>();
+  private readonly listeners = new Map<PeerId, { assign: ((a: Assignment[], reason: "join" | "need" | "rebalance" | "move") => void)[]; role: ((role: OverlayRole, fanout?: number) => void)[]; gone: ((peer: PeerId) => void)[] }>();
   connectMs: number;
   packets = 0;
   linksMade = 0;
@@ -565,8 +565,8 @@ export class SimNet {
   assign(to: PeerId, assignments: Assignment[], reason: "join" | "need" | "rebalance" | "move"): void {
     for (const listener of this.listeners.get(to)?.assign ?? []) listener(assignments, reason);
   }
-  setRole(to: PeerId, role: OverlayRole): void {
-    for (const listener of this.listeners.get(to)?.role ?? []) listener(role);
+  setRole(to: PeerId, role: OverlayRole, fanout?: number): void {
+    for (const listener of this.listeners.get(to)?.role ?? []) listener(role, fanout);
   }
   peerGone(to: PeerId, peer: PeerId): void {
     for (const listener of this.listeners.get(to)?.gone ?? []) listener(peer);
