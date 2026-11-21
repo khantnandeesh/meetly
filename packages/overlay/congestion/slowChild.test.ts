@@ -332,3 +332,52 @@ describe("a squeeze, then room (C6): a link that has room for the stream gets ev
     assert.equal(squeeze(3000, { backlogWindowMs: 0 }).port("x").gate.cap.maxTemporal, 0);
   });
 });
+
+describe("the gate mix's four networks (C6, simulated): one child of each under the source, two minutes", () => {
+  // SPEC §12.3's profiles, as E-harness's PROFILES has them, on the link from the source to the
+  // child; the way back has the same delay, jitter and loss, without the cap.
+  const MIX = {
+    good: { delayMs: 15, jitterMs: 5, lossPct: 0.1 },
+    home: { delayMs: 30, jitterMs: 15, lossPct: 1 },
+    bad: { delayMs: 60, jitterMs: 40, lossPct: 3, burst: { enterPct: 1, leavePct: 30, lossPctInBurst: 50 } },
+    slow: { delayMs: 40, jitterMs: 20, lossPct: 1, kbps: 900, queueMs: 300 },
+  };
+  const run = (seed: number, estimatorTuning?: { lossNeedsQueue: boolean }) => {
+    const tree = createSimTree({
+      seed,
+      estimatorTuning,
+      sourceRate: { minKbps: 300 },
+      peers: [
+        { id: "src", parent: null },
+        ...Object.entries(MIX).map(([id, down]) => {
+          const { kbps: _kbps, queueMs: _queueMs, ...up } = down as typeof down & { kbps?: number; queueMs?: number };
+          return { id, parent: "src", down, up };
+        }),
+      ],
+    });
+    tree.run(120_000);
+    return tree;
+  };
+
+  for (const seed of [1, 2, 3]) {
+    it(`seed ${seed}: good, home and bad keep every layer; slow settles on the middle one at once; the source does not move`, () => {
+      const tree = run(seed);
+      for (const id of ["good", "home", "bad"]) assert.equal(tree.port(id).caps.length, 1, `${id}'s cap moved`);
+      const slow = tree.port("slow").caps.slice(1);
+      assert.deepEqual(
+        slow.map((change) => change.maxTemporal),
+        [1],
+      );
+      assert.ok(slow[0].at <= 2000);
+      assert.deepEqual(tree.targets, [], "one viewer's trouble is not the source's [D27]");
+    });
+  }
+
+  it("with loss read to the spec's letter, the bad link, which has room to spare, loses layers to its bursts", () => {
+    // Why loss counts only where the link shows a queue (README item 16): a burst of loss on a
+    // link with no queue reads as 10% for a second, and a layer goes for nothing; at 3% the link
+    // is strained half the time, and the layer never comes back.
+    const lost = [1, 3].map((seed) => run(seed, { lossNeedsQueue: false }).port("bad").caps.length - 1);
+    assert.ok(lost.every((changes) => changes >= 1), String(lost));
+  });
+});

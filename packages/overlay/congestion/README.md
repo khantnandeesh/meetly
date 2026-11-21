@@ -135,7 +135,17 @@ the integrator on 2026-11-21 (§11.2, §11.3, §11.5, §11.6, §8.1); none chang
     - this holds from the first drop until the cap next rises (rule 5). The first drop, and a
       failed rise's drop back, are as the spec says: at the next frame.
 
-    The first drop's reaction time is unchanged. A link that needs two drops (600 kbps) gets the
+    The first drop's reaction time is unchanged.
+16. **(spec, pending: not yet decided by the integrator) Loss counts only where the link shows
+    a queue** (`lossNeedsQueue`): `queueDelayMs` at or over 40, or `bufferedBytes` over 50 ms of
+    *B*. Simulating the gate mix (`slowChild.test.ts`, "the gate mix's four networks") showed
+    the "bad" profile (60 ms, 3% in bursts), which has room to spare, losing a layer to a burst
+    that reads 10% for a second, and then a second, and never getting them back, because 3% loss
+    keeps it *strained* half the time: below the top layer 76–92% of two minutes in two seeds of
+    three. Dropping a layer does not make one packet fewer of random loss lost; NACK (§4.6) is
+    what answers it. Congestion that overflows a queue shows the queue too, so it still counts.
+    What this misses: a policer that drops without queueing. `lossNeedsQueue: false` is §11.2 to
+    the letter. The estimate's `lossPct` is reported as measured either way. A link that needs two drops (600 kbps) gets the
     second one window after the first: at 1.9 s, inside PLAN C3's 2 s. Watching the window lasts
     up to 1.3 s on a 400 ms round trip.
 
@@ -145,10 +155,10 @@ Simulated links (`sim/world.ts`, this module's model of a capped link) and a syn
 (`sim/program.ts`: `L1T3`, layer shares 40/60/100%, a keyframe 4× a base delta frame). One of
 three children capped at 900 kbps under the 1,200 kbps stream, eight peers. The browser run is
 the same tree on real data channels on loopback, with a rate cap in front of one channel; its
-two passing runs after rule 3's change had the machine's load average between 2.0 and 3.1
+three passing runs after rule 3's change had the machine's load average between 2.0 and 4.4
 (4 cores, shared; earlier runs went up to 7).
 
-| | Simulated | Browser run (two runs) |
+| | Simulated | Browser runs |
 | --- | --- | --- |
 | First layer dropped, after the cap | 700 ms | 727, 728 ms |
 | Cap settled | the middle layer, one drop | the middle layer, one drop |
@@ -163,6 +173,7 @@ two passing runs after rule 3's change had the machine's load average between 2.
 | At 600 kbps: the base layer | second drop 1,034 ms after the first | not run |
 | Uplink probe against 1 / 3 / 10 Mbps | 1.00 / 2.99 / 9.98 | 2.72, 2.69 against 3 |
 | Source's uplink filled (3 × 667 kbps): encoder lowered, restored after | 1.0 s, 19 s | not run |
+| The gate mix's profiles, one child each, 2 min, 3 seeds | good, home, bad: every layer throughout; slow: the middle layer from 200 ms; the source never moves | not run |
 
 Before C6 the first drop came at 533 / 561 ms, a 900 kbps child ended at the base layer (7.5 fps),
 and no child got its layers back on a 3 Mbps link.

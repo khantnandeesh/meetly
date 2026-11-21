@@ -162,8 +162,13 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
     // The state reads the backlog that stands. The estimate's `bufferedBytes`, which rule 6 and
     // the replay budget read, stays the channel's backlog as it is now.
     const standFor = tuning.backlogWindowMs;
-    if (backlogCongested.forMs(now) >= standFor || lossPct >= tuning.congestedLossPct || queueHighForMs >= tuning.congestedQueueForMs) return "congested";
-    if (backlogStrained.forMs(now) >= standFor || lossPct >= tuning.strainedLossPct || queueDelayMs >= tuning.strainedQueueMs) return "strained";
+    // C6: loss is the link's trouble only where it shows a queue. Loss on a path with no queue
+    // (a lossy radio, the gate mix's "bad" bursts) is NACK's to repair (§4.6); dropping a layer
+    // does not make a single packet fewer of it lost.
+    const queued = queueDelayMs >= tuning.strainedQueueMs || buffered > bytesOf(streamKbps, tuning.strainedBufferMs);
+    const loss = tuning.lossNeedsQueue && !queued ? 0 : lossPct;
+    if (backlogCongested.forMs(now) >= standFor || loss >= tuning.congestedLossPct || queueHighForMs >= tuning.congestedQueueForMs) return "congested";
+    if (backlogStrained.forMs(now) >= standFor || loss >= tuning.strainedLossPct || queueDelayMs >= tuning.strainedQueueMs) return "strained";
     return "ok";
   };
 

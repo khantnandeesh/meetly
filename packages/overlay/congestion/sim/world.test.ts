@@ -64,6 +64,30 @@ describe("the simulated world", () => {
     assert.notDeepEqual(run(12).delays.slice(0, 500), first.delays.slice(0, 500));
   });
 
+  it("loses in bursts as the harness's shim does: the overall share it is given, in runs", () => {
+    const world = new World();
+    const pipe = new SimPipe(world, { delayMs: 0, lossPct: 3, burst: { enterPct: 1, leavePct: 30, lossPctInBurst: 50 } }, seeded(5));
+    const arrived: boolean[] = [];
+    let seq = 0;
+    pipe.onmessage = (packet) => (arrived[new DataView(packet.buffer).getUint32(0)] = true);
+    world.every(1, () => {
+      const packet = new Uint8Array(8);
+      new DataView(packet.buffer).setUint32(0, seq++);
+      pipe.send(packet);
+    });
+    world.runUntil(200_000);
+    let lost = 0;
+    let runs = 0;
+    for (let i = 0; i < seq - 10; i++) {
+      if (arrived[i]) continue;
+      lost++;
+      if (i === 0 || arrived[i - 1]) runs++;
+    }
+    assert.ok(Math.abs((lost / (seq - 10)) * 100 - 3) < 0.3, String((lost / seq) * 100));
+    // Losses come in runs: fewer runs than losses, by a good margin.
+    assert.ok(runs < 0.85 * lost, `${runs} runs for ${lost} losses`);
+  });
+
   it("shows a rate cap's backlog as a channel shows bufferedAmount", () => {
     const cap = new RateCap<number>(800, 250);
     assert.equal(cap.push(1, 1000, 0), true); // leaves at 10 ms

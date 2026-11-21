@@ -139,8 +139,14 @@ export type PipeProfile = {
   delayMs: number;
   /** Extra delay, different for each packet, up to this much. */
   jitterMs?: number;
-  /** Packets dropped, in percent. */
+  /** Packets dropped, in percent, overall. */
   lossPct?: number;
+  /**
+   * Losses in runs (Gilbert–Elliott), as the harness's shim has them: a packet enters a burst
+   * with `enterPct`, leaves it with `leavePct`, and is lost in one with `lossPctInBurst`; outside,
+   * with whatever brings the overall loss to `lossPct`.
+   */
+  burst?: { enterPct: number; leavePct: number; lossPctInBurst: number };
   /** The most the pipe carries; more queues, up to `queueMs`, and then is dropped. */
   kbps?: number;
   queueMs?: number;
@@ -212,8 +218,24 @@ export class SimPipe implements Pipe {
     });
   }
 
+  private inBurst = false;
+
+  /** Whether the next packet is lost. */
+  private loses(): boolean {
+    const burst = this.profile.burst;
+    const lossPct = this.profile.lossPct ?? 0;
+    if (!burst) return this.random() * 100 < lossPct;
+    if (this.inBurst) {
+      if (this.random() * 100 < burst.leavePct) this.inBurst = false;
+    } else if (this.random() * 100 < burst.enterPct) this.inBurst = true;
+    // The share of packets sent in a burst, and the loss outside one that makes the whole lossPct.
+    const share = burst.enterPct / (burst.enterPct + burst.leavePct);
+    const goodPct = Math.max(0, Math.min(100, (lossPct - share * burst.lossPctInBurst) / (1 - share)));
+    return this.random() * 100 < (this.inBurst ? burst.lossPctInBurst : goodPct);
+  }
+
   private fly(packet: Uint8Array): void {
-    if (this.random() * 100 < (this.profile.lossPct ?? 0)) {
+    if (this.loses()) {
       this.lost++;
       return;
     }

@@ -25,6 +25,11 @@ export type EstimatorTuning = {
    * sample as it comes, the spec to the letter.
    */
   backlogWindowMs: number;
+  /**
+   * C6 (see README): loss makes a link strained or congested only while the link also shows a
+   * queue (`queueDelayMs` or `bufferedBytes` over the strained line). False is the spec's letter.
+   */
+  lossNeedsQueue: boolean;
   /** §11.2, strained: `bufferedBytes` over this many ms of B. */
   strainedBufferMs: number;
   strainedLossPct: number;
@@ -43,6 +48,7 @@ export const ESTIMATOR_TUNING: EstimatorTuning = {
   windowMs: 1000,
   delayFloorMs: 10_000,
   backlogWindowMs: 150,
+  lossNeedsQueue: true,
   strainedBufferMs: 50,
   strainedLossPct: 3,
   strainedQueueMs: 40,

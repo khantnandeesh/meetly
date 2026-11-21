@@ -276,6 +276,33 @@ describe("LinkEstimator: queue delay (C1)", () => {
   });
 });
 
+/** §11.2's loss lines to the letter: loss counts whether or not the link shows a queue (C6 turns that off). */
+const LETTER = { lossNeedsQueue: false };
+
+describe("LinkEstimator: loss without a queue (C6)", () => {
+  it("does not make a link strained or congested on its own, however high", () => {
+    const estimator = createLinkEstimator();
+    estimator.onFeedback(feedback(0, { received: 80, expected: 100 }), 0);
+    const estimate = estimator.directed("sent", 0);
+    assert.equal(estimate.lossPct, 20, "the loss is still reported as it is");
+    assert.equal(estimate.state, "ok");
+  });
+
+  it("counts as the table says once the link shows a queue: delay or backlog over the strained line", () => {
+    const byDelay = createLinkEstimator();
+    byDelay.onFeedback(feedback(0, { received: 89, expected: 100, queueDelayTenthsMs: 400 }), 0);
+    assert.equal(byDelay.directed("sent", 0).state, "congested");
+    const byBacklog = createLinkEstimator();
+    byBacklog.onBuffered(8000, 0);
+    byBacklog.onFeedback(feedback(0, { received: 89, expected: 100 }), 0);
+    assert.equal(byBacklog.directed("sent", 0).state, "congested");
+    const both = createLinkEstimator();
+    both.onBuffered(8000, 0);
+    both.onFeedback(feedback(0, { received: 96, expected: 100 }), 0);
+    assert.equal(both.directed("sent", 0).state, "strained");
+  });
+});
+
 describe("LinkEstimator: the state of a link, exactly as SPEC §11.2's table", () => {
   // B is 1,200 kbps: 50 ms of it is 7,500 bytes, 150 ms is 22,500.
   const cases: [name: string, set: (estimator: DirectedLinkEstimator) => void, state: string][] = [
@@ -294,7 +321,7 @@ describe("LinkEstimator: the state of a link, exactly as SPEC §11.2's table", (
   ];
   for (const [name, set, state] of cases) {
     it(`${name}: ${state}`, () => {
-      const estimator = createLinkEstimator({ bitrateKbps: 1200 });
+      const estimator = createLinkEstimator({ bitrateKbps: 1200, tuning: LETTER });
       set(estimator);
       // Looked at 150 ms on: a backlog counts once it has stood that long (C6, the next suite).
       assert.equal(estimator.directed("sent", 150).state, state);
@@ -319,7 +346,7 @@ describe("LinkEstimator: the state of a link, exactly as SPEC §11.2's table", (
   });
 
   it("goes back to ok when the cause has gone: loss is over the last second only", () => {
-    const estimator = createLinkEstimator();
+    const estimator = createLinkEstimator({ tuning: LETTER });
     estimator.onFeedback(feedback(0, { received: 80, expected: 100 }), 0);
     assert.equal(estimator.directed("sent", 0).state, "congested");
     estimator.onFeedback(feedback(500, { received: 100, expected: 100 }), 500);
@@ -442,7 +469,7 @@ describe("LinkEstimator: what the link carries, and which way it is judged", () 
   });
 
   it("judges a child's link to its parent on what arrives, and a parent's link to a child on what the child reports", () => {
-    const child = createLinkEstimator();
+    const child = createLinkEstimator({ tuning: LETTER });
     // The child receives media with every tenth packet missing, and sends only feedback.
     for (let i = 0; i < 500; i++) {
       if (i % 10 !== 0) child.onReceived(i, ms16(i * 4), 1000, i * 4 + 10);
@@ -466,7 +493,7 @@ describe("LinkEstimator: what the link carries, and which way it is judged", () 
   });
 
   it("stops believing feedback that has stopped coming", () => {
-    const estimator = createLinkEstimator();
+    const estimator = createLinkEstimator({ tuning: LETTER });
     estimator.onSent(1000, 0);
     estimator.onFeedback(feedback(0, { received: 50, expected: 100 }), 0);
     assert.equal(estimator.estimate(100).state, "congested");

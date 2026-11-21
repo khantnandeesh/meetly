@@ -63,6 +63,7 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
   let overSince: number | null = null;
   /** §11.2's congested line for the backlog: 150 ms of B. */
   const congestedBytes = bytesOf(options.bitrateKbps, ESTIMATOR_TUNING.congestedBufferMs);
+  const strainedBytes = bytesOf(options.bitrateKbps, ESTIMATOR_TUNING.strainedBufferMs);
   /** A rise still on probation (rule 5), or null. */
   let lastRiseAt: number | null = null;
   let riseAfterMs = tuning.riseAfterMs;
@@ -136,7 +137,9 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
             backlog.reduce((least, sample) => (sample.at > from && sample.at <= to ? Math.min(least, sample.bytes) : least), Infinity);
           const stoodOver = overSince !== null && now - overSince >= hold;
           const fell = low(now - hold, now) < low(now - 2 * hold, now - hold);
-          drop = estimate.lossPct >= CONGESTED_LOSS_PCT || (stoodOver && !fell);
+          // Loss counts where the link shows a queue, as in the estimator (C6, README item 16).
+          const queued = estimate.queueDelayMs >= ESTIMATOR_TUNING.strainedQueueMs || estimate.bufferedBytes > strainedBytes;
+          drop = (estimate.lossPct >= CONGESTED_LOSS_PCT && queued) || (stoodOver && !fell);
         }
         if (drop) {
           watching = true;
