@@ -10,7 +10,7 @@ import type { Clock, Listenable, Logger, SessionClock } from "../runtime";
 import type { Assignment, Capabilities, MediaHeader, MetricsEvent, OverlayParams, OverlayRole, PeerHint, PeerId, StreamConfig, StreamHead } from "../protocol";
 import type { EncodedFrame, LayerCap, LinkEstimate, ReceivedFrame } from "../types";
 import type { LinkManager } from "../transport/types";
-import type { LayerGate, LayerGateOptions, LinkEstimator } from "../congestion/types";
+import type { LayerGate, LayerGateOptions, LinkEstimator, UplinkProbe } from "../congestion/types";
 
 /* ------------------------------ the GOP cache ------------------------------ */
 
@@ -155,6 +155,8 @@ export type OverlayNodeEvents = {
   uplink: [estimate: LinkEstimate];
   /** The node gave up and is rejoining, or was told to leave. */
   error: [error: Error];
+  /** A probe handed to `runProbe` finished: the spare uplink it found, or null if it was cut short (the parent changed, or there was none). */
+  probe: [spareKbps: number | null];
 };
 
 /**
@@ -178,6 +180,13 @@ export interface OverlayNode extends Listenable<OverlayNodeEvents> {
   childEstimates(): LinkEstimate[];
   /** Leave gracefully: `bye` to children with somewhere to go, then to parents (SPEC §7.7). */
   stop(): Promise<void>;
+  /**
+   * Measure spare uplink (SPEC §8.1, §11.6): PROBE packets to the parent, as `probe.next` asks, in
+   * the lowest send class, on the node's tick, until `probe.spareKbps` is a number; then the
+   * `probe` event. Whoever decides that a peer is due a probe (after probation, every 5 minutes)
+   * calls this; the node only runs it.
+   */
+  runProbe(probe: UplinkProbe): void;
 }
 
 export type OverlayNodeOptions = {
@@ -188,7 +197,8 @@ export type OverlayNodeOptions = {
   clock: Clock;
   sessionClock: SessionClock;
   /** From the congestion module; injected so topology can be tested with fakes. */
-  createLinkEstimator: () => LinkEstimator;
+  /** One per link. `bitrateKbps` is the video stream's full bitrate, *B* of SPEC §11.2. */
+  createLinkEstimator: (options?: { bitrateKbps: number }) => LinkEstimator;
   createLayerGate: (options: LayerGateOptions) => LayerGate;
   logger?: Logger;
 };
