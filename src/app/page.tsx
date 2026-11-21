@@ -1,9 +1,10 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, MessagesSquare, MonitorUp, Plus, Presentation } from "lucide-react";
+import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
+import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
 import { ScheduleDialog } from "@/components/ScheduleDialog";
 import { Logo } from "@/components/ui/Logo";
@@ -12,24 +13,6 @@ import { useToast } from "@/components/ui/Toaster";
 import { generateCode } from "@/lib/code";
 import { createMeeting, createWebinar } from "@/lib/rtc/provider";
 import { useWebinarsOffered } from "@/lib/webinarSwitch";
-
-const FEATURES = [
-  {
-    icon: CalendarPlus,
-    title: "Plan ahead",
-    body: "Get a link now for a meeting later, and add it to your calendar.",
-  },
-  {
-    icon: MonitorUp,
-    title: "Share your screen",
-    body: "On a computer, share a tab, a window or your whole screen.",
-  },
-  {
-    icon: MessagesSquare,
-    title: "Chat and raise a hand",
-    body: "Message everyone in the meeting, or raise a hand when you want to speak.",
-  },
-];
 
 export default function Home() {
   const router = useRouter();
@@ -149,19 +132,7 @@ export default function Home() {
           </div>
         </div>
 
-        <ul className="anim-rise grid gap-x-10 gap-y-8 border-t border-border pt-10 [animation-delay:200ms] sm:grid-cols-3">
-          {FEATURES.map(({ icon: Icon, title, body }) => (
-            <li key={title} className="flex gap-4 sm:flex-col">
-              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface-2 text-accent shadow-[inset_0_0_0_1px_var(--border)]">
-                <Icon className="size-5" aria-hidden="true" />
-              </span>
-              <div>
-                <h2 className="font-semibold">{title}</h2>
-                <p className="mt-1 text-[0.9375rem] leading-relaxed text-muted">{body}</p>
-              </div>
-            </li>
-          ))}
-        </ul>
+        <FeatureGrid />
       </main>
 
       <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />

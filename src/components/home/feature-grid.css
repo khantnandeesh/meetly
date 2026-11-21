@@ -1,0 +1,267 @@
+/*
+ * The home page's feature grid (FeatureGrid.tsx). Plain CSS, scoped under .fg, so it is never in
+ * Tailwind's layers: the pictures carry `ss-stage` for the stageshow film checks, and these
+ * unlayered rules always win over the kit's own `.ss-stage` rules if the hero has loaded them.
+ *
+ * One column on a phone (each tile 358 wide at 390, like the hero), two from 48rem with the screen
+ * share across both, three from 64rem: the screen share two thirds of the first row, then three
+ * equal tiles. Every tile shares the radius, the padding and copy at the top; the pictures differ.
+ */
+
+.fg-heading {
+  margin: 0 0 1.25rem;
+  font-size: 1.625rem;
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.fg-grid {
+  --fg-pad: 1.5rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.75rem;
+  margin: 0 -0.25rem; /* 358 wide in a 390 screen, the hero's width */
+  padding: 0;
+  list-style: none;
+}
+
+.fg-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 1.5rem;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--border);
+  padding: var(--fg-pad);
+}
+
+.fg-copy {
+  margin: 0;
+  max-width: 34rem;
+  font-size: 1rem;
+  line-height: 1.45;
+  color: var(--muted);
+  text-wrap: pretty;
+}
+.fg-copy strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+@media (width >= 40rem) {
+  .fg-grid {
+    margin: 0;
+  }
+}
+@media (width >= 48rem) {
+  .fg-heading {
+    margin-bottom: 1.5rem;
+    font-size: 2rem;
+  }
+  .fg-grid {
+    --fg-pad: 1.75rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1rem;
+  }
+  .fg-wide {
+    grid-column: span 2;
+  }
+  .fg-copy {
+    font-size: 1.0625rem;
+  }
+}
+@media (width >= 64rem) {
+  .fg-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* ------------------------------------------------------------------ pictures */
+
+/* A picture: drawn at its native size, never scaled with the grid. Set out in full here, so the
+   stageshow kit's own .ss-stage rules (position, font, colour) never reach it. */
+.fg-pic.ss-stage {
+  position: relative;
+  top: auto;
+  left: auto;
+  transform: none;
+  margin-top: 1.5rem;
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.5;
+  letter-spacing: normal;
+  color: var(--text);
+  white-space: normal;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 1. Screen share. Wide, the tile runs off the tile's right edge (only the shared page is cut);
+   narrow, the whole tile is drawn smaller, as a computer's screen is, so the banner, its button
+   and the label always show whole. */
+.fg-share {
+  container-type: inline-size;
+  margin-right: calc(-1 * var(--fg-pad));
+  overflow: hidden; /* the picture owns its crop, at the tile's edge */
+}
+.fg-share-frame {
+  position: relative;
+  overflow: hidden;
+  width: calc(100% + 3rem);
+  /* Its row's height: tall enough for the banner, the label and the slide's top, and no taller
+     than the noise statement beside it, which then fills its tile. */
+  height: 13.75rem;
+  border-radius: 1.25rem;
+  background: #000;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
+  --fg-visible: calc(100% - 3rem);
+}
+.fg-share-page {
+  position: absolute;
+  top: 22%;
+  bottom: -0.75rem;
+  left: calc(var(--fg-visible) / 2);
+  translate: -50% 0;
+  width: min(78%, 36rem);
+  display: flex;
+  flex-direction: column;
+  gap: 9%;
+  padding: 6% 6% 0;
+  border-radius: 6px;
+  background: #f4f3ef;
+}
+.fg-share-page i {
+  display: block;
+  height: 9px;
+  border-radius: 5px;
+  background: #d9d7d0;
+}
+.fg-share-page .fg-share-title {
+  width: 38%;
+  height: 14px;
+  background: #b9b7b0;
+}
+.fg-share-cols {
+  display: grid;
+  flex: 1;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 8%;
+}
+.fg-share-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 8%;
+  height: 72%;
+  border-bottom: 2px solid #d9d7d0;
+}
+.fg-share-chart span {
+  flex: 1;
+  border-radius: 3px 3px 0 0;
+  background: #cfcdc5;
+}
+.fg-share-lines {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.fg-share-banner {
+  position: absolute;
+  top: 0.75rem;
+  left: calc(var(--fg-visible) / 2);
+  translate: -50% 0;
+  z-index: 2;
+}
+.fg-share-label {
+  position: absolute;
+  bottom: 0.5rem;
+  left: 0.5rem;
+  z-index: 2;
+}
+@container (width < 32.5rem) {
+  /* The screen at 400 × 236, scaled to the width between the copy's edge and the tile's padding. */
+  .fg-share-frame {
+    --fg-visible: 100%;
+    width: 25rem;
+    height: 14.75rem;
+    transform-origin: 0 0;
+    scale: tan(atan2(calc(100cqw - 1.5rem), 25rem));
+    margin-bottom: calc(14.75rem * (tan(atan2(calc(100cqw - 1.5rem), 25rem)) - 1));
+  }
+  .fg-share-page {
+    top: 26%;
+    width: 84%;
+  }
+}
+
+/* 2. Noise suppression: the setting's name, a statement right under it, and the menu's hint. */
+.fg-statement {
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+}
+.fg-statement-label {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  margin: 0;
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+.fg-glyph {
+  display: grid;
+  width: 2.75rem;
+  height: 2.75rem;
+  flex: none;
+  place-items: center;
+  border-radius: 0.75rem;
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--border);
+  color: var(--accent);
+}
+/* Sized to the tile, so the statement fills it rather than leaving a band under its last line. */
+.fg-statement-big {
+  margin: 1.75rem 0 0;
+  font-size: clamp(2.25rem, 15.5cqw, 3.25rem);
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  text-wrap: balance;
+}
+.fg-statement-line {
+  margin: 0.875rem 0 0;
+  font-size: 1rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+@media (width >= 48rem) {
+  .fg-statement-line {
+    font-size: 1.0625rem;
+  }
+}
+
+/* 3. Polls: the card as a voter sees it, at its size in the call. */
+.fg-poll {
+  max-width: 22.5rem;
+}
+
+/* 4. Reactions: the lane sits at the bottom left, as in a call, shown a quarter larger than life
+   (one small component in a tile), so it fills the room under the copy. A phone shows three rows. */
+.fg-pic.fg-reactions {
+  margin-top: auto;
+  padding-top: 1.5rem;
+}
+.fg-lane {
+  zoom: 1.25;
+}
+@media (width < 48rem) {
+  .fg-desktop-only {
+    display: none;
+  }
+}
+
+/* 5. Raised hands: the People list's section, its avatars and heading on the copy's edge. */
+.fg-hands {
+  margin-inline: -1.25rem;
+}
