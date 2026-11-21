@@ -151,6 +151,9 @@ type RepairRecord = {
 };
 
 const STALL_MS = 150;
+const UNCAPPED_UPLINK_KBPS = 20_000;
+/** How long a joiner keeps asking for a parent. The package's coordinator places nobody under a peer in its first 20 s (D18). */
+const FIND_PARENT_MS = 60_000;
 const REORDER_MS = 10;
 const TICK_MS = 10;
 const FREEZE_MS = 200;
@@ -245,7 +248,9 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     desktop: true,
     onPower: true,
     nat: "open",
-    uplinkKbps: options.profile?.kbps ?? null,
+    // The stand-in has no uplink probe (D19): it claims what its network allows, and an
+    // unimpaired one carries far more than any fan-out needs.
+    uplinkKbps: options.profile?.kbps ?? UNCAPPED_UPLINK_KBPS,
     cores: navigator.hardwareConcurrency || 1,
     decode: ["vp8"],
     dataSaver: false,
@@ -289,6 +294,9 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     ws.onerror = () => undefined;
   }
 
+  /** Loss from the parent over the last metrics interval: what `status` tells the coordinator. */
+  let upLossPct = 0;
+
   function onCoordinator(message: ServerMessage): void {
     switch (message.t) {
       case "welcome":
@@ -321,6 +329,16 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
         return;
       case "streams":
         if (!config && message.streams.length) config = message.streams[0];
+        return;
+      case "role":
+        // Promoted (or demoted) by the coordinator, with a grant to show for it (SPEC §6.6). A
+        // demoted relay keeps the children it has; it only takes no new ones.
+        role = message.role;
+        grant = message.grant;
+        sendStatus();
+        return;
+      case "grant":
+        grant = message.grant;
         return;
       case "peer-gone":
         // Advisory: repair does not wait for it, and the stand-in does not act on it.
@@ -797,7 +815,8 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     const exclude: PeerId[] = [];
     let assignment: Assignment | null = assignments[0] ?? null;
     up.state = "subscribing";
-    for (let attempt = 0; attempt < 20 && !leaving; attempt++) {
+    const until = clock.now() + FIND_PARENT_MS;
+    while (clock.now() < until && !leaving) {
       const candidate = assignment?.parents[0];
       if (candidate) {
         const l = link(candidate.peer, true);
@@ -820,8 +839,10 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
         exclude.push(candidate.peer);
       } else await new Promise<void>((resolve) => clock.setTimeout(resolve, 500));
       assignment = await need("parent", exclude);
+      // Everyone offered has been tried: start again, the tree has moved on.
+      if (assignment && assignment.parents.length === 0 && exclude.length) exclude.length = 0;
     }
-    error = "never found a parent";
+    if (!leaving) error = `never found a parent in ${FIND_PARENT_MS / 1000} s`;
   }
 
   async function takeBackup(peer: PeerId): Promise<boolean> {
@@ -1200,7 +1221,7 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     const standby = [...links.values()].filter((l) => l.child?.mode === "standby").length;
     const fanout = isSource ? params.sourceFanout : role === "leaf" ? 0 : params.maxFanout;
     const parent = up.parent ? links.get(up.parent) : undefined;
-    toCoordinator({ t: "status", depth: Math.min(255, myDepth()), links: isSource ? [] : [{ stream: 0, stripe: 0, parent: up.parent, backup: up.backup }], children, standby, free: Math.max(0, fanout - children), caps: caps(), lossPct: 0, rttMs: parent?.rttMs ?? null });
+    toCoordinator({ t: "status", depth: Math.min(255, myDepth()), links: isSource ? [] : [{ stream: 0, stripe: 0, parent: up.parent, backup: up.backup }], children, standby, free: Math.max(0, fanout - children), caps: caps(), lossPct: Math.round(upLossPct * 10) / 10, rttMs: parent?.rttMs ?? null });
   }
 
   const samples: MetricsSample[] = [];
@@ -1238,7 +1259,7 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
       out.up = {
         parent: parent.peer,
         rttMs: parent.rttMs === null ? null : Math.max(0, parent.rttMs),
-        lossPct: expected > 0 ? Math.max(0, Math.min(100, 100 * (1 - rx.received / expected))) : 0,
+        lossPct: (upLossPct = expected > 0 ? Math.max(0, Math.min(100, 100 * (1 - rx.received / expected))) : 0),
         queueDelayMs: 0,
         rxKbps: (rx.bytes * 8) / Math.max(1, intervalMs),
         nacksSent: counters.nacksSent,

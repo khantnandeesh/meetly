@@ -25,7 +25,8 @@ const input = process.env.RUNS_INPUT ?? "";
 let words;
 if (event === "workflow_dispatch") words = input.split(/[\s,]+/);
 else if (event === "schedule") words = ["gate", "merge"];
-else words = (/\[swarm:([^\]]*)\]/i.exec(message)?.[1] ?? "").split(/[\s,]+/);
+// Every [swarm: ...] in the message counts, so one that only mentions the syntax is harmless.
+else words = [...message.matchAll(/\[swarm:([^\]]*)\]/gi)].flatMap((m) => m[1].split(/[\s,]+/));
 const want = new Set(words.map((w) => w.trim().toLowerCase()).filter(Boolean));
 
 /** One sharded run: its shards are matrix entries that share a rendezvous. */

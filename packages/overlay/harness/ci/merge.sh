@@ -19,6 +19,14 @@ for branch in "${branches[@]}"; do
   if git merge --quiet --no-edit FETCH_HEAD >/dev/null 2>&1; then
     entries+=("{\"branch\":\"$branch\",\"sha\":\"$sha\",\"result\":\"merged\"}")
     echo "merged $branch at $sha"
+  elif [ "$(git diff --name-only --diff-filter=U)" = "packages/overlay/skeleton.test.ts" ]; then
+    # Every engineer removes their own lines from the list of stubs; neighbouring removals
+    # conflict. A swarm does not run that test, so keep this side's and say so.
+    git checkout --ours packages/overlay/skeleton.test.ts
+    git add packages/overlay/skeleton.test.ts
+    git commit --quiet --no-edit
+    entries+=("{\"branch\":\"$branch\",\"sha\":\"$sha\",\"result\":\"merged\",\"note\":\"skeleton.test.ts conflicted and was not merged; the swarm does not run it\"}")
+    echo "merged $branch at $sha (skeleton.test.ts conflicted: kept the harness side, which a swarm does not run)"
   else
     files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
     git merge --abort
