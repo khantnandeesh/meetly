@@ -9,7 +9,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { NotImplementedError, PROTOCOL_VERSION, createOverlaySource, createOverlayViewer } from "@meetly/overlay";
-import { createLayerGate, createLinkEstimator } from "@meetly/overlay/congestion/index";
+import { createLayerGate } from "@meetly/overlay/congestion/index";
 import { createCoordinatorCore, ROUTES } from "@meetly/overlay/coordinator/index";
 import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
 import { startNodeCoordinator } from "@meetly/overlay/coordinator/node";
@@ -38,7 +38,6 @@ describe("overlay skeleton", () => {
       ["E-transport+topology", () => judgeRelay(undefined as never, undefined as never, 0, undefined as never)],
       ["E-media", () => createJitterBuffer(undefined as never)],
       ["E-media", () => createPlayer(undefined as never)],
-      ["E-congestion", () => createLinkEstimator()],
       ["E-congestion", () => createLayerGate({ bitrateKbps: 0, temporalLayers: 1, frameIntervalMs: 33 })],
       ["E-coordinator", () => createCoordinatorCore(undefined as never)],
       ["E-coordinator", () => startNodeCoordinator(undefined as never)],
