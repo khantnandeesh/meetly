@@ -113,7 +113,18 @@ export type SwarmConfig = {
    */
   coordinator?: "auto" | "real" | "standin" | "external";
   /** The stand-in's program: a real VP8 encode of Chromium's fake camera, or frames of the right sizes with no picture in them. */
-  program?: { source: "camera" | "synthetic"; bitrateKbps: number; fps: number; keyIntervalFrames: number };
+  program?: {
+    source: "camera" | "synthetic";
+    bitrateKbps: number;
+    fps: number;
+    keyIntervalFrames: number;
+    /**
+     * "camera" only: pad each encoded frame up to the size a synthetic frame of its layer would
+     * have, so the stream really is `bitrateKbps` (Chromium's fake camera encodes to far less) and
+     * a few viewers can still decode it as D29's check.
+     */
+    pad?: boolean;
+  };
   /** STUN and TURN servers, for `ice` "stun" and "turn". */
   iceServers?: IceServer[];
   /** Seconds the swarm takes to fill, when it is not to be worked out from `joinPerS`. */
@@ -167,6 +178,8 @@ export type ShardResult = {
   clock?: { source: number | null; viewers: number[] };
   /** Links the shard's peers opened, and how: what ICE chose. */
   links?: LinkCounts;
+  /** The viewers that decoded for real (D29); every other viewer ran the light player. */
+  decoders?: PeerId[];
   impairment?: ImpairmentCounters;
   /** What the churn script did, and to whom. */
   churnLog?: { atS: number; action: string; targets: string[] }[];
@@ -174,7 +187,16 @@ export type ShardResult = {
 };
 
 /** Links opened, and what ICE chose for them. `crossShard`: the other end ran on another shard. */
-export type LinkCounts = { opened: number; failed: number; turn: number; candidates: Record<string, number>; crossShard: number; crossShardTurn: number };
+export type LinkCounts = {
+  opened: number;
+  failed: number;
+  turn: number;
+  candidates: Record<string, number>;
+  crossShard: number;
+  crossShardTurn: number;
+  /** Links to a peer on another shard that never opened: what ICE could not do between machines. */
+  crossShardFailed?: number;
+};
 
 export type Quantiles = { n: number; p50: number | null; p95: number | null; p99: number | null; max: number | null };
 
@@ -214,9 +236,23 @@ export type SwarmReport = {
   frames: { rendered: number; dropped: number; lost: number };
   /** Over viewers: the viewer's clock uncertainty plus the source's. Its p95 is the validity check. */
   clockUncertaintyMs: Quantiles;
+  /**
+   * The same, shard by shard. The source runs on shard 0, so on every other shard each sum is a
+   * cross-shard one: two machines, two clocks, both reading the session clock through their own
+   * path to the coordinator.
+   */
+  clockByShard: { shard: number; viewers: number; p95: number | null; max: number | null }[];
+  /** Latency of the viewers that decoded for real, and of the light ones (D29). */
+  glassToGlassDecoding: Quantiles;
+  glassToGlassLight: Quantiles;
+  /**
+   * Whether the instrument can be believed, beyond SPEC §12.3's validity: light viewers agree with
+   * decoding ones (D29). A failure here is a note on every number, not a verdict.
+   */
+  honesty: GateCheck[];
   /** Event-loop lag over every shard's driver and pages. */
   eventLoopLagMs: Quantiles;
-  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null }[];
+  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number }[];
   engine: "real" | "standin" | "mixed" | "unknown";
   /** Parts of the package that were stubs in any shard. */
   stubbed: string[];

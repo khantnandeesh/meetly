@@ -188,6 +188,8 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
   return (inner: PacketChannel, info: { peer: PeerId; kind: ChannelKind }): PacketChannel => {
     const reliable = info.kind === "ctl";
     const random = seededRandom(mixSeed(seed, self, info.peer, info.kind));
+    // The downlink's own sequence: what arrives must not shift which packets this peer's sends lose.
+    const downRandom = seededRandom(mixSeed(seed, self, info.peer, info.kind, "down"));
     const flight = new Flight();
     let profile: ImpairmentProfile | null = null;
     let model: LinkModel | null = null;
@@ -200,6 +202,8 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
     let wakeAt = Infinity;
     /** While a reliable channel has anything on its way, nothing may go around it. */
     let lastReliableAt = -Infinity;
+    /** The same, for what this peer receives on a reliable channel through its capped downlink. */
+    let lastInboundAt = -Infinity;
 
     const handOver = (data: Uint8Array | string): void => {
       if (inner.readyState !== "open") return;
@@ -216,7 +220,8 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
       const now = clock.now();
       for (let head = flight.peek(); head && head.at <= now; head = flight.peek()) {
         flight.pop();
-        heldBytes -= head.bytes;
+        // Only what this peer sends is its buffer; what it is being sent is the other end's.
+        if (!head.inbound) heldBytes -= head.bytes;
         const late = now - head.at;
         counters.lateMsSum += late;
         if (late > counters.lateMsMax) counters.lateMsMax = late;
@@ -298,24 +303,28 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
       const wanted = pick({ self, peer: info.peer, kind: info.kind });
       if (wanted !== downProfile) {
         downProfile = wanted;
-        down = wanted?.kbps ? createLinkModel({ name: wanted.name, delayMs: 0, jitterMs: 0, lossPct: 0, kbps: wanted.kbps, queueMs: wanted.queueMs }, random, reliable) : null;
-      }
-      if (!down) {
-        wrapped.onmessage?.(data);
-        return;
+        down = wanted?.kbps ? createLinkModel({ name: wanted.name, delayMs: 0, jitterMs: 0, lossPct: 0, kbps: wanted.kbps, queueMs: wanted.queueMs }, downRandom, reliable) : null;
       }
       const now = clock.now();
-      const bytes = byteLength(data);
-      const verdict = down.next(bytes, now);
-      if (verdict.dropped) {
-        counters.queueDropped++;
-        return;
+      let at = now;
+      if (down) {
+        const verdict = down.next(byteLength(data), now);
+        if (verdict.dropped) {
+          counters.queueDropped++;
+          return;
+        }
+        at = verdict.deliverAt;
       }
-      if (verdict.deliverAt <= now) {
+      // A reliable channel whose cap was lifted still delivers in order: nothing overtakes what is held.
+      if (reliable) {
+        at = Math.max(at, lastInboundAt);
+        lastInboundAt = at;
+      }
+      if (at <= now) {
         wrapped.onmessage?.(data);
         return;
       }
-      flight.push({ at: verdict.deliverAt, order: order++, data, bytes, inbound: true });
+      flight.push({ at, order: order++, data, bytes: byteLength(data), inbound: true });
       schedule();
     };
     return wrapped;

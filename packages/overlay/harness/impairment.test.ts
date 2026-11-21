@@ -303,6 +303,58 @@ describe("impairment: the channel", () => {
     assert.equal(got, 0);
   });
 
+  it("loses the same sent packets whatever arrives in between: the downlink has its own sequence", () => {
+    const run = (inbound: boolean) => {
+      const clock = fakeClock();
+      const inner = fakeChannel();
+      const wrap = createImpairment(() => PROFILES.slow, 9, { clock, self: "a" });
+      const channel = wrap(inner.channel, { peer: "b", kind: "media" });
+      channel.onmessage = () => undefined;
+      for (let i = 0; i < 2000; i++) {
+        channel.send(packet(i));
+        if (inbound) inner.channel.onmessage?.(new ArrayBuffer(200));
+        clock.advance(10);
+      }
+      clock.advance(1000);
+      return inner.sent.map((s) => (s.data as Uint8Array)[0] | ((s.data as Uint8Array)[1] << 8)).sort((x, y) => x - y);
+    };
+    assert.deepEqual(run(true), run(false));
+  });
+
+  it("counts as buffered only what this peer sends, not what its capped downlink holds", () => {
+    const clock = fakeClock();
+    const inner = fakeChannel();
+    const wrap = createImpairment(() => PROFILES.slow, 2, { clock });
+    const channel = wrap(inner.channel, { peer: "parent", kind: "media" });
+    channel.onmessage = () => undefined;
+    for (let i = 0; i < 200; i++) {
+      inner.channel.onmessage?.(new ArrayBuffer(1000));
+      clock.advance(5);
+    }
+    clock.advance(1000);
+    assert.equal(channel.bufferedAmount, 0);
+  });
+
+  it("keeps a reliable downlink in order when its cap is lifted with messages still held", () => {
+    const clock = fakeClock();
+    const inner = fakeChannel();
+    let profile: ImpairmentProfile | null = { ...PROFILES.slow, kbps: 8 };
+    const wrap = createImpairment(() => profile, 4, { clock });
+    const channel = wrap(inner.channel, { peer: "b", kind: "ctl" });
+    const got: string[] = [];
+    channel.onmessage = (data) => got.push(String(data));
+    for (let i = 0; i < 20; i++) {
+      if (i === 10) profile = null;
+      inner.channel.onmessage?.(`${i}`.padEnd(100, " "));
+      clock.advance(1);
+    }
+    clock.advance(10_000);
+    assert.deepEqual(
+      got.map((text) => Number(text.trim())),
+      Array.from({ length: 20 }, (_, i) => i),
+    );
+  });
+
   it("stops delivering when closed", () => {
     const clock = fakeClock();
     const inner = fakeChannel();

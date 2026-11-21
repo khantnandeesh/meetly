@@ -144,6 +144,11 @@ export type ScenarioOptions = {
 
 const SYNTHETIC: NonNullable<SwarmConfig["program"]> = { source: "synthetic", bitrateKbps: 1200, fps: 30, keyIntervalFrames: 60 };
 const CAMERA: NonNullable<SwarmConfig["program"]> = { source: "camera", bitrateKbps: 600, fps: 30, keyIntervalFrames: 60 };
+/**
+ * The gate's program: a real encode, so that a few viewers can decode it (D29), padded to the
+ * session's 1,200 kbps, so that the "slow" viewers' 900 kbps really is under it (SPEC §12.3).
+ */
+const GATE_PROGRAM: NonNullable<SwarmConfig["program"]> = { source: "camera", bitrateKbps: 1200, fps: 30, keyIntervalFrames: 60, pad: true };
 
 export const SCENARIOS = {
   /** The CI smoke test: the proof's tree and its one killed relay, with every viewer decoding. */
@@ -213,7 +218,8 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     case "gate-small":
     case "gate": {
       const peers = options.peers ?? (name === "gate" ? 200 : 30);
-      const config = { ...base, peers, mix: GATE_MIX, joinPerS: name === "gate" ? 4 : 3, decodeEvery: 0, pagesPerBrowser: 10 };
+      // Most viewers light, one in `decodeEvery` decoding as the check on them (D29, SPEC §13.2).
+      const config = { ...base, peers, mix: GATE_MIX, joinPerS: name === "gate" ? 4 : 3, decodeEvery: name === "gate" ? 20 : 8, pagesPerBrowser: 10, program: GATE_PROGRAM };
       const from = fillS(config) + 5;
       const churnS = options.churnS ?? (name === "gate" ? 600 : 120);
       // Each kill orphans a relay's children: about three repairs a kill once the tree is full.

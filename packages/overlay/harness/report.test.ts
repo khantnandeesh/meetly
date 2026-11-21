@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { LATENCY_BUCKET_EDGES_MS, decodeMetricsSample, emptyHistogram, latencyBucket, type MetricsEvent, type MetricsSample } from "@meetly/overlay";
-import { buildReport, exactQuantiles, histogramQuantiles, renderReport, reportJson } from "@meetly/overlay/harness/report";
+import { buildReport, exactQuantiles, histogramQuantiles, largestValid, renderReport, renderSizes, reportJson } from "@meetly/overlay/harness/report";
 import { GATE_MIX, PROFILES, churnSteps, gateChurn, joinAtS, profileOf, scenario, shardOf } from "@meetly/overlay/harness/scenarios";
 import { pickPeer } from "@meetly/overlay/harness/shard";
 import type { ShardResult } from "@meetly/overlay/harness/types";
@@ -191,6 +191,57 @@ describe("harness report", () => {
     assert.match(text.split("\n").slice(0, 5).join("\n"), /Stand-in, not the engine/);
     assert.match(text, /STUBBED: index\.createOverlayViewer, media\.createPlayer/);
     assert.doesNotMatch(renderReport(buildReport(goodRun())), /Stand-in/);
+  });
+
+  it("splits latency into decoding and light viewers, and says when the light ones are not honest (D29)", () => {
+    const results = goodRun();
+    // a0..a59 at 100–120 ms decode; b0..b59 at 200–220 ms are light: 100 ms apart at p50.
+    results[0].decoders = results[0].samples.map((s) => s.peer);
+    results[1].decoders = [];
+    const apart = buildReport(results);
+    assert.deepEqual([apart.glassToGlassDecoding.p50, apart.glassToGlassLight.p50], [110, 210]);
+    assert.deepEqual(apart.honesty.map((c) => [c.value, c.pass]), [[100, false]]);
+    assert.ok(apart.gate.notes.some((note) => /light viewers' numbers are suspect/.test(note)));
+    assert.equal(apart.gate.valid, true, "D29 is a note on the numbers, not one of SPEC §12.3's reasons");
+    assert.match(renderReport(apart), /Can the instrument be believed\?/);
+
+    // A few decoders among many light viewers, agreeing to a bucket.
+    const close = goodRun();
+    close[0].decoders = ["a0", "a1"];
+    close[1].decoders = [];
+    for (const s of close[1].samples) s.video!.glassToGlass = hist([100, 110, 130]);
+    const agree = buildReport(close);
+    assert.deepEqual(agree.honesty.map((c) => c.pass), [true]);
+
+    // Not told who decoded: no split at all.
+    assert.deepEqual([buildReport(goodRun()).glassToGlassDecoding.n, buildReport(goodRun()).honesty], [0, []]);
+  });
+
+  it("gives clock uncertainty shard by shard, and names a shard whose cross-machine sum is over 20 ms", () => {
+    const results = goodRun();
+    results[1].clock = { source: null, viewers: [16, 17, 25] };
+    const report = buildReport(results);
+    assert.deepEqual(report.clockByShard, [
+      { shard: 0, viewers: 3, p95: 7, max: 7 },
+      { shard: 1, viewers: 3, p95: 27, max: 27 },
+    ]);
+    assert.equal(report.gate.valid, false);
+    assert.ok(report.gate.notes.some((note) => /^shard 1: clock uncertainty p95 27 ms/.test(note)));
+    assert.match(renderReport(report), /\| 1 \| 4 \| 2 \| 10 \| 27 \|/);
+  });
+
+  it("finds the largest size that was a valid measurement (H4)", () => {
+    const at = (peers: number, lagMs: number): ShardResult[] =>
+      goodRun().map((s) => ({ ...s, peers, expect: { peers, minRepairs: 10 }, host: { ...s.host, pageLag: lagOf(lagMs) } }));
+    const sizes = largestValid([buildReport(at(60, 90)), buildReport(at(30, 8)), buildReport(at(45, 20))]);
+    assert.equal(sizes.peers, 45);
+    assert.deepEqual(
+      sizes.runs.map((r) => [r.peers, r.valid, r.lagP99Ms]),
+      [[30, true, 10], [45, true, 20], [60, false, 90]],
+    );
+    assert.deepEqual(sizes.runs[2].why, ["event-loop lag p99 on the worst shard (ms)"]);
+    assert.match(renderSizes(sizes), /Largest valid run: 45 peers/);
+    assert.equal(largestValid([buildReport(at(60, 90))]).peers, null);
   });
 });
 

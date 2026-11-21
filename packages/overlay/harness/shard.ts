@@ -74,6 +74,8 @@ type PeerHandle = {
   state: PageState | null;
   links: { peer: PeerId; open: boolean; failed: boolean; turn: boolean; candidates: string | null }[];
   clockMax: number;
+  /** Decodes for real (D29); the rest are light. */
+  decode: boolean;
 };
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -131,7 +133,9 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   const realCoordinatorBuilt = !stubbed.includes("coordinator.startNodeCoordinator");
   if (wanted === "real" && !realCoordinatorBuilt) throw new Error("coordinator: \"real\" was asked for, but startNodeCoordinator is still a stub");
   const useReal = ownsCoordinator && (wanted === "real" || (wanted === "auto" && realCoordinatorBuilt));
-  const coordinatorOptions = { port: Number(url.port), host: url.hostname, admissionSecret: config.admissionSecret, serverSecret: SERVER_SECRET, params: config.params, seed: config.seed, iceServers: config.iceServers };
+  // One store across a kill and a restart, as a Durable Object's storage outlives its eviction: the
+  // session's key and clock survive, so peers can `resume` (the package's coordinator reads it).
+  const coordinatorOptions = { port: Number(url.port), host: url.hostname, admissionSecret: config.admissionSecret, serverSecret: SERVER_SECRET, params: config.params, seed: config.seed, iceServers: config.iceServers, storage: new Map<string, Map<string, string>>() };
   let coordinator: NodeCoordinator | StandinCoordinator | null = null;
   if (ownsCoordinator) {
     coordinator = useReal ? await startNodeCoordinator(coordinatorOptions) : await startStandinCoordinator(coordinatorOptions);
@@ -188,7 +192,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     const profile = profileOf(config, index);
     try {
       const page = await newPage();
-      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1 };
+      const decode = role === "viewer" && config.decodeEvery > 0 && (index - 1) % config.decodeEvery === 0;
+      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1, decode };
       page.on("crash", () => {
         if (!handle.alive) return;
         handle.alive = false;
@@ -202,7 +207,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
         room: config.room,
         ticket: await ticket(index, role),
         role,
-        decode: role === "viewer" && config.decodeEvery > 0 && (index - 1) % config.decodeEvery === 0,
+        decode,
         profile,
         seed: config.seed,
         engine: config.engine ?? "auto",
@@ -296,7 +301,13 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
           await window.__overlay.leave();
           return window.__overlay.takeSamples();
         }, null);
-        for (const sample of last) samples.push(sample);
+        for (const sample of last) {
+          try {
+            samples.push(decodeMetricsSample(JSON.stringify(sample)));
+          } catch {
+            badSamples++;
+          }
+        }
       } catch {
         // It was already going.
       }
@@ -311,7 +322,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   /* ------------------------------ the run ------------------------------ */
 
   try {
-    server = await servePage(Number(url.port) + 1 + config.shard.index, await bundlePage());
+    // Beside the coordinator's port; a coordinator on another machine (an https URL with no port) leaves 4280 + 1 + shard.
+    server = await servePage((Number(url.port) || 4280) + 1 + config.shard.index, await bundlePage());
     const joins = Array.from({ length: config.peers }, (_, index) => index)
       .filter(mine)
       .map((index) => ({ atS: joinAtS(config, index), index }));
@@ -358,10 +370,10 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
 
   const local = new Set<PeerId>();
   for (const peer of peers.values()) if (peer.state?.peer) local.add(peer.state.peer);
-  const links: LinkCounts = { opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0 };
+  const links: LinkCounts = { opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0, crossShardFailed: 0 };
   const impairment: ImpairmentCounters = { sent: 0, delivered: 0, lost: 0, queueDropped: 0, lateMsSum: 0, lateMsMax: 0 };
   for (const peer of peers.values()) {
-    const counts: LinkCounts = { opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0 };
+    const counts: LinkCounts = { opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0, crossShardFailed: 0 };
     for (const link of peer.links) {
       // Each link has two ends; count it at the end that sorts first, or here if the other end is elsewhere.
       const elsewhere = !local.has(link.peer);
@@ -374,6 +386,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
         counts.crossShard++;
         if (link.turn) counts.crossShardTurn++;
       }
+      if (elsewhere && link.failed) counts.crossShardFailed = (counts.crossShardFailed ?? 0) + 1;
     }
     addLinks(links, counts);
     const i = peer.state?.impairment;
@@ -410,6 +423,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     stubbed: [...new Set(stubbed)].sort(),
     clock: { source: source && source.clockMax >= 0 ? source.clockMax : null, viewers: viewers.map((p) => p.clockMax) },
     links,
+    decoders: [...peers.values()].filter((p) => p.decode && p.state?.peer).map((p) => p.state!.peer as PeerId),
     impairment,
     churnLog,
     notes,

@@ -7,6 +7,8 @@
  *   node packages/overlay/harness/swarm.mjs run gate --shard 2/8 --coordinator https://… --start-at 1767000000000 --ice stun
  *   node packages/overlay/harness/swarm.mjs coordinator --scenario gate --port 4280 --for 800
  *   node packages/overlay/harness/swarm.mjs report out/ --require valid
+ *   node packages/overlay/harness/swarm.mjs sizes out-30/ out-45/ out-60/   (H4: the largest valid size)
+ *   node packages/overlay/harness/swarm.mjs modules                         (H6: what is real, what is a stub)
  *
  * Owner: E-harness.
  */
@@ -14,11 +16,11 @@ import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "n
 import { join } from "node:path";
 import { startNodeCoordinator } from "../coordinator/node";
 import type { NodeCoordinator } from "../coordinator/types";
-import { buildReport, renderReport, reportJson } from "./report";
+import { buildReport, largestValid, renderReport, renderSizes, reportJson } from "./report";
 import { SCENARIOS, churnSteps, scenario, type ScenarioName } from "./scenarios";
 import { runShard } from "./shard";
 import { startStandinCoordinator, type StandinCoordinator } from "./standin/coordinator";
-import { probeStubs } from "./stubs";
+import { MODULES, probeStubs } from "./stubs";
 import type { ShardResult, SwarmConfig } from "./types";
 
 function parse(argv: string[]): { words: string[]; flags: Map<string, string> } {
@@ -67,7 +69,23 @@ function configFrom(name: string, flags: Map<string, string>): SwarmConfig {
   if (decodeEvery !== undefined) config.decodeEvery = decodeEvery;
   const stun = flags.get("stun");
   if (stun) config.iceServers = stun.split(",").map((urls) => ({ urls: [urls] }));
+  const durationS = number(flags, "duration-s");
+  if (durationS !== undefined) config.durationS = durationS;
   return config;
+}
+
+/** Every shard-N.json under `paths`, grouped by the directory it is in: one run per directory. */
+function readRuns(paths: string[]): ShardResult[][] {
+  const runs = new Map<string, ShardResult[]>();
+  const walk = (path: string): void => {
+    if (statSync(path).isDirectory()) for (const entry of readdirSync(path)) walk(join(path, entry));
+    else if (/shard-\d+\.json$/.test(path)) {
+      const dir = path.slice(0, path.lastIndexOf("/"));
+      runs.set(dir, [...(runs.get(dir) ?? []), JSON.parse(readFileSync(path, "utf8")) as ShardResult]);
+    }
+  };
+  for (const path of paths) walk(path);
+  return [...runs.values()];
 }
 
 function readResults(paths: string[]): ShardResult[] {
@@ -111,6 +129,13 @@ async function main(): Promise<number> {
     const config = configFrom(rest[0] ?? "", flags);
     config.log = log;
     const result = await runShard(config);
+    const merged = flags.get("merged");
+    if (merged) {
+      // What merge.sh brought in before this run (PLAN H6): the report names it beside the stubs.
+      for (const m of JSON.parse(readFileSync(merged, "utf8")) as { branch: string; sha?: string; result: string }[]) {
+        (result.notes ??= []).push(`${m.branch}${m.sha ? ` at ${m.sha}` : ""}: ${m.result === "merged" ? "merged in before the run" : `NOT merged (${m.result})`}`);
+      }
+    }
     if (out) {
       mkdirSync(out, { recursive: true });
       writeFileSync(join(out, `shard-${config.shard.index}.json`), JSON.stringify(result));
@@ -119,6 +144,35 @@ async function main(): Promise<number> {
     // One shard of several cannot be judged alone: the report job does that.
     if (config.shard.count > 1) return 0;
     return writeReport([result], out, flags.get("require") ?? "none");
+  }
+
+  if (command === "sizes") {
+    // H4: one run per directory, each of one size; which was the largest that was valid?
+    const runs = readRuns(rest.length ? rest : ["."]);
+    if (runs.length === 0) throw new Error(`no shard-N.json under ${rest.join(", ")}`);
+    const result = largestValid(runs.map((run) => buildReport(run)));
+    const text = renderSizes(result);
+    if (out) {
+      mkdirSync(out, { recursive: true });
+      writeFileSync(join(out, "sizes.md"), text);
+      writeFileSync(join(out, "sizes.json"), JSON.stringify(result, null, 1));
+    }
+    console.log(text);
+    return result.peers === null && flags.get("require") === "valid" ? 2 : 0;
+  }
+
+  if (command === "modules") {
+    // H6: what a gate run would be running, before it is run.
+    const stubbed = new Set(probeStubs());
+    console.log("| Module | Factory | Owner | |\n| --- | --- | --- | --- |");
+    for (const m of MODULES) console.log(`| ${m.name.split(".")[0]} | \`${m.name.split(".")[1]}\` | ${m.owner} | ${stubbed.has(m.name) ? "**STUB**" : "real"} |`);
+    const real = MODULES.length - stubbed.size;
+    console.log(`\n${real} of ${MODULES.length} real. ${stubbed.has("index.createOverlayViewer") ? "The composition root is a stub: the pages will run the harness's STAND-IN peer." : "The pages will run the package's own peer."} ${stubbed.has("coordinator.startNodeCoordinator") ? "The coordinator will be the harness's STAND-IN." : "The coordinator will be the package's."}`);
+    if (out) {
+      mkdirSync(out, { recursive: true });
+      writeFileSync(join(out, "modules.json"), JSON.stringify(MODULES.map((m) => ({ ...m, stub: stubbed.has(m.name) })), null, 1));
+    }
+    return 0;
   }
 
   if (command === "report") {
@@ -140,6 +194,8 @@ async function main(): Promise<number> {
       params: config.params,
       seed: config.seed,
       iceServers: stun ? stun.split(",").map((urls) => ({ urls: [urls] })) : [],
+      // Survives the kill below, so the session's key and clock do (see shard.ts).
+      storage: new Map<string, Map<string, string>>(),
     };
     const real = !probeStubs().includes("coordinator.startNodeCoordinator") && flags.get("standin") !== "true";
     let coordinator: NodeCoordinator | StandinCoordinator = real ? await startNodeCoordinator(options) : await startStandinCoordinator(options);
@@ -166,7 +222,7 @@ async function main(): Promise<number> {
     return 0;
   }
 
-  console.log("usage: swarm.mjs scenarios | run <scenario> [--peers N --seed N --churn-s N --shard i/n --coordinator URL --secret S --start-at MS --ice host|stun|turn --stun URL --out DIR --require valid|pass] | coordinator [--scenario S --port N --for S] | report <dir> [--out DIR --require valid|pass]");
+  console.log("usage: swarm.mjs scenarios | modules | run <scenario> [--peers N --seed N --churn-s N --duration-s N --shard i/n --coordinator URL --secret S --start-at MS --ice host|stun|turn --stun URL --decode-every N --out DIR --require valid|pass] | coordinator [--scenario S --port N --for S] | report <dir> [--out DIR --require valid|pass] | sizes <dir>... [--out DIR]");
   return command ? 64 : 0;
 }
 

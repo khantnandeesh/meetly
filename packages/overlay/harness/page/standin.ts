@@ -694,7 +694,7 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     }
     if (!late) awaitingOutput.set(frame.id, frame.captureMs);
     try {
-      decoder.decode(new EncodedVideoChunk({ type: frame.flags & MediaFlag.Key ? "key" : "delta", timestamp: frame.id * 1000, data }));
+      decoder.decode(new EncodedVideoChunk({ type: frame.flags & MediaFlag.Key ? "key" : "delta", timestamp: frame.id * 1000, data: program.pad ? unpadFrame(data) : data }));
     } catch (e) {
       error = `decode: ${String(e)}`;
     }
@@ -1285,25 +1285,47 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     return { temporal: 2, refDelta: 1 };
   }
 
-  function startSynthetic(): void {
-    // Frames of the sizes an encoder at this bitrate would make, with nothing in them.
+  /** The size an encoder at the program's bitrate would make a frame of this layer. */
+  function syntheticBytes(key: boolean, temporal: number): number {
     const meanBytes = (program.bitrateKbps * 1000) / 8 / program.fps;
     const weights = { key: 6, 0: 1.4, 1: 1, 2: 0.7 };
     const perGop = weights.key + (program.keyIntervalFrames / 4 - 1) * weights[0] + (program.keyIntervalFrames / 4) * weights[1] + (program.keyIntervalFrames / 2) * weights[2];
     const unit = (meanBytes * program.keyIntervalFrames) / perGop;
+    return Math.max(1, Math.round(unit * (key ? weights.key : weights[Math.min(2, temporal) as 0 | 1 | 2])));
+  }
+
+  function startSynthetic(): void {
+    // Frames of the sizes an encoder at this bitrate would make, with nothing in them.
     let id = 0;
     const t0 = clock.now();
+    let cancel: Cancel | null = null;
+    timers.push(() => cancel?.());
     const next = (): void => {
       if (leaving) return;
       const sinceKey = id % program.keyIntervalFrames;
       const { temporal, refDelta } = layerOf(sinceKey);
       const key = sinceKey === 0;
-      const bytes = Math.max(1, Math.round(unit * (key ? weights.key : weights[temporal as 0 | 1 | 2])));
-      publish((key ? MediaFlag.Key : 0) | (temporal === 2 ? MediaFlag.Discardable : 0), temporal, refDelta, sinceKey, id, sessionNow(), new Uint8Array(bytes));
+      publish((key ? MediaFlag.Key : 0) | (temporal === 2 ? MediaFlag.Discardable : 0), temporal, refDelta, sinceKey, id, sessionNow(), new Uint8Array(syntheticBytes(key, temporal)));
       id++;
-      timers.push(clock.setTimeout(next, Math.max(0, t0 + id * frameMs - clock.now())));
+      cancel = clock.setTimeout(next, Math.max(0, t0 + id * frameMs - clock.now()));
     };
     next();
+  }
+
+  /**
+   * A padded camera frame (`program.pad`): its length, the encoded frame, then zeros up to the
+   * synthetic size of its layer, so the stream is as big as asked and still decodes.
+   */
+  function padFrame(data: Uint8Array, key: boolean, temporal: number): Uint8Array<ArrayBuffer> {
+    const out = new Uint8Array(4 + Math.max(data.byteLength, syntheticBytes(key, temporal)));
+    new DataView(out.buffer).setUint32(0, data.byteLength);
+    out.set(data, 4);
+    return out;
+  }
+  function unpadFrame(data: Uint8Array): Uint8Array {
+    if (data.byteLength < 4) return data;
+    const length = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0);
+    return data.subarray(4, 4 + Math.min(length, data.byteLength - 4));
   }
 
   async function startCamera(): Promise<void> {
@@ -1323,8 +1345,9 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
         if (key) sinceKey = 0;
         // What a frame needs: the newest frame of a lower layer, or for the base layer the last base frame.
         const reference = key ? id : temporal === 0 ? lastBase : temporal === 1 ? lastBase : lastLower;
-        const data = new Uint8Array(chunk.byteLength);
+        let data = new Uint8Array(chunk.byteLength);
         chunk.copyTo(data);
+        if (program.pad) data = padFrame(data, key, temporal);
         const captureMs = captures.get(chunk.timestamp) ?? sessionNow();
         captures.delete(chunk.timestamp);
         publish((key ? MediaFlag.Key : 0) | (temporal === 2 ? MediaFlag.Discardable : 0), temporal, Math.min(255, id - reference), sinceKey, id, captureMs, data);
@@ -1358,7 +1381,9 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     localConnect = clock.now();
     await new Promise<void>((resolve, reject) => {
       welcomed = resolve;
-      clock.setTimeout(() => reject(new Error("no welcome from the coordinator within 15 s")), 15000);
+      // Long enough to outlast the gate's 30 s coordinator outage: a viewer who arrives while the
+      // coordinator is dead keeps knocking, as a person would wait, and joins late, not never.
+      clock.setTimeout(() => reject(new Error("no welcome from the coordinator within 60 s")), 60_000);
       connectCoordinator().catch(reject);
     });
     // The session clock must be known before anything is stamped with it.
@@ -1438,7 +1463,8 @@ export function createStandinPeer(options: StandinOptions): StandinPeer {
     get error() {
       return error;
     },
-    clockUncertaintyMs: () => uncertaintyMs,
+    // Half the best round trip, plus however far the offset still has to slew to the best estimate (SPEC §4.1).
+    clockUncertaintyMs: () => (uncertaintyMs === Infinity ? Infinity : uncertaintyMs + Math.abs(offsetTarget - currentOffset(clock.now()))),
     links: () => everLinked.map((l) => ({ peer: l.peer, open: l.open, failed: l.failed, turn: l.turn, candidates: l.candidates })),
     parent: () => up.parent,
     backup: () => up.backup,

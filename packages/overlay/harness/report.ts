@@ -12,6 +12,12 @@ import { GATE, type GateCheck, type ImpairmentCounters, type LinkCounts, type Qu
 /** The gate's limits on the run itself (SPEC §12.3). */
 export const VALIDITY = { minRepairs: 100, lagP99Ms: 50, clockSumP95Ms: 20 } as const;
 
+/**
+ * D29: light viewers must agree with decoding ones to within the decode time. PLAN M5 puts that
+ * at 15 ms between their p50s; a 10 ms bucket either way is within it.
+ */
+export const HONESTY = { lightVsDecodingP50Ms: 15 } as const;
+
 /** Quantiles of a histogram on the 97 latency buckets, as bucket upper edges. */
 export function histogramQuantiles(counts: readonly number[]): Quantiles {
   const n = counts.reduce((a, b) => a + b, 0);
@@ -25,7 +31,7 @@ export function exactQuantiles(values: readonly number[]): Quantiles {
   return { n: sorted.length, p50: at(0.5), p95: at(0.95), p99: at(0.99), max: at(1) };
 }
 
-const emptyLinks = (): LinkCounts => ({ opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0 });
+const emptyLinks = (): LinkCounts => ({ opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0, crossShardFailed: 0 });
 
 export function addLinks(into: LinkCounts, from: LinkCounts | undefined): LinkCounts {
   if (!from) return into;
@@ -34,6 +40,7 @@ export function addLinks(into: LinkCounts, from: LinkCounts | undefined): LinkCo
   into.turn += from.turn;
   into.crossShard += from.crossShard;
   into.crossShardTurn += from.crossShardTurn;
+  into.crossShardFailed = (into.crossShardFailed ?? 0) + (from.crossShardFailed ?? 0);
   for (const [kind, count] of Object.entries(from.candidates)) into.candidates[kind] = (into.candidates[kind] ?? 0) + count;
   return into;
 }
@@ -53,6 +60,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const join = emptyHistogram();
   const repair = emptyHistogram();
   const glass = emptyHistogram();
+  const glassDecoding = emptyHistogram();
+  const glassLight = emptyHistogram();
   const freeze = emptyHistogram();
   const lag = emptyHistogram();
   const byDepth = new Map<number, number[]>();
@@ -74,6 +83,13 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   let lagMissing = false;
 
   const seen = new Set<string>();
+  const decoders = new Set<string>();
+  let decodersKnown = false;
+  for (const shard of shards) {
+    if (shard.decoders) decodersKnown = true;
+    for (const peer of shard.decoders ?? []) decoders.add(peer);
+  }
+  const clockByShard: SwarmReport["clockByShard"] = [];
   const sample = (s: MetricsSample): void => {
     const key = `${s.peer}/${s.seq}`;
     if (seen.has(key)) return;
@@ -83,6 +99,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
       frames.dropped += s.video.dropped;
       frames.lost += s.video.lost;
       mergeHistogram(glass, s.video.glassToGlass);
+      if (decodersKnown) mergeHistogram(decoders.has(s.peer) ? glassDecoding : glassLight, s.video.glassToGlass);
       let depth = byDepth.get(s.depth);
       if (!depth) byDepth.set(s.depth, (depth = emptyHistogram()));
       mergeHistogram(depth, s.video.glassToGlass);
@@ -136,7 +153,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     }
     if (p99 === null) lagMissing = true;
     else worstLagP99 = worstLagP99 === null ? p99 : Math.max(worstLagP99, p99);
-    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), lagP99Ms: p99 });
+    const joins = shard.samples.reduce((n, s) => n + s.events.filter((e) => e.t === "join").length, 0);
+    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins });
     for (const note of shard.notes ?? []) notes.push(`shard ${shard.shard.index}: ${note}`);
   }
   failed.sort((a, b) => a.shard - b.shard || a.index - b.index);
@@ -146,6 +164,13 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const peers = first?.peers ?? peersStarted;
   const clockSums = sourceClock === null ? [] : viewerClocks.map((viewer) => viewer + (sourceClock as number));
   const clockUncertaintyMs = exactQuantiles(clockSums);
+  for (const shard of shards) {
+    const sums = sourceClock === null || !shard.clock ? [] : shard.clock.viewers.map((viewer) => viewer + (sourceClock as number));
+    const q = exactQuantiles(sums);
+    clockByShard.push({ shard: shard.shard.index, viewers: q.n, p95: q.p95, max: q.max });
+  }
+  const worstShardClock = clockByShard.filter((c) => c.p95 !== null && c.p95 > VALIDITY.clockSumP95Ms);
+  for (const c of worstShardClock) notes.push(`shard ${c.shard}: clock uncertainty p95 ${Math.round((c.p95 as number) * 10) / 10} ms is over ${VALIDITY.clockSumP95Ms} ms: its viewers' latencies cannot be trusted`);
 
   const joinMs = histogramQuantiles(join);
   const repairMs = histogramQuantiles(repair);
@@ -164,6 +189,14 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     below("event-loop lag p99 on the worst shard (ms)", lagMissing ? null : worstLagP99, VALIDITY.lagP99Ms),
     below("clock uncertainty, viewer plus source, p95 (ms)", clockMissing ? null : clockUncertaintyMs.p95, VALIDITY.clockSumP95Ms),
   ];
+  const decodingQ = histogramQuantiles(glassDecoding);
+  const lightQ = histogramQuantiles(glassLight);
+  const honesty: GateCheck[] = [];
+  if (decodingQ.n > 0 && lightQ.n > 0) {
+    const gap = Math.abs((decodingQ.p50 as number) - (lightQ.p50 as number));
+    honesty.push(below("light viewers' latency p50 against decoding viewers' (ms apart)", gap, HONESTY.lightVsDecodingP50Ms));
+    if (gap > HONESTY.lightVsDecodingP50Ms) notes.push(`light and decoding viewers disagree by ${gap} ms at p50 (D29 allows ${HONESTY.lightVsDecodingP50Ms}): the light viewers' numbers are suspect`);
+  } else if (decodersKnown) notes.push(decodingQ.n === 0 ? "no viewer decoded for real: the light viewers are unchecked (D29)" : "every viewer decoded: no light viewer to check");
   if (lagMissing) notes.push("a shard did not report its event-loop lag: starvation cannot be ruled out");
   if (clockMissing || sourceClock === null) notes.push("clock uncertainty was not reported by every shard, or not by the source's: latency cannot be trusted");
   if (stubbed.size) notes.push(`STUBBED: ${[...stubbed].sort().join(", ")}. These numbers are the harness's stand-in, not the overlay engine.`);
@@ -180,6 +213,10 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     joinMs,
     repairMs,
     glassToGlassMs,
+    glassToGlassDecoding: decodingQ,
+    glassToGlassLight: lightQ,
+    honesty,
+    clockByShard,
     glassToGlassByDepth: Object.fromEntries([...byDepth.entries()].sort((a, b) => a[0] - b[0]).map(([depth, counts]) => [depth, histogramQuantiles(counts)])),
     repairs,
     freezes,
@@ -225,18 +262,24 @@ export function renderReport(report: SwarmReport): string {
   lines.push(row("Glass-to-glass latency", report.glassToGlassMs, ""));
   lines.push(row("Freezes (over 200 ms)", report.freezeMs, ""));
   for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) lines.push(row(`Latency at depth ${depth}`, q, ""));
+  if (report.glassToGlassDecoding.n) lines.push(row("Latency, decoding viewers (D29)", report.glassToGlassDecoding, ""));
+  if (report.glassToGlassLight.n) lines.push(row("Latency, light viewers (D29)", report.glassToGlassLight, ""));
   lines.push("", "Histogram quantiles are bucket upper edges: up to 10 ms over below 500 ms, never under.", "");
   lines.push("| Gate check | Limit | Measured | |", "| --- | ---: | ---: | --- |");
   for (const check of gate.checks) lines.push(`| ${check.name} | ${check.limit} | ${ms(check.value)} | ${tick(check.pass)} |`);
   lines.push("", "| Is the run a measurement? | Limit | Measured | |", "| --- | ---: | ---: | --- |");
   for (const check of gate.validity) lines.push(`| ${check.name} | ${check.limit} | ${ms(check.value)} | ${tick(check.pass)} |`);
+  if (report.honesty.length) {
+    lines.push("", "| Can the instrument be believed? | Limit | Measured | |", "| --- | ---: | ---: | --- |");
+    for (const check of report.honesty) lines.push(`| ${check.name} | ${check.limit} | ${ms(check.value)} | ${tick(check.pass)} |`);
+  }
   lines.push("");
   const r = report.repairs;
   lines.push(`Repairs: ${r.warm} warm, ${r.cold} cold, ${r.wait} wait; ${r.usedCoordinator} used the coordinator; ${r.framesLost} frames lost across them.`);
   lines.push(`Frames: ${report.frames.rendered} rendered, ${report.frames.dropped} dropped, ${report.frames.lost} lost. Freezes: ${report.freezes.count}, ${Math.round(report.freezes.totalMs)} ms in all.`);
   const l = report.links;
   const turnShare = l.opened ? Math.round((1000 * l.turn) / l.opened) / 10 : 0;
-  const cross = l.crossShard ? ` Between shards: ${l.crossShard}, of which ${l.crossShardTurn} through TURN.` : "";
+  const cross = l.crossShard || l.crossShardFailed ? ` Between shards: ${l.crossShard} opened, of which ${l.crossShardTurn} through TURN; ${l.crossShardFailed ?? 0} never opened.` : "";
   lines.push(`Links: ${l.opened} opened, ${l.failed} failed, ${l.turn} through TURN (${turnShare}%).${cross} Candidates: ${JSON.stringify(l.candidates)}.`);
   if (report.impairment) {
     const i = report.impairment;
@@ -244,8 +287,11 @@ export function renderReport(report: SwarmReport): string {
     lines.push(`Impairment shim: ${i.sent} packets, ${lossPct}% dropped as loss, ${i.queueDropped} dropped at a full queue; delivered ${ms(i.lateMsMean)} ms late on average, ${ms(i.lateMsMax)} ms at worst.`);
   }
   lines.push(`Clock uncertainty (viewer + source): p50 ${ms(report.clockUncertaintyMs.p50)}, p95 ${ms(report.clockUncertaintyMs.p95)}, max ${ms(report.clockUncertaintyMs.max)} ms over ${report.clockUncertaintyMs.n} viewers.`);
-  lines.push("", "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) |", "| ---: | ---: | ---: | ---: |");
-  for (const host of report.hosts) lines.push(`| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} |`);
+  lines.push("", "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Peers started | Failed | First frames |", "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
+  for (const host of report.hosts) {
+    const clock = report.clockByShard.find((c) => c.shard === host.shard);
+    lines.push(`| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} |`);
+  }
   if (report.failed.length) {
     lines.push("", "Peers that failed:");
     for (const f of report.failed.slice(0, 20)) lines.push(`- shard ${f.shard}, peer ${f.index}: ${f.why}`);
@@ -260,3 +306,42 @@ export function renderReport(report: SwarmReport): string {
 /** JSON has no Infinity: a quantile in the open last bucket is written as this many milliseconds. */
 export const OPEN_BUCKET_MS = 1e9;
 export const reportJson = (report: SwarmReport): string => JSON.stringify(report, (_key, value: unknown) => (value === Infinity ? OPEN_BUCKET_MS : value), 1);
+
+/* ------------------------------ H4: how many fit ------------------------------ */
+
+export type SizeRun = { peers: number; verdict: SwarmReport["gate"]["verdict"]; valid: boolean; lagP99Ms: number | null; why: string[] };
+
+/**
+ * PLAN H4: of runs of one scenario at several sizes on one machine, the largest that was a valid
+ * measurement. A run is judged by its own validity checks, so "valid" means the machine kept up
+ * (event-loop lag), the clocks were good enough and no peer failed, not that the overlay passed.
+ */
+export function largestValid(reports: SwarmReport[]): { peers: number | null; runs: SizeRun[] } {
+  const runs: SizeRun[] = reports
+    .map((report) => {
+      const lags = report.hosts.map((host) => host.lagP99Ms);
+      return {
+        peers: report.peers,
+        verdict: report.gate.verdict,
+        valid: report.gate.valid,
+        lagP99Ms: lags.length && lags.every((lag) => lag !== null) ? Math.max(...(lags as number[])) : null,
+        why: report.gate.validity.filter((check) => !check.pass).map((check) => check.name),
+      };
+    })
+    .sort((a, b) => a.peers - b.peers);
+  const valid = runs.filter((run) => run.valid);
+  return { peers: valid.length ? valid[valid.length - 1].peers : null, runs };
+}
+
+export function renderSizes(result: ReturnType<typeof largestValid>): string {
+  const lines = [
+    "# How many peers fit on one machine (PLAN H4)",
+    "",
+    result.peers === null ? "**No size was a valid measurement.**" : `**Largest valid run: ${result.peers} peers.**`,
+    "",
+    "| Peers | Verdict | Event-loop lag p99, worst shard (ms) | Not valid because |",
+    "| ---: | --- | ---: | --- |",
+  ];
+  for (const run of result.runs) lines.push(`| ${run.peers} | ${run.verdict} | ${ms(run.lagP99Ms)} | ${run.why.join("; ") || "–"} |`);
+  return lines.join("\n") + "\n";
+}

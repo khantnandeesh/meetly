@@ -28,6 +28,18 @@ const PROBES: [name: string, call: () => unknown][] = [
   ["coordinator.startNodeCoordinator", () => startNodeCoordinator(undefined as never)],
 ];
 
+const OWNERS: Record<string, string> = {
+  index: "architect",
+  transport: "E-transport+topology",
+  topology: "E-transport+topology",
+  media: "E-media",
+  congestion: "E-congestion",
+  coordinator: "E-coordinator",
+};
+
+/** Every factory a gate run depends on, and whose it is. */
+export const MODULES: { name: string; owner: string }[] = PROBES.map(([name]) => ({ name, owner: OWNERS[name.split(".")[0]] ?? "?" }));
+
 /** The names of the factories that still throw `NotImplementedError`. A factory that throws anything else is built: it only disliked the probe's arguments. */
 export function probeStubs(): string[] {
   const stubbed: string[] = [];
