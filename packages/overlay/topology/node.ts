@@ -56,7 +56,7 @@ import type { EncodedFrame, LayerCap, LinkEstimate, ReceivedFrame } from "../typ
 import type { LayerGate, LinkEstimator, UplinkProbe } from "../congestion/types";
 import { Emitter } from "../transport/emitter";
 import { createReassembler } from "../transport/reassembler";
-import type { Link, SendClass } from "../transport/types";
+import type { Link, LinkCloseReason, SendClass } from "../transport/types";
 import { createGopCache } from "./gopCache";
 import { createParentSelector } from "./scoring";
 import type { Candidate, NodeStats, NodeStatus, OverlayNode, OverlayNodeEvents, OverlayNodeOptions, StripeState } from "./types";
@@ -370,6 +370,18 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   let coldLinkDeadline = 0;
   /** Peers that turned out to be no use as a backup, and until when not to ask them again. */
   const backupRejects = new Map<PeerId, number>();
+  /**
+   * Peers this node takes to be dead or out of reach, and until when: a parent it lost, a link
+   * that never opened or failed. Only these go in `need`'s `exclude`: the coordinator reads that
+   * list as dead and leaves out what hangs below them as well (coordinator/treeMap.ts), so a peer
+   * that merely said no (full, a loop) must not be in it. Those are skipped here instead.
+   */
+  const unreachable = new Map<PeerId, number>();
+  const markUnreachable = (id: PeerId, now: number) => unreachable.set(id, now + BACKUP_REJECT_MS);
+  const excluded = (now: number): PeerId[] => {
+    for (const [id, until] of unreachable) if (until <= now) unreachable.delete(id);
+    return [...unreachable.keys()];
+  };
   let rejoinAttempt = 0;
   let waitingSince = 0;
   let backupPending: Peer | null = null;
@@ -556,9 +568,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     peer.offs.push(
       link.on("packet", (packet, receivedAt) => onPacket(peer, packet, receivedAt)),
       link.on("message", (message) => onMessage(peer, message)),
-      link.on("state", (linkState) => {
+      link.on("state", (linkState, reason) => {
         if (linkState === "open") onLinkOpen(peer);
-        else if (linkState === "closed") onLinkClosed(peer);
+        else if (linkState === "closed") onLinkClosed(peer, reason);
       }),
     );
     return peer;
@@ -1377,6 +1389,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const lastHeard = why === "grace" && repair ? repair.lastHeard : dead.lastHeardAt;
     repair = { dead: dead.id, next: null, kind: "warm", lastHeard, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false };
     forgetPending(dead);
+    if (why !== "loop") markUnreachable(dead.id, now);
     if (previous && previous !== dead) {
       const older = previous;
       previous = null;
@@ -1452,7 +1465,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     coldRetryAt = now + COLD_RETRY_MS;
     if (!coordinator.connected) return;
     coldAsking = true;
-    coordinator.need(primaryId(), 0, "parent", [self, ...tried]).then(
+    coordinator.need(primaryId(), 0, "parent", [self, ...excluded(now).filter((id) => id !== self)]).then(
       (assignment) => {
         coldAsking = false;
         if (stopping || parent || next || (state !== "cold-repair" && state !== "rejoining") || !assignment) return;
@@ -1503,7 +1516,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     if (!coordinator.connected) return;
     backupAsking = true;
     for (const [id, until] of backupRejects) if (until <= now) backupRejects.delete(id);
-    coordinator.need(primaryId(), 0, "backup", [self, parent.id, ...backupRejects.keys()]).then(
+    // The parent too: a backup must not hang below it (SPEC §7.3), which is what excluding it asks.
+    coordinator.need(primaryId(), 0, "backup", [self, parent.id, ...excluded(now).filter((id) => id !== self && id !== parent!.id)]).then(
       (assignment) => {
         backupAsking = false;
         if (!assignment || stopping || backup || backupPending || !parent) return;
@@ -1610,9 +1624,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ links closing ------------------------------ */
 
-  function onLinkClosed(peer: Peer): void {
+  function onLinkClosed(peer: Peer, reason?: LinkCloseReason): void {
     const now = clock.now();
     const wasChild = peer.subs.size > 0;
+    // Gone, or never reachable: not to be offered to this node again for a while.
+    if (reason !== undefined && reason !== "local") markUnreachable(peer.id, now);
     detach(peer);
     if (wasChild) {
       if (!stopping) coordinator.report("child-gone", primaryId(), 0, peer.id);
@@ -1740,6 +1756,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       if (!next && candidates.length > 0 && coldLinkDeadline > 0 && now >= coldLinkDeadline) {
         // The candidate's link never opened.
         const stuck = candidates.shift()!;
+        markUnreachable(stuck.peer, now);
         tried.add(stuck.peer);
         const peer = peers.get(stuck.peer);
         if (peer) release(peer);
@@ -1774,6 +1791,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       backupPending = null;
       forgetPending(failed, "standby");
       backupRejects.set(failed.id, now + BACKUP_REJECT_MS);
+      if (failed.link.state !== "open") markUnreachable(failed.id, now);
       release(failed);
       backupRetryAt = now + COLD_RETRY_MS;
     }

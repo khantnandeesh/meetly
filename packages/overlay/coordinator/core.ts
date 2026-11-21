@@ -444,8 +444,11 @@ class Core implements CoordinatorCore {
           node.closedAt = null;
           node.caps = hello.caps;
         } else {
-          // The coordinator has been away and remembers nobody. The grant is its own word for the role.
-          node = newNode({ peer, identity: conn.identity, name: conn.name, ticketRole: conn.ticketRole, role: grant.role, caps: hello.caps, region: conn.region, conn: conn.id, joinedAt: now });
+          // The coordinator has been away and remembers nobody. The grant is its own word for the role,
+          // and for how long the peer has been here at least: since it was issued. Without that,
+          // every peer would start its probation (D18) over at a restart, and nobody could be
+          // promoted to make room for a joiner for 20 s (found integrating: overlay.test.ts).
+          node = newNode({ peer, identity: conn.identity, name: conn.name, ticketRole: conn.ticketRole, role: grant.role, caps: hello.caps, region: conn.region, conn: conn.id, joinedAt: Math.min(now, grant.iat * 1000) });
           node.lastStatusAt = 0;
         }
       }
