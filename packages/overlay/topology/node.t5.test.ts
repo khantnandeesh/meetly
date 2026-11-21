@@ -177,6 +177,69 @@ describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
   });
 });
 
+describe('node: the coordinator says "move" (coordinator/README.md, "Keeping the tree short")', () => {
+  /** The source feeds relays a and b; leaf L sits under a, standing by on b; relay c (under b) is free. */
+  async function tree() {
+    const net = new SimNet({ backups: false });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    net.join("a", "relay", ["0"]);
+    net.join("b", "relay", ["0"]);
+    await net.runAsync(300);
+    net.join("c", "relay", ["b"]);
+    await net.runAsync(300);
+    const leaf = net.join("L", "leaf", ["a"], ["b"]);
+    await net.runAsync(2000);
+    return { net, leaf };
+  }
+  const move = (net: SimNet, to: string, parents: string[]) =>
+    net.assign(to, [{ stream: 0, stripe: 0, parents: parents.map((peer) => ({ peer, depth: 1, free: 1 })), backups: [] }], "move");
+
+  it("changes to the first parent that will have it, make-before-break, whatever its cost rule says", async () => {
+    const { net, leaf } = await tree();
+    // c is deeper than a: the cost rule would never move there.
+    move(net, "L", ["c"]);
+    await net.runAsync(2000);
+    assert.equal(stateOf(leaf).parent, "c");
+    const [moved, ...more] = switches(leaf);
+    assert.deepEqual(more, []);
+    assert.deepEqual([moved.from, moved.to], ["a", "c"]);
+    assert.ok(moved.freezeMs < 50, `froze for ${moved.freezeMs} ms`);
+    assert.deepEqual(missing(leaf, Math.min(...leaf.video), net.published - 3), []);
+    assert.deepEqual(leaf.node.status().path, ["L", "c", "b", "0"]);
+    // The old parent stands by, and the old backup, b, is let go.
+    assert.equal(stateOf(leaf).backup, "a");
+    assert.ok(!net.nodes.get("b")!.node.status().standbyChildren.includes("L"));
+    assert.deepEqual(repairs(leaf), []);
+  });
+
+  it("tries the next when one will not have it, and stays where it is when none will", async () => {
+    const { net, leaf } = await tree();
+    // A leaf refuses ("denied"); the source is not on offer; c will.
+    net.join("x", "leaf", ["b"]);
+    await net.runAsync(500);
+    move(net, "L", ["x", "L", "c"]);
+    await net.runAsync(2000);
+    assert.equal(stateOf(leaf).parent, "c");
+    // Nobody will: it stays.
+    move(net, "L", ["x"]);
+    await net.runAsync(2000);
+    assert.deepEqual([stateOf(leaf).state, stateOf(leaf).parent], ["active", "c"]);
+    assert.equal(switches(leaf).length, 1);
+    assert.deepEqual(missing(leaf, Math.min(...leaf.video), net.published - 3), []);
+  });
+
+  it("never moves below itself", async () => {
+    const { net } = await tree();
+    // b is told to move under c, its own child.
+    move(net, "b", ["c"]);
+    await net.runAsync(2000);
+    assert.equal(stateOf(net.nodes.get("b")!).parent, "0");
+    assert.equal(stateOf(net.nodes.get("c")!).parent, "b");
+  });
+});
+
 describe("node: rebalancing (SPEC §7.6)", () => {
   /** A source, two relays, and a leaf placed under `a` with `b` standing by, at the one-way delays given. */
   async function twoParents(toA: number, toB: number) {

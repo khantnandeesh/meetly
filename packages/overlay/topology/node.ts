@@ -354,7 +354,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   let starvedSince: number | null = null;
   let lastSwitchAt = 0;
   let compareAt = 0;
-  let switching: { to: Peer; at: number; acked: boolean } | null = null;
+  let switching: { to: Peer; at: number; acked: boolean; move: boolean } | null = null;
+  /** The coordinator said "move": parents to try, in order, and the one whose link is opening. */
+  let moveTo: PeerId[] = [];
+  let moveLinking: Peer | null = null;
   let repair: RepairRecord | null = null;
   const finishing: { record: RepairRecord; at: number }[] = [];
   const switchesFinishing: { from: PeerId; to: PeerId; at: number; until: number }[] = [];
@@ -543,7 +546,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /** Closes a link this node opened and no longer has a use for. */
   const release = (peer: Peer) => {
-    if (peer === parent || peer === backup || peer === next || peer === backupPending || peer === previous || switching?.to === peer || peer.subs.size > 0) return;
+    if (peer === parent || peer === backup || peer === next || peer === backupPending || peer === previous || switching?.to === peer || peer === moveLinking || peer.subs.size > 0) return;
     if (!peer.mine) return;
     detach(peer);
     peer.link.close("local");
@@ -1317,6 +1320,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     } else if (peer === backupPending) {
       subscribe(peer, "standby", streams.values(), () => FROM_LIVE, false);
       backupDeadline = now + SUB_ACK_TIMEOUT_MS;
+    } else if (peer === moveLinking) {
+      moveTo.unshift(peer.id);
+      tryMove(now);
     }
     changed();
   }
@@ -1326,12 +1332,14 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   function parentDied(now: number, why: "silent" | "closed" | "leaving" | "loop" | "grace"): void {
     const dead = parent;
     if (!dead) return;
+    moveTo = [];
+    moveLinking = null;
     logger?.info("node", `${self}: parent ${dead.id} lost (${why})`);
     parent = null;
     depth = DEPTH_UNKNOWN;
     starvedSince = null;
     if (switching) {
-      // Already moving: the new parent is the repair.
+      // Already moving: the new parent is the repair, and a move is called off.
       const to = switching.to;
       switching = null;
       forgetPending(to, "switch");
@@ -1496,7 +1504,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     }
     if (!go) return;
     // Make before break: ask the new parent first, and leave the old one when its media arrives (SPEC §7.6).
-    switching = { to: backup, at: now, acked: false };
+    switching = { to: backup, at: now, acked: false, move: false };
     subscribe(backup, "switch", streams.values(), after, false);
   }
 
@@ -1513,9 +1521,18 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     lastSwitchAt = now;
     compareAt = now + REBALANCE_COMPARE_MS;
     setPath([self, ...(to.path ?? [to.id])]);
-    // The old parent becomes the backup.
+    // The old parent becomes the backup. One that was standing by elsewhere is let go.
+    for (const other of [backup, backupPending]) {
+      if (!other || other === to || other === from) continue;
+      if (other.link.state === "open") for (const stream of streams.values()) send(other, { t: "unsub", stream: stream.config.id, stripes: stream.stripes });
+      forgetPending(other, "standby");
+    }
+    const others = [backup, backupPending].filter((other): other is Peer => other !== null && other !== to && other !== from);
     backup = null;
     backupPending = null;
+    for (const other of others) release(other);
+    moveTo = [];
+    moveLinking = null;
     startStandby(from, now);
     switchesFinishing.push({ from: from.id, to: to.id, at: startedAt, until: now + REPAIR_WINDOW_MS });
     coordinator.report("parent-switch", primaryId(), 0, from.id, to.id);
@@ -1524,12 +1541,41 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   function cancelSwitch(now: number): void {
     if (!switching) return;
-    const to = switching.to;
+    const { to, move } = switching;
     switching = null;
     forgetPending(to, "switch");
     // Back to standing by.
     if (to.link.state === "open" && to === backup) subscribe(to, "standby", streams.values(), () => FROM_LIVE, false);
+    else if (to.link.state === "open" && to.subs.size === 0) {
+      for (const stream of streams.values()) send(to, { t: "unsub", stream: stream.config.id, stripes: stream.stripes });
+      release(to);
+    }
     compareAt = now + REBALANCE_COMPARE_MS;
+    if (move) tryMove(now);
+  }
+
+  /**
+   * "move" (coordinator/README.md, "Keeping the tree short"): change to the first of the parents
+   * given that will have this node, make-before-break as in SPEC §7.6, whatever the cost rule
+   * says; stay where it is if none will.
+   */
+  function tryMove(now: number): void {
+    if (switching || !parent || state !== "active" || stopping) return;
+    moveLinking = null;
+    while (moveTo.length > 0) {
+      const id = moveTo.shift()!;
+      if (id === self || id === parent.id || path.includes(id)) continue;
+      const peer = reach(id);
+      if (peer.path?.includes(self)) continue;
+      if (peer.link.state !== "open") {
+        // `onLinkOpen` goes on from here; a link that closes moves to the next.
+        moveLinking = peer;
+        return;
+      }
+      switching = { to: peer, at: now, acked: false, move: true };
+      subscribe(peer, "switch", streams.values(), after, false);
+      return;
+    }
   }
 
   /* ------------------------------ links closing ------------------------------ */
@@ -1543,7 +1589,12 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       checkOverload();
     }
     if (peer === previous) previous = null;
-    if (switching?.to === peer) switching = null;
+    if (switching?.to === peer) {
+      const move = switching.move;
+      switching = null;
+      if (move) tryMove(now);
+    }
+    if (peer === moveLinking) tryMove(now);
     if (peer === backupPending) {
       backupPending = null;
       backupRetryAt = now + COLD_RETRY_MS;
@@ -1730,7 +1781,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ the coordinator, unasked ------------------------------ */
 
-  function onAssign(assignments: Assignment[], reason: "join" | "need" | "rebalance"): void {
+  function onAssign(assignments: Assignment[], reason: "join" | "need" | "rebalance" | "move"): void {
     const now = clock.now();
     if (!started || stopping || role === "source") return;
     const offered = assignments.flatMap((assignment) => [...assignment.parents, ...assignment.backups]).filter((c) => c.peer !== self);
@@ -1739,6 +1790,14 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         candidates = offered.filter((c) => !tried.has(c.peer));
         tryCold(now);
       }
+      return;
+    }
+    if (reason === "move") {
+      if (!parent || state !== "active") return;
+      if (switching && !switching.move) cancelSwitch(now);
+      if (switching) return;
+      moveTo = assignments.flatMap((assignment) => assignment.parents.map((hint) => hint.peer));
+      tryMove(now);
       return;
     }
     if (reason !== "rebalance" || !parent || state !== "active" || switching || backupPending) return;
