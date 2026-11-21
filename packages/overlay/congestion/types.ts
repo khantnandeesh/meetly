@@ -85,6 +85,15 @@ export interface LayerGate extends Listenable<LayerGateEvents> {
 export type GateTuning = {
   /** Rule 3: the cap drops at most once in this long. */
   dropEveryMs: number;
+  /**
+   * Rule 3 (decided by the integrator, 2026-11-21): after a drop, the next waits at least this
+   * long, so the link can show what the first drop did.
+   */
+  dropHoldMinMs?: number;
+  /** Rule 3: or this many times the link's reaction time (`rttMs` + `reactionMs`), if longer. */
+  dropHoldRttFactor?: number;
+  /** Rule 3: what the link's reaction takes beyond a round trip: a feedback interval and the backlog's standing window. */
+  reactionMs?: number;
   /** Rule 5: this long *ok* before the cap rises. */
   riseAfterMs: number;
   /** Rule 5: congested again within this long of a rise, and the wait doubles. */
