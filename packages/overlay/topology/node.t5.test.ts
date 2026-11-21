@@ -82,22 +82,104 @@ describe("node: NACK under the gate mix's bad profile (SPEC §4.6, §12.3)", () 
   // The harness's "bad" profile (harness/scenarios.ts): 60 ms, 0–40 ms of jitter, 3% loss in
   // Gilbert–Elliott bursts, on every direction of both hops.
   const BAD = { latencyMs: 60, jitterMs: 40, lossPct: 3, burst: { enterPct: 1, leavePct: 30, lossPctInBurst: 50 } };
-  it("two bad hops lose under 0.5% of frames at the leaf", async () => {
-    const net = new SimNet({ seed: 1, backups: false, latencyMs: 5 });
+  for (const seed of [1, 2, 3]) {
+    it(`two bad hops lose under 0.5% of frames at the leaf, retransmitting under twice what was really lost (D39, seed ${seed})`, async () => {
+      const net = new SimNet({ seed, backups: false, latencyMs: 5 });
+      const source = net.join("0", "source", []);
+      net.publish(source);
+      await net.runAsync(300);
+      const relay = net.join("1", "relay", ["0"]);
+      await net.runAsync(300);
+      const leaf = net.join("2", "leaf", ["1"]);
+      await net.runAsync(2000);
+      net.setWire("0", "1", BAD);
+      net.setWire("1", "2", BAD);
+      source.node.takeStats();
+      relay.node.takeStats();
+      const hops = [source.links.map.get("1")!, relay.links.map.get("2")!];
+      const lostBefore = hops.map((link) => link.lostMedia);
+      const from = net.published;
+      await net.runAsync(30_000);
+      const to = net.published - 20;
+      const lost = missing(leaf, from, to).length;
+      assert.ok(lost / (to - from + 1) < 0.005, `lost ${lost} of ${to - from + 1}`);
+      // 0–40 ms of jitter, against a 10 ms window, made about four retransmissions for each real loss:
+      // packets that were only late were asked for. The window follows the jitter now.
+      const retransmitted = [source.node.takeStats().relay!.retransmitsSent, relay.node.takeStats().relay!.retransmitsSent];
+      hops.forEach((link, hop) => {
+        const really = link.lostMedia - lostBefore[hop];
+        assert.ok(really > 50, `hop ${hop}: ${really} lost`);
+        assert.ok(retransmitted[hop] < 2 * really, `hop ${hop}: ${retransmitted[hop]} retransmissions for ${really} packets lost`);
+      });
+    });
+  }
+});
+
+describe("node: a provisional relay (SPEC §8.1 [D38])", () => {
+  it("takes the fan-out it is given with its role, and its full one when confirmed", async () => {
+    const net = new SimNet({ backups: false, params: { sourceFanout: 3, maxFanout: 4 } });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    const relay = net.join("1", "leaf", ["0"]);
+    await net.runAsync(500);
+    net.setRole("1", "relay", 2);
+    await net.runAsync(100);
+    assert.deepEqual([relay.node.status().role, relay.node.status().freeSlots], ["relay", 2]);
+    // Two viewers fill it; a third, watching elsewhere (it asks from a frame of its own), is refused.
+    net.join("a", "leaf", ["1"]);
+    net.join("b", "leaf", ["1"]);
+    const c = net.join("c", "leaf", ["0"]);
+    await net.runAsync(800);
+    assert.deepEqual(relay.node.status().children.sort(), ["a", "b"]);
+    assert.equal(relay.node.status().freeSlots, 0);
+    net.assign("c", [{ stream: 0, stripe: 0, parents: [{ peer: "1", depth: 1, free: 1 }], backups: [] }], "move");
+    await net.runAsync(800);
+    assert.equal(stateOf(c).parent, "0");
+    // Confirmed past probation: role relay again, with no cap.
+    net.setRole("1", "relay");
+    await net.runAsync(100);
+    assert.equal(relay.node.status().freeSlots, 2);
+    net.assign("c", [{ stream: 0, stripe: 0, parents: [{ peer: "1", depth: 1, free: 1 }], backups: [] }], "move");
+    await net.runAsync(800);
+    assert.equal(stateOf(c).parent, "1");
+    assert.deepEqual(relay.node.status().children.sort(), ["a", "b", "c"]);
+  });
+});
+
+describe("node: its own stall is not its parent's death (SPEC §7.4)", () => {
+  async function tree() {
+    const net = new SimNet({ backups: true });
     const source = net.join("0", "source", []);
     net.publish(source);
     await net.runAsync(300);
     net.join("1", "relay", ["0"]);
+    net.join("2", "relay", ["0"]);
     await net.runAsync(300);
-    const leaf = net.join("2", "leaf", ["1"]);
+    const leaf = net.join("3", "leaf", ["1"], ["2"]);
     await net.runAsync(2000);
-    net.setWire("0", "1", BAD);
-    net.setWire("1", "2", BAD);
+    return { net, leaf };
+  }
+
+  it("a viewer whose tab is busy for 300 ms keeps its parent, and catches up with nothing lost", async () => {
+    const { net, leaf } = await tree();
     const from = net.published;
-    await net.runAsync(30_000);
-    const to = net.published - 20;
-    const lost = missing(leaf, from, to).length;
-    assert.ok(lost / (to - from + 1) < 0.005, `lost ${lost} of ${to - from + 1}`);
+    // Nothing runs on the viewer for 300 ms; then its late tick runs first, before the packets that queued.
+    net.stall("3", 300);
+    await net.runAsync(2000);
+    assert.deepEqual(repairs(leaf), []);
+    assert.deepEqual([stateOf(leaf).state, stateOf(leaf).parent, stateOf(leaf).backup], ["active", "1", "2"]);
+    assert.deepEqual(missing(leaf, from, net.published - 3), []);
+  });
+
+  it("a parent that really is silent is still found dead in 200–210 ms", async () => {
+    const { net, leaf } = await tree();
+    net.kill("1");
+    await net.runAsync(1500);
+    const [repair] = repairs(leaf) as Extract<MetricsEvent, { t: "repair" }>[];
+    assert.equal(repair.kind, "warm");
+    const silentFor = repair.detected - repair.lastHeard;
+    assert.ok(silentFor >= 200 && silentFor <= 210, `detected after ${silentFor} ms`);
   });
 });
 

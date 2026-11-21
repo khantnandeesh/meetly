@@ -83,6 +83,23 @@ export const judgeRelay: JudgeRelay = (caps, observed, streamKbps, params) => {
   };
 };
 
+/** SPEC §8.1 [D38]: the fan-out of a provisional relay. */
+export const PROVISIONAL_FANOUT = 2;
+
+/**
+ * SPEC §8.1 [D38]: whether a peer may be a provisional relay, before its probation is over: every
+ * check of `judgeRelay` but probation, with its uplink measured by the short probe, and then a
+ * fan-out of `PROVISIONAL_FANOUT` at most. The coordinator places joiners under such a relay only
+ * when no full relay has a free slot.
+ */
+export const judgeProvisional: JudgeRelay = (caps, observed, streamKbps, params) => {
+  const full = judgeRelay(caps, observed, streamKbps, params);
+  const reasons = full.reasons.filter((reason) => reason !== "probation");
+  const spare = observed.spareUplinkKbps ?? caps.uplinkKbps;
+  const fanout = reasons.length === 0 && spare !== null ? Math.min(PROVISIONAL_FANOUT, relayFanout(spare, streamKbps, params.maxFanout)) : 0;
+  return { eligible: reasons.length === 0 && fanout >= PROVISIONAL_FANOUT, reasons, fanout: reasons.length === 0 && fanout >= PROVISIONAL_FANOUT ? fanout : 0, score: full.score };
+};
+
 export const parentCost: ParentCost = (candidate) => {
   if (candidate.free <= 0) return Infinity;
   return (candidate.rttMs ?? UNMEASURED_RTT_MS) + COST_PER_HOP_MS * candidate.depth + COST_PER_LOSS_PCT_MS * candidate.lossPct + (candidate.turn ? COST_TURN_MS : 0);

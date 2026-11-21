@@ -81,7 +81,8 @@ type StreamState = {
 type SenderState = { seen: Uint8Array; first: number; lastAt: number };
 
 export function createReassembler(options: ReassemblerOptions): Reassembler {
-  const reorderMs = options.reorderMs;
+  const reorderOption = options.reorderMs;
+  const reorderWindow = typeof reorderOption === "function" ? reorderOption : () => reorderOption;
   const maxPending = Math.max(1, options.maxPending);
   const nackRetries = options.nackRetries ?? 1;
   const retryMs = options.retryMs ?? (() => DEFAULT_RETRY_MS);
@@ -332,6 +333,8 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
 
     missing(now, max) {
       const items: NackItem[] = [];
+      // SPEC D39: the window may follow the link's jitter; it is read once a call.
+      const reorderMs = reorderWindow();
       for (const [streamId, s] of streams) {
         const order = s.order;
         const n = order.length;

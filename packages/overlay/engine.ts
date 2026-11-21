@@ -63,7 +63,9 @@ const PROBE_HEADROOM = 1.1;
  * 2 × 1.15 × B): with a fan-out of 1 the first figure is below it, and a probe that stops at its
  * target could never show a peer eligible.
  */
-const probeTargetKbps = (params: OverlayParams, streamKbps: number) => PROBE_HEADROOM * Math.max((params.maxFanout * 1.15 * streamKbps) / 0.7, 2 * 1.15 * streamKbps);
+const probeTargetKbps = (params: OverlayParams, streamKbps: number, fanout = params.maxFanout) => PROBE_HEADROOM * Math.max((fanout * 1.15 * streamKbps) / 0.7, 2 * 1.15 * streamKbps);
+/** SPEC §8.1 [D38]: the short probe, as soon as there is a parent: sized for a provisional relay's two children. */
+const SHORT_PROBE = { fanout: 2, durationMs: 2000 };
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /** The source applies SPEC §11.4's uplink rule once a second. */
@@ -241,7 +243,8 @@ abstract class PeerEngine {
         this.caps = { ...this.caps, nat };
         this.sendStatus();
       });
-      if (welcome.role !== "source") this.scheduleProbe(welcome.params.probationMs ?? PROBATION_MS);
+      // The short probe as soon as there is a parent (D38); the full one after probation.
+      if (welcome.role !== "source") this.scheduleProbe(PROBE_WAIT_MS);
     } catch (error) {
       this.setState("closed");
       throw error;
@@ -287,7 +290,14 @@ abstract class PeerEngine {
     this.probeTimer = this.clock.setTimeout(() => this.maybeProbe(), afterMs);
   }
 
-  /** SPEC §8.1: after probation, and every 5 minutes while eligible, if the claim could make this peer a relay at all. */
+  /** Which probe is next: the short one of D38, then the full one of §8.1. */
+  private probePhase: "short" | "full" = "short";
+
+  /**
+   * SPEC §8.1 [D38]: a short probe, sized for two children, as soon as the peer has a parent, so
+   * that it may be a provisional relay before probation ends; then, past probation and every 5
+   * minutes while eligible, the full one. Either only if the claim could make this peer a relay.
+   */
   private maybeProbe(): void {
     const node = this.node;
     const welcome = this.welcome;
@@ -296,15 +306,29 @@ abstract class PeerEngine {
     const stripe = node.status().stripes[0];
     if (!stripe || stripe.state !== "active" || stripe.parent === null) return this.scheduleProbe(PROBE_WAIT_MS);
     const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.videoKbps(), welcome.params);
-    // Only the uplink is unknown: the probe is what finds it. Anything else, and it would be wasted.
-    if (verdict.reasons.some((reason) => reason !== "uplink")) return this.scheduleProbe(PROBE_RETRY_MS);
-    node.runProbe(createUplinkProbe({ targetKbps: probeTargetKbps(welcome.params, this.videoKbps()), durationMs: 1000 }));
+    // Only the uplink is unknown (and, for the short probe, probation not over): the probe is what
+    // finds the one, and the other passes by itself. Anything else, and it would be wasted.
+    const allowed = this.probePhase === "short" ? ["uplink", "probation"] : ["uplink"];
+    if (verdict.reasons.some((reason) => !allowed.includes(reason))) return this.scheduleProbe(PROBE_RETRY_MS);
+    const short = this.probePhase === "short";
+    node.runProbe(
+      createUplinkProbe({
+        targetKbps: probeTargetKbps(welcome.params, this.videoKbps(), short ? SHORT_PROBE.fanout : welcome.params.maxFanout),
+        durationMs: short ? SHORT_PROBE.durationMs : 1000,
+      }),
+    );
   }
 
   private onProbe(spare: number | null): void {
-    if (spare === null) return this.scheduleProbe(PROBE_RETRY_MS);
+    if (spare === null) return this.scheduleProbe(this.probePhase === "short" ? PROBE_WAIT_MS : PROBE_RETRY_MS);
     if (this.caps) this.caps = { ...this.caps, uplinkKbps: Math.round(spare) };
     this.sendStatus();
+    if (this.probePhase === "short") {
+      // The full probe once probation is over.
+      this.probePhase = "full";
+      const probation = this.welcome?.params.probationMs ?? PROBATION_MS;
+      return this.scheduleProbe(Math.max(PROBE_WAIT_MS, this.welcomedAt + probation - this.clock.now()));
+    }
     this.scheduleProbe(REPROBE_MS);
   }
 

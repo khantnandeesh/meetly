@@ -325,8 +325,17 @@ fragment count is unknown). At most 64 items.
 
 Rules:
 
-- A fragment is asked for once it is *due*: a later packet has arrived and `reorderMs` (10 ms
-  **[D6]**) has passed. It is asked for at most `nackRetries` (1) more times, an RTT apart.
+- A fragment is asked for once it is *due*: a later packet has arrived and the reordering
+  window has passed. It is asked for at most `nackRetries` (1) more times, an RTT apart.
+- **[D39] The reordering window follows the jitter** (decided by integrator 2026-11-21; it was a
+  fixed 10 ms, **[D6]**). It is max(10 ms, the p95 of the stream's inter-arrival jitter), at most
+  60 ms. Jitter is RFC 3550's |D| with the frame's `captureUs` as the media timestamp, over the
+  last 256 live video packets from the parent, read every 250 ms. That is the stream as it
+  arrives, every hop's reordering in it: a relay forwards in the order packets reached it, so the
+  link's own jitter would miss the hops above. Replays and retransmissions are left out: they are
+  late on purpose. A loss is declared only once the window has passed, and the retries keep
+  their RTT spacing on top of it. With 0–40 ms of jitter (the gate mix's "bad"), a 10 ms window
+  asked for about four packets for each one really lost; this one asks for fewer than two.
 - Nothing is asked for that playout no longer wants (§10): a discardable frame past its time, or
   anything older than the oldest frame the jitter buffer still holds a place for.
 - The parent answers from its GOP cache with the RETRANSMIT hop flag. What is no longer in the
@@ -642,6 +651,15 @@ repair moves both. They are separate machines because stage 2 gives each stripe 
 `sub-ack` with `full`, `loop` or `leaving`: try the next candidate. No candidates left, or no
 link opened within 5 s: `cold-repair` (§7.5).
 
+**[D37] A parent at its fan-out takes a viewer with nothing to watch** (decided by integrator
+2026-11-21). A `sub` from the latest keyframe (`fromFrame` −1: a joiner, or a peer the
+coordinator found no free slot for) is accepted over the fan-out, up to twice it; only beyond
+that is it refused `full`. While over, the parent sheds the top temporal layer for every child
+(§11.3 rule 8, as for a repair taken in, §7.5) until the coordinator moves someone. A `sub` from a
+frame of the subscriber's own (a switch, a `move`: it is watching elsewhere) is refused `full` at
+the fan-out as before. A lower frame rate at once is better than no picture until a relay is
+promoted, which at a session's start is a probation away.
+
 Budget for the 3 s gate: ticket and socket 200 ms, `welcome` 100 ms, link (ICE and DTLS) 300 ms
 to 2 s, replay and first frame 100 ms. The proof measured 20–45 ms from joining to first frame
 on loopback, where ICE costs nothing; ICE is the whole budget.
@@ -789,6 +807,19 @@ link so far needed TURN is "relay".
 Spare uplink is not known when a peer joins, and nothing a browser reports can be trusted for
 it. After probation the peer sends its parent PROBE packets (§4.7) for one second at what a full
 fan-out would cost (§11.6) and reads the result from feedback (§11.6). **[D19]**
+
+**[D38] Provisional relays** (decided by integrator 2026-11-21). Probation makes a session's
+first viewers wait: until someone has been in for 20 s nobody may relay, and only the source's
+few slots exist. So a viewer that passes every check of the table but probation and uplink, and
+whose short probe (about 2 s, sized for two children: 2 × 1.15 × *B* / 0.7, the larger of that
+and the uplink rule's 2 × 1.15 × *B*) shows the room, may be made a **provisional relay**, with a
+fan-out of 2 whatever its uplink. The `role` message carries `fanout: 2`, and the relay takes no
+more active children than that (a repair or a viewer with nothing to watch over it as §7.5 and
+[D37] say). The coordinator places joiners under provisional relays only when no full relay has a
+free slot. One that misbehaves in its first 20 s (its children's loss or STARVED, as for
+demotion below) is demoted, and its children are moved first, make-before-break (`move`). Past
+probation, and with the full probe's result, it is judged as any relay and its fan-out is the
+table's.
 
 **Fan-out** is how many active children a relay takes:
 `min(maxFanout, floor(0.7 × spareUplinkKbps / (1.15 × sessionKbps)))`. The 0.7 leaves room for
@@ -1393,7 +1424,7 @@ Rotating speakers on the overlay. Out of scope.
 | D3 | Fragment frames ourselves, 1,150-byte packets | 4 |
 | D4 | One session clock, synchronised through the coordinator's socket | 4.1 |
 | D5 | Stage 1 recovers loss by NACK to the parent, answered from the GOP cache | 4.6 |
-| D6 | 10 ms reordering window before a gap is called loss | 4.6 |
+| D6 | 10 ms reordering window before a gap is called loss (superseded by D39) | 4.6 |
 | D7 | Either side may open a link; perfect negotiation; the later `PeerId` gives way | 5.1 |
 | D8 | One I/O-free coordinator core, two entry points, one contract suite | 6 |
 | D9 | Admission by HMAC ticket from Meetly's server: 60 s, single-use | 6.1 |
@@ -1424,6 +1455,9 @@ Rotating speakers on the overlay. Out of scope.
 | D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
 | D36 | No retransmission of enhancement layers into a backlog over 50 ms of B; base layer and keyframes held until it clears (integrator, 2026-11-21) | 4.6 |
+| D37 | A parent at its fan-out takes a viewer with nothing to watch, up to twice the fan-out, and sheds a layer (integrator, 2026-11-21) | 7.1 |
+| D38 | Provisional relays: fan-out 2 on a short probe, before probation ends, used only when no full relay has a slot (integrator, 2026-11-21) | 8.1 |
+| D39 | The reordering window is max(10 ms, p95 inter-arrival jitter), at most 60 ms (integrator, 2026-11-21) | 4.6 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms

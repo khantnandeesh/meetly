@@ -1232,8 +1232,12 @@ const serverMessage = tagged({
    * keeps relays near the source (coordinator/README.md, "Keeping the tree short").
    */
   assign: { id: optional(int(0, 0xffffffff)), reason: oneOf("join", "need", "rebalance", "move"), assign: list(assignment, 64) },
-  /** You are now a relay, or no longer one. Comes with the grant that says so. */
-  role: { role: overlayRole, grant: token },
+  /**
+   * You are now a relay, or no longer one. Comes with the grant that says so. `fanout`: the most
+   * active children you may take, when it is fewer than your own judgement says (a provisional
+   * relay, SPEC §8.1 [D38], takes 2).
+   */
+  role: { role: overlayRole, grant: token, fanout: optional(int(1, 64)) },
   /** A grant to replace the one you hold, before it expires. */
   grant: { grant: token },
   streams: { streams: list(streamConfig, 16) },

@@ -63,8 +63,18 @@ import type { Candidate, NodeStats, NodeStatus, OverlayNode, OverlayNodeEvents, 
 
 /** The detector's period, and the node's only timer (SPEC §7.4). */
 export const TICK_MS = 10;
-/** A gap is called a loss after this long (SPEC D6). */
+/**
+ * A tick this much later than due means this node itself was not running (a busy or throttled
+ * tab): the time it lost is not the others' silence (SPEC §7.4).
+ */
+export const OWN_STALL_MS = 30;
+/** A gap is called a loss after this long at least (SPEC D6). */
 export const REORDER_MS = 10;
+/** SPEC D39: the window follows the parent link's p95 inter-arrival jitter, up to this. */
+export const REORDER_MAX_MS = 60;
+/** How many inter-arrival samples the jitter's p95 is read from, and how often it is read again. */
+const JITTER_SAMPLES = 256;
+const JITTER_EVERY_MS = 250;
 /** A packet that has made this many hops is in a loop (SPEC §4.2). */
 export const MAX_HOPS = 32;
 /** No candidate link opened this long after starting to join: cold repair (SPEC §7.1). */
@@ -438,9 +448,42 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   let joinTimes: { linked: number; firstPacket: number | null; turn: boolean } | null = null;
   const audioRepeats: { at: number; stream: number; frameId: number }[] = [];
 
+  /**
+   * SPEC D39: the reordering window, max(10 ms, the p95 of the inter-arrival jitter), at most
+   * 60 ms. Jitter is RFC 3550's |D| with the frame's `captureUs` as the media timestamp: the change
+   * in (arrival − capture) from one live video packet to the next. That is the stream as it
+   * arrives, every hop's reordering in it: a relay forwards packets in the order they reached it,
+   * so a link's own jitter (from its `sendMs`) would miss what the hops above added. Replays and
+   * retransmissions are late on purpose and are left out. Packets that overtake each other by up
+   * to the window are not taken for lost and asked for again.
+   */
+  const jitter = { values: new Float64Array(JITTER_SAMPLES), used: 0, next: 0, from: null as PeerId | null, lastTransit: NaN, windowMs: REORDER_MS, readAt: -Infinity };
+  const noteTransit = (from: PeerId, transit: number) => {
+    if (jitter.from !== from) {
+      jitter.from = from;
+      jitter.used = jitter.next = 0;
+      jitter.lastTransit = NaN;
+    }
+    if (jitter.lastTransit === jitter.lastTransit) {
+      jitter.values[jitter.next] = Math.abs(transit - jitter.lastTransit);
+      jitter.next = (jitter.next + 1) % JITTER_SAMPLES;
+      if (jitter.used < JITTER_SAMPLES) jitter.used++;
+    }
+    jitter.lastTransit = transit;
+  };
+  const reorderWindowMs = () => {
+    const now = clock.now();
+    if (now - jitter.readAt < JITTER_EVERY_MS) return jitter.windowMs;
+    jitter.readAt = now;
+    if (jitter.used < 16) return (jitter.windowMs = REORDER_MS);
+    const sorted = jitter.values.slice(0, jitter.used).sort();
+    const p95 = sorted[Math.floor(0.95 * (jitter.used - 1))];
+    return (jitter.windowMs = Math.min(REORDER_MAX_MS, Math.max(REORDER_MS, p95)));
+  };
+
   const reassembler = createReassembler({
     clock,
-    reorderMs: REORDER_MS,
+    reorderMs: reorderWindowMs,
     maxPending: 64,
     nackRetries: params.nackRetries,
     retryMs: () => Math.max(20, parent?.estimator.estimate(clock.now()).rttMs ?? 100),
@@ -458,7 +501,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   };
   const primaryId = () => primary()?.config.id ?? 0;
 
-  const fanout = () => (role === "source" ? params.sourceFanout : role === "relay" ? params.maxFanout : 0);
+  /** What the coordinator capped this relay's fan-out at (a provisional relay, SPEC §8.1 [D38]), if it did. */
+  let fanoutCap: number | null = null;
+  const fanout = () => (role === "source" ? params.sourceFanout : role === "relay" ? Math.min(params.maxFanout, fanoutCap ?? Infinity) : 0);
   const isActiveChild = (peer: Peer) => {
     for (const sub of peer.subs.values()) if (sub.mode === "active") return true;
     return false;
@@ -674,6 +719,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     if (!stream) return;
     rxBytes += packet.byteLength;
     peer.lastMediaAt = receivedAt;
+    if (peer === parent && !stream.audio && !(header.hopFlags & (HopFlag.Replay | HopFlag.Retransmit))) noteTransit(peer.id, session(receivedAt) - header.captureUs / 1000);
     if (header.hopFlags & HopFlag.Retransmit) retransmitsReceived++;
     if (peer === parent && state === "waiting") resumeFromWaiting(receivedAt);
     if (repair && repair.firstPacket === null && repair.next === peer.id) {
@@ -1799,8 +1845,34 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ the tick ------------------------------ */
 
+  let lastTickAt = NaN;
+
+  /**
+   * This node was not running for `lostMs`: whatever it did not hear meanwhile may be sitting in
+   * its own queue, behind this very tick. Every silence it measures, and every deadline it set,
+   * moves on by that much, and this tick does nothing more, so the packets that queued are read
+   * before anyone is judged. A parent that really is dead is found on the next ticks, by as much
+   * later as the node was itself away.
+   */
+  function forgiveOwnStall(lostMs: number): void {
+    for (const peer of peers.values()) peer.lastHeardAt += lostMs;
+    waitingSince += lostMs;
+    nextDeadline += lostMs;
+    joinDeadline += lostMs;
+    backupDeadline += lostMs;
+    previousLeftAt += lostMs;
+    if (coldLinkDeadline > 0) coldLinkDeadline += lostMs;
+    if (switching) switching.at += lostMs;
+  }
+
   function tick(): void {
     const now = clock.now();
+    const late = lastTickAt === lastTickAt ? now - lastTickAt - TICK_MS : 0;
+    lastTickAt = now;
+    if (late > OWN_STALL_MS) {
+      forgiveOwnStall(late);
+      return;
+    }
 
     // The failure detector (SPEC §7.4).
     if (parent && (state === "active" || state === "waiting")) {
@@ -1925,8 +1997,17 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     changed();
   }
 
-  function onRole(to: OverlayRole): void {
-    if (role === "source" || to === "source" || to === role) return;
+  function onRole(to: OverlayRole, cap?: number): void {
+    if (role === "source" || to === "source") return;
+    const nextCap = to === "relay" && cap !== undefined ? cap : null;
+    if (to === role && nextCap === fanoutCap) return;
+    // A provisional relay confirmed past probation is sent role relay again, without a cap.
+    fanoutCap = nextCap;
+    if (to === role) {
+      checkOverload();
+      changed();
+      return;
+    }
     role = to;
     if (to === "leaf") {
       // No longer a relay: its children are sent elsewhere (SPEC §6.6).
