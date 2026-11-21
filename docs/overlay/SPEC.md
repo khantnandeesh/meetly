@@ -772,7 +772,7 @@ coordinator and the peer call it.
 | data saver | off |
 | visible | the tab is in view |
 | uplink | measured spare uplink ≥ 2 × 1.15 × the session's bitrate (room for two children) |
-| probation | in the session for 20 s **[D18]** |
+| probation | in the session for `probationMs` (20 s) **[D18]** |
 | loss | under 2% from its own parent |
 
 NAT type is found by gathering candidates against two STUN servers: the same public port from

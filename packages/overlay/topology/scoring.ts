@@ -14,7 +14,7 @@ export const BITRATE_HEADROOM = 1.15;
 export const UPLINK_SHARE = 0.7;
 /** A relay must be able to feed this many children (SPEC §8.1, "uplink"). */
 export const MIN_RELAY_CHILDREN = 2;
-/** SPEC D18. */
+/** SPEC D18, when `OverlayParams.probationMs` does not say otherwise. */
 export const PROBATION_MS = 20_000;
 /** A relay's own loss from its parent must be under this, in percent (SPEC §8.1, "loss"). */
 export const RELAY_MAX_LOSS_PCT = 2;
@@ -72,7 +72,7 @@ export const judgeRelay: JudgeRelay = (caps, observed, streamKbps, params) => {
   if (caps.dataSaver) reasons.push("data-saver");
   if (!caps.visible) reasons.push("hidden");
   if (spare === null || spare < MIN_RELAY_CHILDREN * BITRATE_HEADROOM * streamKbps) reasons.push("uplink");
-  if (observed.uptimeMs < PROBATION_MS) reasons.push("probation");
+  if (observed.uptimeMs < (params.probationMs ?? PROBATION_MS)) reasons.push("probation");
   if (!(observed.lossPct < RELAY_MAX_LOSS_PCT)) reasons.push("lossy");
   const eligible = reasons.length === 0;
   return {

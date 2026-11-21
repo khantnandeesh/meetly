@@ -862,6 +862,8 @@ const params = object({
   nackRetries: int(0, 8),
   /** A voluntary change of parent no more often than this. */
   rebalanceMinMs: int(0, 3_600_000),
+  /** SPEC §8.1, D18: nobody relays before this long in the session. 20 s when absent. */
+  probationMs: optional(int(0, 3_600_000)),
 });
 export type OverlayParams = Infer<typeof params>;
 
@@ -884,6 +886,7 @@ export const DEFAULT_PARAMS: OverlayParams = {
   gopCacheBytes: 4 * 1024 * 1024,
   nackRetries: 1,
   rebalanceMinMs: 30000,
+  probationMs: 20000,
 };
 
 const iceServer = object({
