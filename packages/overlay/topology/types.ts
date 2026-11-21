@@ -162,7 +162,7 @@ export interface CoordinatorPort {
   need(stream: number, stripe: number, want: "parent" | "backup", exclude: PeerId[]): Promise<Assignment | null>;
   report(event: "parent-dead" | "parent-switch" | "backup-lost" | "link-failed" | "child-gone", stream: number, stripe: number, peer: PeerId, next?: PeerId | null): void;
   /** `assign` and `role` messages the coordinator sends unasked. */
-  onAssign(listener: (assignments: Assignment[], reason: "join" | "need" | "rebalance") => void): () => void;
+  onAssign(listener: (assignments: Assignment[], reason: "join" | "need" | "rebalance" | "move") => void): () => void;
   onRole(listener: (role: OverlayRole) => void): () => void;
   onPeerGone(listener: (peer: PeerId) => void): () => void;
 }

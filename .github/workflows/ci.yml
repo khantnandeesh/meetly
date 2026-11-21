@@ -29,6 +29,8 @@ env:
   LIVEKIT_VERSION: "1.13.11"
   # The version the browser tests were written against.
   PLAYWRIGHT_VERSION: "1.63.0"
+  # The overlay coordinator's Worker is tested under `wrangler dev` (never deployed from CI).
+  WRANGLER_VERSION: "4.157.0"
 
 jobs:
   checks:
@@ -71,6 +73,15 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
       - run: npm ci
+      # Wrangler is not a dependency of the repository: installed outside the project, as
+      # Playwright is, for the coordinator's contract suite against `wrangler dev`
+      # (packages/overlay/coordinator/contract.worker.test.ts finds it through OVERLAY_WRANGLER).
+      - name: Install wrangler ${{ env.WRANGLER_VERSION }}
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/wrangler" "wrangler@${WRANGLER_VERSION}"
+          echo "OVERLAY_WRANGLER=$RUNNER_TEMP/wrangler/node_modules/.bin/wrangler" >> "$GITHUB_ENV"
+          echo "WRANGLER_SEND_METRICS=false" >> "$GITHUB_ENV"
       - name: Type check (the package's own tsconfig)
         run: npm run overlay:check
       - name: Lint (the package, and that the app does not import it)

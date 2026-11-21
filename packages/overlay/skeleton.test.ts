@@ -9,9 +9,8 @@ import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { NotImplementedError, PROTOCOL_VERSION, createOverlaySource, createOverlayViewer } from "@meetly/overlay";
-import { createCoordinatorCore, ROUTES } from "@meetly/overlay/coordinator/index";
+import { ROUTES } from "@meetly/overlay/coordinator/index";
 import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
-import { startNodeCoordinator } from "@meetly/overlay/coordinator/node";
 import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
 import { DEFAULT_ENCODING, createJitterBuffer, createPlayer } from "@meetly/overlay/media/index";
 import { CHANNELS } from "@meetly/overlay/transport/index";
@@ -31,8 +30,6 @@ describe("overlay skeleton", () => {
       ["architect", () => createOverlaySource({ coordinatorUrl: "", ticket: async () => "" })],
       ["E-media", () => createJitterBuffer(undefined as never)],
       ["E-media", () => createPlayer(undefined as never)],
-      ["E-coordinator", () => createCoordinatorCore(undefined as never)],
-      ["E-coordinator", () => startNodeCoordinator(undefined as never)],
       ["E-harness", () => buildReport([])],
     ];
     for (const [owner, call] of stubs) {

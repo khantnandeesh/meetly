@@ -3,7 +3,8 @@
  * imported by path (./durableObject, ./node), never from here, so a browser bundle cannot pull
  * in Node's `http` or a Worker's globals by accident. Owner: E-coordinator. See ./README.md.
  */
-import { notImplemented } from "../runtime";
+import { createClient } from "./client";
+import { createCore } from "./core";
 import type { CoordinatorClient, CoordinatorClientOptions, CoordinatorCore, CoordinatorCoreOptions } from "./types";
 
 export type * from "./types";
@@ -18,8 +19,6 @@ export const ROUTES = {
 /** WebSocket close codes the coordinator uses (4000–4999 are free for applications). */
 export const CLOSE = { badTicket: 4001, full: 4002, kicked: 4003, ended: 4004, badMessage: 4005, replaced: 4006 } as const;
 
-export const createCoordinatorCore: (options: CoordinatorCoreOptions) => CoordinatorCore = () =>
-  notImplemented("E-coordinator", "coordinator.createCoordinatorCore");
+export const createCoordinatorCore: (options: CoordinatorCoreOptions) => CoordinatorCore = createCore;
 
-export const createCoordinatorClient: (options: CoordinatorClientOptions) => CoordinatorClient = () =>
-  notImplemented("E-coordinator", "coordinator.createCoordinatorClient");
+export const createCoordinatorClient: (options: CoordinatorClientOptions) => CoordinatorClient = createClient;
