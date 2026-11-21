@@ -39,6 +39,16 @@ export type CallMode = "meeting" | "webinar";
  */
 export type ParticipantRole = "host" | "speaker" | "viewer";
 
+/**
+ * When the meeting began, as our server could tell at the moment it let you in. It is worked out
+ * once, when you join, and never asked for again.
+ *
+ * - A time, in milliseconds since the epoch by this browser's clock.
+ * - "now": nobody was in the meeting, so it begins as you arrive.
+ * - null: it could not be known. The interface counts from when you joined instead, and says so.
+ */
+export type MeetingStart = number | "now" | null;
+
 /** What the pre-join screen may know about a meeting before asking to join it. */
 export type MeetingPeek = {
   access: JoinAccess;
@@ -310,6 +320,8 @@ export interface RtcCall {
    * the `status` event; the call stays the same object throughout.
    */
   readonly switching: "cohost" | "audience" | null;
+  /** When the meeting began, as the server said when you joined. It never changes during the call. */
+  readonly meetingStart: MeetingStart;
 
   /* connection */
   readonly status: ConnectionStatus;
@@ -435,8 +447,14 @@ export type JoinChoices = {
   background?: BackgroundMode;
 };
 
-/** What POST /api/token returns, per provider. Opaque to components. */
-export type JoinGrant =
+/**
+ * What POST /api/token returns, per provider. Opaque to components.
+ *
+ * Both providers' answers also carry `started`: how many milliseconds before the answer the
+ * meeting began, or "now" when nobody was in it. `requestJoin` turns that into `meetingStart`
+ * by this browser's clock, so a server and a browser whose clocks disagree still agree on it.
+ */
+export type JoinGrant = (
   | {
       provider: "livekit";
       token: string;
@@ -471,7 +489,11 @@ export type JoinGrant =
       mode?: CallMode;
       /** Webinars: the audience's preset and a co-host's, so the client knows which one it holds. */
       webinarPresets?: { viewer: string; cohost: string };
-    };
+    }
+) & {
+  /** Absent means it could not be known (see `MeetingStart`). */
+  meetingStart?: MeetingStart;
+};
 
 export type RtcProviderModule = {
   createCall(grant: JoinGrant, choices: JoinChoices): RtcCall;

@@ -47,6 +47,7 @@ import { DataSaverBadge, setDataSaver } from "./CallQuality";
 import { useUnread } from "./ChatStore";
 import { useHost } from "./HostTools";
 import { LayoutMenuItems } from "./LayoutMenu";
+import { MeetingTimer } from "./MeetingTimer";
 import { useMini } from "./MiniWindow";
 import { ChatPreviewsSwitch, ReactionsSwitch } from "./NoticeSwitches";
 import { ReactMenu } from "./Reactions";
@@ -236,12 +237,19 @@ export function ControlBar({
 
   return (
     <footer className="grid grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-4 px-4 pt-1 pb-4">
-      {/* At the narrowest large screens the controls take the room: the clock goes first, so the
-          bar's right-hand buttons never slide over the leave button (see the grid's third column). */}
+      {/* At the narrowest large screens the controls take the room: the clock goes first, then how
+          long the meeting has run, so the bar's right-hand buttons never slide over the leave button
+          (see the grid's third column). Each goes while the rest still fits whole, "10:00:00" included. */}
       <div className="@container flex min-w-0 items-center gap-1 text-sm text-muted @max-[5rem]:*:hidden">
         {/* On a webinar's stage the clock's place says so, with the way back to the audience. */}
-        {onStage ? <OnStageChip /> : <Clock className="@max-[11rem]:hidden" />}
-        <span className="mx-2 h-4 w-px shrink-0 bg-border-strong @max-[11rem]:hidden" aria-hidden="true" />
+        {onStage ? <OnStageChip /> : <Clock className="@max-[18.5rem]:hidden" />}
+        {/* "12:44 PM · 23:15 | code": the two times together, the link apart. */}
+        {/* After the on-stage chip, its own padding is most of the space before the dot. */}
+        <span className={`shrink-0 ${onStage ? "-ml-1 mr-1 @max-[25rem]:hidden" : "mx-1 @max-[18.5rem]:hidden"}`} aria-hidden="true">
+          ·
+        </span>
+        <MeetingTimer tip className={`font-medium ${onStage ? "@max-[25rem]:hidden" : "@max-[13.5rem]:hidden"}`} />
+        <span className={`mx-2 h-4 w-px shrink-0 bg-border-strong ${onStage ? "@max-[11rem]:hidden" : "@max-[13.5rem]:hidden"}`} aria-hidden="true" />
         <Tip label={`Copy ${noun} link`}>
           <button
             onClick={copyState.copy}

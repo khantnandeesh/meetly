@@ -22,6 +22,22 @@ import type {
 
 const CallContext = createContext<RtcCall | null>(null);
 
+/** When this browser was first let into each call (epoch ms). Asking to join is not being in. */
+const arrivals = new WeakMap<RtcCall, number>();
+
+/**
+ * When you were first let into `call`, noting it now if this is that moment; null until then.
+ * Reconnecting, or changing role in a webinar, is not arriving again.
+ */
+function noteArrival(call: RtcCall): number | null {
+  const known = arrivals.get(call);
+  if (known !== undefined) return known;
+  if (call.status !== "connected") return null;
+  const now = Date.now();
+  arrivals.set(call, now);
+  return now;
+}
+
 export function useCall(): RtcCall {
   const call = useContext(CallContext);
   if (!call) throw new Error("useCall must be used inside <CallRoom>");
@@ -54,10 +70,10 @@ export function CallRoom({
 
   useEffect(() => {
     // Once per connection: coming back from a reconnect is not a second arrival.
-    let arrived = call.status === "connected";
+    let arrived = noteArrival(call) !== null;
     const stops = [
       call.on("status", () => {
-        if (arrived || call.status !== "connected") return;
+        if (arrived || noteArrival(call) === null) return;
         arrived = true;
         handlers.current.onConnected();
       }),
@@ -111,6 +127,13 @@ const QUALITY = ["quality"] as const;
 export function useConnectionStatus(): ConnectionStatus {
   const call = useCall();
   return useCallValue(call, STATUS, () => call.status);
+}
+
+/** When you were first let into the call (epoch ms), or null while connecting or asking to join. */
+export function useJoinedAt(): number | null {
+  const call = useCall();
+  // Read through `noteArrival`: whichever listener hears "connected" first notes the moment.
+  return useCallValue(call, STATUS, () => noteArrival(call));
 }
 
 /** Everyone in the call, you first. Changes when people come and go, are renamed or move a hand. */

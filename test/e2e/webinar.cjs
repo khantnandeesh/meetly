@@ -151,7 +151,7 @@ module.exports = async function webinar(browser) {
   await H.until(async () => (await tilesOf(host)).length > 0, 8000);
   H.ok("a viewer is never a tile, theirs or anyone's", (await tilesOf(vic)).join() === `${hostId}:camera` && (await tilesOf(host)).join() === `${hostId}:camera`);
   const bar = vic.page.locator("footer");
-  H.ok("desktop: no top bar; the control bar's left cluster says ● Live · 2 watching", (await inCall(vic).locator("header").count()) === 0 && (await H.until(async () => (await bar.locator("[data-live]").innerText()).replace(/\s+/g, " ").includes("Live · 2 watching"), 8000)));
+  H.ok("desktop: no top bar; the control bar's left cluster says ● Live · 0:12 · 2 watching", (await inCall(vic).locator("header").count()) === 0 && (await H.until(async () => /Live · \d+:\d\d · 2 watching/.test((await bar.locator("[data-live]").innerText()).replace(/\s+/g, " ")), 8000)));
   H.ok("…with the code and its copy button beside it", (await bar.getByRole("button", { name: /^Copy webinar link, code / }).count()) === 1);
   H.ok(
     "…the audience's controls are Raise hand, React and Leave",

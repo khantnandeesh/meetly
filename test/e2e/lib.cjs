@@ -147,6 +147,19 @@ async function shot(person, name) {
 
 const noOverflow = (person) => person.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
+/** Names of the control bar's buttons that something else is drawn over, at their centre. */
+const coveredButtons = (person) =>
+  person.page.evaluate(() =>
+    [...document.querySelectorAll("footer button")]
+      .filter((button) => button.offsetParent)
+      .filter((button) => {
+        const r = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !hit || !(hit === button || button.contains(hit));
+      })
+      .map((button) => button.getAttribute("aria-label") || button.textContent.trim()),
+  );
+
 module.exports = {
   BASE,
   DESKTOP,
@@ -172,5 +185,6 @@ module.exports = {
   until,
   shot,
   noOverflow,
+  coveredButtons,
   failureShots,
 };

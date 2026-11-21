@@ -35,6 +35,7 @@ import { ChatStore, ChatToasts } from "./ChatStore";
 import { HostProvider, useHost } from "./HostTools";
 import { ControlBar, type Panel } from "./ControlBar";
 import { LimitNotice } from "./LimitNotice";
+import { PhoneTimer } from "./MeetingTimer";
 import { MiniPlaceholder, MiniProvider, MiniWindow, type MiniControl } from "./MiniWindow";
 import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
@@ -518,18 +519,21 @@ function Call({ code }: { code: string }) {
       <ReactionFeed />
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
-          <button
-            onClick={headerCopy.copy}
-            aria-label={`Copy ${noun} link, code ${code}`}
-            className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
-          >
-            <LogoMark className="size-7 shrink-0" />
-            <span className="truncate">{headerCopy.copied ? "Copied" : code}</span>
-            <CopyIcon copied={headerCopy.copied} />
-            <span className="sr-only" role="status">
-              {headerCopy.copied ? `Link copied` : ""}
-            </span>
-          </button>
+          <div className="@container flex min-w-0 flex-1 items-center">
+            <button
+              onClick={headerCopy.copy}
+              aria-label={`Copy ${noun} link, code ${code}`}
+              className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
+            >
+              <LogoMark className="size-7 shrink-0" />
+              <span className="truncate">{headerCopy.copied ? "Copied" : code}</span>
+              <CopyIcon copied={headerCopy.copied} />
+              <span className="sr-only" role="status">
+                {headerCopy.copied ? `Link copied` : ""}
+              </span>
+            </button>
+            <PhoneTimer />
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             <DataSaverBadge onOpen={showQuality} compact />
             <RaisedHands hands={raisedHands} onShow={showPeople} compact />

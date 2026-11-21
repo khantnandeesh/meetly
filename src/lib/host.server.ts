@@ -65,6 +65,12 @@ export type RoomMeta = {
    * meeting starts. Each browser keeps to it; nothing here can stop a modified client sending one.
    */
   reactions?: false;
+  /**
+   * When the meeting now under way began: the moment our server let the first person into an
+   * empty room (see `meetingAge`). The room itself is no guide: it is made before anyone joins
+   * ("New meeting"), and kept for a day after the last person leaves.
+   */
+  startedAt?: number;
 };
 
 /** How many people Admit all and Deny all answer at the same moment: quick for a long list, gentle on LiveKit. */
@@ -74,6 +80,12 @@ const BULK_AT_ONCE = 8;
 const CLAIM_WINDOW_MS = 60_000;
 /** How long an empty room, and with it the meeting's record, is kept. Seconds. */
 const KEEP_EMPTY_S = 24 * 60 * 60;
+/**
+ * Up to this many people in a room by LiveKit's own summary (which can trail a join or a leave by a
+ * few seconds), who is there is listed live. Above it the meeting is plainly under way, and listing
+ * everyone at every join would cost a webinar dearly.
+ */
+const LIVE_LIST_UP_TO = 10;
 /** How long after it was issued a join token still proves who is calling /api/host. */
 const CALLER_TOKEN_MS = 12 * 60 * 60 * 1000;
 const MAX_BANNED = 200;
@@ -125,6 +137,7 @@ export function parseRoomMeta(metadata: string | undefined): RoomMeta {
       ...(Array.isArray(value.polls) && value.polls.length > 0 ? { polls: readStoredPolls(value.polls) } : {}),
       ...(value.mode === "webinar" ? { mode: "webinar" as const } : {}),
       ...(value.reactions === false ? { reactions: false as const } : {}),
+      ...(typeof value.startedAt === "number" && Number.isFinite(value.startedAt) ? { startedAt: value.startedAt } : {}),
     };
   } catch {
     return {};
@@ -245,6 +258,54 @@ export async function decideJoin(room: string, identity: string, pass: Pass): Pr
   } catch (error) {
     console.error("Could not read the meeting record", error);
     return { role: "guest", access: "open" };
+  }
+}
+
+/**
+ * How long ago the meeting under way began, from the record, or undefined if it has none. Someone
+ * still in the room who arrived before the recorded moment means two people were let into an
+ * empty room at once; the meeting began with the earlier of them. Exported for tests.
+ */
+export function sessionAge(recorded: number | undefined, earliest: number | null, now: number): number | undefined {
+  if (recorded === undefined) return undefined;
+  const began = earliest !== null && earliest < recorded ? earliest : recorded;
+  return Math.max(0, now - began);
+}
+
+/**
+ * How many milliseconds ago the meeting began, for its timer, or undefined if that cannot be known.
+ * Asked once per join, by /api/token, after everything else has let this person in.
+ *
+ * Whoever is let into an empty room begins the meeting, and the moment is written into the record;
+ * everyone after them is told the time since. `enters` is false for someone who waits in the lobby
+ * (another room): they begin nothing, and in an empty meeting there is nothing to tell them.
+ * Never throws: the timer then counts from when this person joined, and says so.
+ */
+export async function meetingAge(room: string, enters: boolean): Promise<number | undefined> {
+  const service = roomService();
+  if (!service) return undefined;
+  try {
+    return await exclusive(room, async () => {
+      const now = Date.now();
+      const [existing] = await service.listRooms([room]);
+      if (!existing) return undefined;
+      const meta = parseRoomMeta(existing.metadata);
+      let count = existing.numParticipants;
+      let earliest: number | null = null;
+      if (count <= LIVE_LIST_UP_TO) {
+        const present = await service.listParticipants(room);
+        count = present.length;
+        const joined = present.map((p) => Number(p.joinedAtMs) || Number(p.joinedAt) * 1000).filter((t) => t > 0);
+        earliest = joined.length > 0 ? Math.min(...joined) : null;
+      }
+      if (count > 0) return sessionAge(meta.startedAt, earliest, now);
+      if (!enters) return undefined;
+      await service.updateRoomMetadata(room, JSON.stringify({ ...meta, startedAt: now } satisfies RoomMeta));
+      return 0;
+    });
+  } catch (error) {
+    console.error("Could not read when the meeting began", error);
+    return undefined;
   }
 }
 
@@ -600,7 +661,7 @@ export async function liveKitHostAction(
           await service.deleteRoom(room);
           // Anyone still asking to join is told the same thing.
           await service.deleteRoom(lobbyOf(room)).catch(() => {});
-          await createRoom(service, room, { ...current, cohosts: [], pin: undefined, polls: undefined }).catch((error) =>
+          await createRoom(service, room, { ...current, cohosts: [], pin: undefined, polls: undefined, startedAt: undefined }).catch((error) =>
             console.error("Could not keep the meeting record after ending the call", error),
           );
         });
