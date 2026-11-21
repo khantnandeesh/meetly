@@ -1,7 +1,7 @@
 /**
  * topology's public face. Owner: E-transport+topology. See ./README.md.
  */
-import { notImplemented } from "../runtime";
+import { createOverlayNode as createOverlayNodeImpl } from "./node";
 import { createGopCache as createGopCacheImpl } from "./gopCache";
 import type { GopCache, GopCacheOptions, OverlayNode, OverlayNodeOptions } from "./types";
 
@@ -15,4 +15,4 @@ export const createGopCache: (options: GopCacheOptions) => GopCache = createGopC
  */
 export { createParentSelector, judgeRelay, parentCost } from "./scoring";
 
-export const createOverlayNode: (options: OverlayNodeOptions) => OverlayNode = () => notImplemented("E-transport+topology", "topology.createOverlayNode");
+export const createOverlayNode: (options: OverlayNodeOptions) => OverlayNode = createOverlayNodeImpl;

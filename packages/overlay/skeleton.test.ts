@@ -15,7 +15,6 @@ import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
 import { startNodeCoordinator } from "@meetly/overlay/coordinator/node";
 import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
 import { DEFAULT_ENCODING, createJitterBuffer, createPlayer } from "@meetly/overlay/media/index";
-import { createOverlayNode } from "@meetly/overlay/topology/index";
 import { CHANNELS } from "@meetly/overlay/transport/index";
 
 describe("overlay skeleton", () => {
@@ -31,7 +30,6 @@ describe("overlay skeleton", () => {
     const stubs: [string, () => unknown][] = [
       ["architect", () => createOverlayViewer({ coordinatorUrl: "", ticket: async () => "" })],
       ["architect", () => createOverlaySource({ coordinatorUrl: "", ticket: async () => "" })],
-      ["E-transport+topology", () => createOverlayNode(undefined as never)],
       ["E-media", () => createJitterBuffer(undefined as never)],
       ["E-media", () => createPlayer(undefined as never)],
       ["E-congestion", () => createLinkEstimator()],

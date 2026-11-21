@@ -130,6 +130,31 @@ export type NodeStatus = {
   freeSlots: number;
 };
 
+/**
+ * What the node counted since the last `takeStats()`: the parts of a `MetricsSample` (SPEC §12.1)
+ * that only the node knows. Whoever builds the sample adds the player's parts.
+ */
+export type NodeStats = {
+  /** The link to the parent. Null on the source, and while there is no parent. */
+  up: { parent: PeerId; rttMs: number | null; lossPct: number; queueDelayMs: number; rxKbps: number; nacksSent: number; retransmitsReceived: number; duplicates: number; turn: boolean } | null;
+  /** What this peer does for others. Null on a leaf with no children. */
+  relay: {
+    children: number;
+    standby: number;
+    txKbps: number;
+    /** Receipt of a packet to handing it to the last child's channel, in microseconds. */
+    forwardP50Us: number;
+    forwardP95Us: number;
+    bufferedMaxBytes: number;
+    layerDrops: number;
+    retransmitsSent: number;
+  } | null;
+  /** The node's part of the `join` metric event, on the session clock. Null before the first parent. */
+  join: { linked: number; firstPacket: number | null; turn: boolean } | null;
+  /** Packets that did not decode. */
+  malformed: number;
+};
+
 /** What the node needs from the coordinator. `coordinator/client.ts` provides it; tests fake it. */
 export interface CoordinatorPort {
   /** False while the socket is down. Repair must work regardless (SPEC §7.5). */
@@ -176,6 +201,8 @@ export interface OverlayNode extends Listenable<OverlayNodeEvents> {
   status(): NodeStatus;
   /** The estimates of the links to direct children: the source feeds them to its rate controller. */
   childEstimates(): LinkEstimate[];
+  /** The node's counters since the last call (they start again from zero), for the metrics sample. */
+  takeStats(): NodeStats;
   /** Leave gracefully: `bye` to children with somewhere to go, then to parents (SPEC §7.7). */
   stop(): Promise<void>;
 }
