@@ -15,6 +15,7 @@ fake clock before it is anything else.
 | Every threshold of §11 | | `tuning.ts` | |
 | The send path, faked (C3), through a fake of transport's `Link` | | `sim/` | `slowChild.test.ts`, `sim/world.test.ts`, `sim/link.test.ts` |
 | The same on real data channels | | `browser/` | `browser/run.ts` (not part of `npm test`) |
+| Patches for others' files, proposed | | `proposals/` | applied and tested on `overlay-integration` |
 
 Rules of this module:
 
@@ -220,6 +221,27 @@ this module's `createLinkEstimator` and `createLayerGate`. The source, three chi
 
 No node errors. Their tests pass on that tree with this module in it; the one failure is
 `skeleton.test.ts`, whose congestion lines their branch still has and this one has removed.
+
+### Through the integrated engine (`overlay-integration` at ee49101, this module at its head)
+
+- **In one process, on the real node** (topology's `SimNet` and `OverlayNode`, with a rate cap
+  added to its wire): children capped at 900 kbps and 1.1 Mbps each get one `layers`, to the
+  middle layer, at +1,067 / +1,200 ms, and every frame of layers 0 and 1; siblings every frame —
+  *with* the NACK change of `proposals/2-nack-backlog.patch`. Without it, the 900 kbps child is
+  dropped to the base layer at +2,100 ms (retransmissions refill the queue it overflowed) and
+  the node moves it to another parent. The patches and a test are in `proposals/`.
+- **The harness's slow-child scenario, 8 headless pages** (`swarm.mjs run slow-child --port
+  4240`): it does not test PLAN C3 yet. It impairs the capped peer's *own sends*, so the cap is
+  on its uplink to its two children, not on its link from the source; and the real source's
+  fake camera encodes about 700–800 kbps whatever the 1,200 kbps target (`pad` in the gate's
+  program is not implemented anywhere), so 900 kbps is not under the stream. No layer moved
+  while capped. Load average 2.4 to 7.1, event-loop lag p99 at the 50 ms limit.
+- **The same with the cap on the source's link to the child and a busy picture for the camera**
+  (scratch changes to the harness, not committed: a per-link profile on the page, and
+  `--use-file-for-fake-video-capture`): the first drop came at +701 ms, as here, but the run is
+  not a measurement: load average 10.4, event-loop lag p99 80 ms, the source encoding 5–10 fps.
+- **gate-small at 8 peers**: not a measurement either (load average 15, lag p99 200 ms, 3 of 8
+  peers failed to start). The machine is shared; these belong in CI (`overlay-swarm.yml`).
 
 ## Known, and not fixed here
 

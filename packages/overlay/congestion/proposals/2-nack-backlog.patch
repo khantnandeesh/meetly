@@ -1,0 +1,22 @@
+--- a/packages/overlay/topology/node.ts	2026-11-21 21:25:06.931744130 +0000
++++ b/packages/overlay/topology/node.ts	2026-11-21 21:25:14.824351365 +0000
+@@ -83,6 +83,8 @@
+ export const REPLAY_MIN_INTERVAL_MS = 1000;
+ /** A parent spends at most this share of a stream's bitrate on retransmissions to one child (SPEC §4.6). */
+ export const RETRANSMIT_SHARE = 0.2;
++/** A child's backlog, in ms of the stream's bitrate, over which its NACKs are not answered: §11.2's strained line. */
++export const RETRANSMIT_BACKLOG_MS = 50;
+ /** How often a peer compares its parent with the alternatives (SPEC §7.6). */
+ export const REBALANCE_COMPARE_MS = 10_000;
+ /** A parent that has held this peer at the base layer for this long may be left at once (SPEC §7.6). */
+@@ -861,6 +863,10 @@
+       if (!sub || !stream || sub.mode !== "active") continue;
+       // A frame the gate kept from this child is not sent on request either.
+       if (sub.decisions.get(item.frameId) === false) continue;
++      // Nor is anything sent again into a backlog: a link that overflowed asks for what it lost,
++      // and answering refills the queue it lost it from. Over the strained line (50 ms of B,
++      // SPEC §11.2) the answer waits for the next NACK. (Proposed by E-congestion.)
++      if (peer.link.bufferedAmount > (stream.config.bitrateKbps * RETRANSMIT_BACKLOG_MS) / 8) continue;
+       // At most 20% of the stream's bitrate, over any second.
+       const perSecond = RETRANSMIT_SHARE * stream.config.bitrateKbps * 125;
+       sub.retransmitTokens = Math.min(perSecond, sub.retransmitTokens + ((now - sub.tokensAt) / 1000) * perSecond);
