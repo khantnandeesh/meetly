@@ -1778,6 +1778,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
     takeStats,
 
+    runProbe() {
+      events.emit("probe", null);
+    },
+
     async stop() {
       if (stopping || !started) return;
       stopping = true;
