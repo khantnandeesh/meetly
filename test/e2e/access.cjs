@@ -86,7 +86,10 @@ module.exports = async function access(browser) {
   await dee.page.getByText("The host didn't let you in").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("deny: the person is told, and is not in the call", (await dee.page.getByText("The host didn't let you in").count()) === 1 && (await headcount(ada)) === 2);
   await H.shot(dee, "denied-screen-desktop");
-  H.ok("deny: the host's notification and count clear", await H.until(async () => (await ada.page.getByText("wants to join").count()) === 0 && (await ada.page.locator("[data-waiting-count]").count()) === 0, 5000));
+  // Looked for among the notifications: the home page the host came from stays in the document,
+  // hidden, and its illustration has a "wants to join" notification of its own.
+  const knocks = () => ada.page.locator(".toast-region").getByText("wants to join").count();
+  H.ok("deny: the host's notification and count clear", await H.until(async () => (await knocks()) === 0 && (await ada.page.locator("[data-waiting-count]").count()) === 0, 5000));
 
   // Ask again, and a second person: one notification for both, then admit from the list.
   await dee.page.getByRole("button", { name: "Ask again" }).click();
@@ -116,7 +119,7 @@ module.exports = async function access(browser) {
   H.ok("the other person is still waiting", await H.until(async () => (await eli.page.getByText("Asking to join…").count()) === 1 && (await ada.page.getByText("Eli Second wants to join").count()) === 1, 6000));
   // Cancelling takes them off the host's list.
   await eli.page.getByRole("button", { name: "Cancel" }).click();
-  H.ok("cancel: the host's list and notification clear", await H.until(async () => (await ada.page.getByText("wants to join").count()) === 0 && (await ada.page.evaluate(() => window.__meetly.call.waiting().length)) === 0, 6000));
+  H.ok("cancel: the host's list and notification clear", await H.until(async () => (await knocks()) === 0 && (await ada.page.evaluate(() => window.__meetly.call.waiting().length)) === 0, 6000));
 
   // The host reloads while someone waits: the list is still there.
   await H.press(eli, url, "Eli Second");
