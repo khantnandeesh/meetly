@@ -45,9 +45,10 @@ export function createUplinkProbe(options: UplinkProbeOptions): UplinkProbe {
         startedAt = now;
         lastAt = now - 1;
       }
-      // The answer is the most the receiver took in any one second of the probe, while the link
-      // was not congested: "the highest rate before it left ok".
-      if (estimate.state !== "congested") best = Math.max(best, estimate.deliveredKbps);
+      // The answer is the most the receiver took in any one second of the probe while the link
+      // was ok: "the highest rate before it left ok" (§11.6). Only congestion stops the probe
+      // early; strained, it goes on, and what it sees then does not count.
+      if (estimate.state === "ok") best = Math.max(best, estimate.deliveredKbps);
 
       if (stoppedAt === null && (now - startedAt >= options.durationMs || estimate.state === "congested")) stoppedAt = now;
       if (stoppedAt !== null) {

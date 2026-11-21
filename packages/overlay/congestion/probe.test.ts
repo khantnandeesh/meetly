@@ -76,6 +76,19 @@ describe("UplinkProbe", () => {
     assert.equal(probe.spareKbps, 1160);
   });
 
+  it("counts only what arrived while the link was ok, and goes on through strained", () => {
+    const probe = createUplinkProbe({ targetKbps: 8000, durationMs: 500 });
+    let sending = 0;
+    for (let now = 0; now < 500; now += 10) {
+      const strained = now >= 200 && now < 300;
+      const sizes = probe.next(link({ deliveredKbps: strained ? 7000 : 3000, state: strained ? "strained" : "ok", queueDelayMs: strained ? 50 : 0 }), now);
+      if (strained) sending += sizes.length;
+    }
+    for (let now = 500; now <= 900; now += 10) probe.next(link({ deliveredKbps: 3100 }), now);
+    assert.ok(sending > 0);
+    assert.equal(probe.spareKbps, 3100);
+  });
+
   it("cannot report more than it was asked to send", () => {
     const probe = createUplinkProbe({ targetKbps: 2400, durationMs: 100 });
     for (let now = 0; now <= 600; now += 10) probe.next(link({ deliveredKbps: 4000 }), now);
