@@ -160,7 +160,7 @@ export interface Reassembler {
 export type ReassemblerOptions = {
   clock: Clock;
   /** How long a gap may be mere reordering, before it is called missing. */
-  reorderMs: number;
+  reorderMs: number | (() => number);
   /** The most incomplete frames held per stream. */
   maxPending: number;
   /** How many more times `missing` names a fragment after the first (SPEC §4.6). Default 1. */

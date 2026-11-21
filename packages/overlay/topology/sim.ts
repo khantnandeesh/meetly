@@ -191,7 +191,11 @@ class SimLink implements Link {
     net.packets++;
     const other = this.other;
     const wire = this.wire;
-    if (!other || this.owner.dead || this.lost(wire)) return true;
+    if (!other || this.owner.dead) return true;
+    if (this.lost(wire)) {
+      if (type === PacketType.Media) this.lostMedia++;
+      return true;
+    }
     const copy = packet.slice();
     let waitMs = 0;
     if (wire.kbps !== undefined) {
@@ -212,6 +216,8 @@ class SimLink implements Link {
   }
 
   private inBurst = false;
+  /** Media packets the wire lost: what a test sets retransmissions against. */
+  lostMedia = 0;
 
   private lost(wire: Wire): boolean {
     const random = this.owner.net.random;

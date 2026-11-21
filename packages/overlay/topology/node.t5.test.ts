@@ -82,23 +82,37 @@ describe("node: NACK under the gate mix's bad profile (SPEC §4.6, §12.3)", () 
   // The harness's "bad" profile (harness/scenarios.ts): 60 ms, 0–40 ms of jitter, 3% loss in
   // Gilbert–Elliott bursts, on every direction of both hops.
   const BAD = { latencyMs: 60, jitterMs: 40, lossPct: 3, burst: { enterPct: 1, leavePct: 30, lossPctInBurst: 50 } };
-  it("two bad hops lose under 0.5% of frames at the leaf", async () => {
-    const net = new SimNet({ seed: 1, backups: false, latencyMs: 5 });
-    const source = net.join("0", "source", []);
-    net.publish(source);
-    await net.runAsync(300);
-    net.join("1", "relay", ["0"]);
-    await net.runAsync(300);
-    const leaf = net.join("2", "leaf", ["1"]);
-    await net.runAsync(2000);
-    net.setWire("0", "1", BAD);
-    net.setWire("1", "2", BAD);
-    const from = net.published;
-    await net.runAsync(30_000);
-    const to = net.published - 20;
-    const lost = missing(leaf, from, to).length;
-    assert.ok(lost / (to - from + 1) < 0.005, `lost ${lost} of ${to - from + 1}`);
-  });
+  for (const seed of [1, 2, 3]) {
+    it(`two bad hops lose under 0.5% of frames at the leaf, retransmitting under twice what was really lost (D39, seed ${seed})`, async () => {
+      const net = new SimNet({ seed, backups: false, latencyMs: 5 });
+      const source = net.join("0", "source", []);
+      net.publish(source);
+      await net.runAsync(300);
+      const relay = net.join("1", "relay", ["0"]);
+      await net.runAsync(300);
+      const leaf = net.join("2", "leaf", ["1"]);
+      await net.runAsync(2000);
+      net.setWire("0", "1", BAD);
+      net.setWire("1", "2", BAD);
+      source.node.takeStats();
+      relay.node.takeStats();
+      const hops = [source.links.map.get("1")!, relay.links.map.get("2")!];
+      const lostBefore = hops.map((link) => link.lostMedia);
+      const from = net.published;
+      await net.runAsync(30_000);
+      const to = net.published - 20;
+      const lost = missing(leaf, from, to).length;
+      assert.ok(lost / (to - from + 1) < 0.005, `lost ${lost} of ${to - from + 1}`);
+      // 0–40 ms of jitter, against a 10 ms window, made about four retransmissions for each real loss:
+      // packets that were only late were asked for. The window follows the jitter now.
+      const retransmitted = [source.node.takeStats().relay!.retransmitsSent, relay.node.takeStats().relay!.retransmitsSent];
+      hops.forEach((link, hop) => {
+        const really = link.lostMedia - lostBefore[hop];
+        assert.ok(really > 50, `hop ${hop}: ${really} lost`);
+        assert.ok(retransmitted[hop] < 2 * really, `hop ${hop}: ${retransmitted[hop]} retransmissions for ${really} packets lost`);
+      });
+    });
+  }
 });
 
 describe("node: NACK into a backlog (SPEC §4.6, D36)", () => {
