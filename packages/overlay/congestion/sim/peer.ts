@@ -2,15 +2,17 @@
  * A fake of topology's node, as far as the congestion module is concerned: the send path of SPEC
  * §3.3 and nothing else. No repair, no GOP cache, no NACK, no coordinator. It exists so that the
  * estimator and the gate can be driven the way E-transport+topology's `OverlayNode` will drive
- * them (PLAN §2 rule 2: "build against interfaces, with fakes"), over a simulated pipe in unit
- * tests and over real data channels in the browser run.
+ * them (PLAN §2 rule 2: "build against interfaces, with fakes"). It sends and receives through
+ * transport's `Link` interface (transport/types.ts): a fake one over a simulated pipe in unit tests
+ * (./link.ts), the same fake over real data channels in the browser run.
  *
  * What it does, which is what the real node must do for this module to work:
  *
- * - every packet handed to a channel is told to that link's estimator (`onSent`), every packet
- *   that arrives too (`onReceived`), and feedback and heartbeats are passed on;
- * - before the first packet of each frame, for each child: `onBuffered(bufferedAmount)`, then
+ * - every packet handed to `link.sendPacket` is told to that link's estimator (`onSent`), every
+ *   packet the link raises as `packet` too (`onReceived`), and feedback and heartbeats are passed on;
+ * - before the first packet of each frame, for each child: `onBuffered(link.bufferedAmount)`, then
  *   `gate.admit(header, bytes, estimator.estimate(now), now)`; the answer holds for the frame;
+ * - every change of a child's cap goes to that child as a `layers` message (SPEC §11.3);
  * - a child sends FEEDBACK every `feedbackMs`, built from `takeFeedback`;
  * - a peer that receives PROBE packets answers with FEEDBACK of its own while they keep coming.
  */
@@ -23,20 +25,20 @@ import {
   encodeFeedback,
   encodeHeartbeat,
   encodeProbe,
-  ms16,
   packetLinkFields,
   packetizeFrame,
   writeHopFields,
   MediaFlag,
   type MediaHeader,
+  type PeerMessageOf,
 } from "../../protocol";
+import type { Link, SendClass } from "../../transport/types";
 import type { LayerCap, LinkEstimate } from "../../types";
 import { createLinkEstimator } from "../estimator";
 import { createLayerGate, type GateVerdict } from "../gate";
 import { probeView } from "../probe";
 import type { LayerGate, LayerGateOptions, LinkEstimator, UplinkProbe } from "../types";
 import { AUDIO_STREAM, VIDEO_STREAM, type SyntheticFrame } from "./program";
-import type { Pipe } from "./world";
 
 export type FakePeerOptions = {
   id: string;
@@ -60,13 +62,12 @@ export type CapChange = { at: number; maxTemporal: number; reason: "congestion" 
 /** What a parent keeps for one child. */
 export type ChildPort = {
   id: string;
-  pipe: Pipe;
+  link: Link;
   estimator: LinkEstimator;
   /** The video stream's gate. */
   gate: LayerGate;
   /** The audio stream's: one per child and stream (SPEC §11.3). */
   audioGate: LayerGate;
-  linkSeq: number;
   /** Per video frame: was it let through. */
   decisions: Map<number, boolean>;
   audioAgain: { packet: Uint8Array; dueAt: number }[];
@@ -95,11 +96,8 @@ export type FrameRecord = {
   completeAt: number | null;
 };
 
-const setLinkFields = (packet: Uint8Array, linkSeq: number, sendMs: number): void => {
-  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
-  view.setUint16(2, linkSeq);
-  view.setUint16(4, sendMs);
-};
+/** A `layers` message this peer heard from its parent, and when (the caller's time). */
+export type LayersHeard = { at: number; message: PeerMessageOf<"layers"> };
 
 export class FakePeer {
   readonly id: string;
@@ -111,9 +109,11 @@ export class FakePeer {
   ]);
   duplicates = 0;
   /** The link to the parent, once `setParent` has been called. */
-  up: { pipe: Pipe; estimator: LinkEstimator; linkSeq: number } | null = null;
+  up: { link: Link; estimator: LinkEstimator } | null = null;
   probe: UplinkProbe | null = null;
   wanted: LayerCap = { maxSpatial: 0, maxTemporal: 15 };
+  /** Every `layers` message from the parent: what it says it is sending this peer, and why. */
+  readonly layersHeard: LayersHeard[] = [];
 
   /** What to add to the caller's time to get this peer's clock. */
   readonly clockOffsetMs: number;
@@ -137,11 +137,16 @@ export class FakePeer {
     return (this.options.createLinkEstimator ?? createLinkEstimator)({ bitrateKbps: this.options.streamKbps });
   }
 
-  setParent(pipe: Pipe): void {
-    this.up = { pipe, estimator: this.estimator(), linkSeq: 0 };
+  /** The link's `receivedAt` is this peer's clock; the methods below take the caller's. */
+  setParent(link: Link): void {
+    this.up = { link, estimator: this.estimator() };
+    link.on("packet", (packet, receivedAt) => this.fromParent(packet, receivedAt - this.offset));
+    link.on("message", (message) => {
+      if (message.t === "layers") this.layersHeard.push({ at: this.lastAt, message });
+    });
   }
 
-  addChild(id: string, pipe: Pipe, at: number): ChildPort {
+  addChild(id: string, link: Link, at: number): ChildPort {
     const gate = (this.options.createLayerGate ?? createLayerGate)({
       bitrateKbps: this.options.streamKbps,
       temporalLayers: this.options.temporalLayers,
@@ -151,11 +156,10 @@ export class FakePeer {
     const audioGate = (this.options.createLayerGate ?? createLayerGate)({ bitrateKbps: 32, temporalLayers: 1, frameIntervalMs: this.audioFrameMs, kind: "audio" });
     const port: ChildPort = {
       id,
-      pipe,
+      link,
       estimator: this.estimator(),
       gate,
       audioGate,
-      linkSeq: 0,
       decisions: new Map(),
       audioAgain: [],
       lastProbeAt: -Infinity,
@@ -167,8 +171,18 @@ export class FakePeer {
       refused: { "above-cap": 0, stale: 0, starved: 0, undecodable: 0 },
       states: [],
     };
-    gate.on("change", (cap, reason) => port.caps.push({ at: this.lastAt, maxTemporal: cap.maxTemporal, reason }));
-    gate.on("starved", () => port.starvedAt.push(this.lastAt));
+    // Every change of cap is told to the child (SPEC §11.3), and starved is told as congestion.
+    const tell = (cap: LayerCap, reason: "congestion" | "overload" | "restore"): void =>
+      link.sendMessage({ t: "layers", stream: VIDEO_STREAM, maxSpatial: cap.maxSpatial, maxTemporal: cap.maxTemporal, reason });
+    gate.on("change", (cap, reason) => {
+      port.caps.push({ at: this.lastAt, maxTemporal: cap.maxTemporal, reason });
+      tell(cap, reason);
+    });
+    gate.on("starved", () => {
+      port.starvedAt.push(this.lastAt);
+      tell(gate.cap, "congestion");
+    });
+    link.on("packet", (packet, receivedAt) => this.fromChild(id, packet, receivedAt - this.offset));
     this.children.set(id, port);
     return port;
   }
@@ -178,20 +192,15 @@ export class FakePeer {
 
   /* ------------------------------ sending ------------------------------ */
 
-  private sendMedia(port: ChildPort, packet: Uint8Array, at: number): void {
-    const now = at + this.offset;
-    writeHopFields(packet, { hopFlags: 0, hops: this.options.depth, linkSeq: port.linkSeq, sendMs: ms16(now) });
-    port.linkSeq = (port.linkSeq + 1) & 0xffff;
-    port.pipe.send(packet);
-    port.estimator.onSent(packet.byteLength, now);
+  /** The node's part of a hop: `hops` and the hop flags. The link sets `linkSeq` and `sendMs`. */
+  private sendMedia(port: ChildPort, packet: Uint8Array, sendClass: SendClass, at: number): void {
+    writeHopFields(packet, { hopFlags: 0, hops: this.options.depth, linkSeq: 0, sendMs: 0 });
+    this.send(port, packet, sendClass, at);
   }
 
-  private sendOther(link: { pipe: Pipe; estimator: LinkEstimator; linkSeq: number }, packet: Uint8Array, at: number): void {
-    const now = at + this.offset;
-    setLinkFields(packet, link.linkSeq, ms16(now));
-    link.linkSeq = (link.linkSeq + 1) & 0xffff;
-    link.pipe.send(packet);
-    link.estimator.onSent(packet.byteLength, now);
+  /** One packet through transport's `Link`, and its estimator told. */
+  private send(link: { link: Link; estimator: LinkEstimator }, packet: Uint8Array, sendClass: SendClass, at: number): void {
+    if (link.link.sendPacket(packet, sendClass)) link.estimator.onSent(packet.byteLength, at + this.offset);
   }
 
   /** The gate's answer for a video frame, asked once, at the frame's first packet. */
@@ -199,7 +208,7 @@ export class FakePeer {
     const known = port.decisions.get(header.frameId);
     if (known !== undefined) return known;
     const now = at + this.offset;
-    port.estimator.onBuffered(port.pipe.bufferedAmount, now);
+    port.estimator.onBuffered(port.link.bufferedAmount, now);
     const estimate = port.estimator.estimate(now);
     const admit = port.gate.admit(header, frameBytes, estimate, now);
     port.decisions.set(header.frameId, admit);
@@ -220,10 +229,10 @@ export class FakePeer {
       if (header.streamId === AUDIO_STREAM) {
         // Rule 1, and [D25]: audio always goes, and goes twice on every hop.
         if (!port.audioGate.admit(header, frameBytes, port.estimator.estimate(at + this.offset), at + this.offset)) throw new Error("the gate refused audio");
-        this.sendMedia(port, packet, at);
+        this.sendMedia(port, packet, "audio", at);
         port.audioAgain.push({ packet: packet.slice(), dueAt: at + this.audioFrameMs });
       } else if (this.admitted(port, header, frameBytes, at)) {
-        this.sendMedia(port, packet, at);
+        this.sendMedia(port, packet, "video", at);
       }
     }
   }
@@ -328,33 +337,33 @@ export class FakePeer {
     const now = at + this.offset;
 
     for (const port of this.children.values()) {
-      while (port.audioAgain.length > 0 && port.audioAgain[0].dueAt <= at) this.sendMedia(port, port.audioAgain.shift()!.packet, at);
+      while (port.audioAgain.length > 0 && port.audioAgain[0].dueAt <= at) this.sendMedia(port, port.audioAgain.shift()!.packet, "audio", at);
     }
 
     if (at - this.lastHeartbeat >= this.heartbeatMs) {
       this.lastHeartbeat = at;
       for (const port of this.children.values()) {
-        this.sendOther(port, encodeHeartbeat({ flags: 0, linkSeq: 0, sendMs: 0, ...port.estimator.echo(now), depth: this.options.depth, streams: [] }), at);
+        this.send(port, encodeHeartbeat({ flags: 0, linkSeq: 0, sendMs: 0, ...port.estimator.echo(now), depth: this.options.depth, streams: [] }), "control", at);
       }
     }
 
     if (at - this.lastFeedback >= this.feedbackMs) {
       this.lastFeedback = at;
-      if (this.up) this.sendOther(this.up, this.feedbackPacket(this.up, now), at);
+      if (this.up) this.send(this.up, this.feedbackPacket(this.up, now), "control", at);
       // A child that is probing needs to hear how its probe fared (SPEC §11.6): feedback goes
       // down the link too, for as long as probe packets keep coming.
       for (const port of this.children.values()) {
         const probing = at - port.lastProbeAt < 1000;
         if (probing && !port.reporting)
           port.estimator.takeFeedback(now); // start the count afresh
-        else if (probing) this.sendOther(port, this.feedbackPacket(port, now), at);
+        else if (probing) this.send(port, this.feedbackPacket(port, now), "control", at);
         port.reporting = probing;
       }
     }
 
     if (this.probe && this.up) {
-      this.up.estimator.onBuffered(this.up.pipe.bufferedAmount, now);
-      for (const size of this.probe.next(probeView(this.up.estimator, now), now)) this.sendOther(this.up, encodeProbe({ linkSeq: 0, sendMs: 0, size }), at);
+      this.up.estimator.onBuffered(this.up.link.bufferedAmount, now);
+      for (const size of this.probe.next(probeView(this.up.estimator, now), now)) this.send(this.up, encodeProbe({ linkSeq: 0, sendMs: 0, size }), "replay", at);
     }
   }
 }

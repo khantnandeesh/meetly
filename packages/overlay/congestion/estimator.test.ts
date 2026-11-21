@@ -296,7 +296,8 @@ describe("LinkEstimator: the state of a link, exactly as SPEC §11.2's table", (
     it(`${name}: ${state}`, () => {
       const estimator = createLinkEstimator({ bitrateKbps: 1200 });
       set(estimator);
-      assert.equal(estimator.directed("sent", 0).state, state);
+      // Looked at 150 ms on: a backlog counts once it has stood that long (C6, the next suite).
+      assert.equal(estimator.directed("sent", 150).state, state);
     });
   }
 
@@ -325,17 +326,81 @@ describe("LinkEstimator: the state of a link, exactly as SPEC §11.2's table", (
     assert.equal(estimator.directed("sent", 500).state, "congested"); // 180 of 200
     assert.equal(estimator.directed("sent", 1000).state, "ok"); // the bad report is a second old
     estimator.onBuffered(30_000, 1000);
-    assert.equal(estimator.directed("sent", 1000).state, "congested");
-    estimator.onBuffered(0, 1001);
-    assert.equal(estimator.directed("sent", 1001).state, "ok");
+    assert.equal(estimator.directed("sent", 1150).state, "congested");
+    estimator.onBuffered(0, 1151);
+    assert.equal(estimator.directed("sent", 1151).state, "ok");
   });
 
   it("takes B from the stream it is told of", () => {
     const estimator = createLinkEstimator({ bitrateKbps: 600 });
     estimator.onBuffered(3751, 0);
-    assert.equal(estimator.estimate(0).state, "strained");
-    estimator.onBuffered(11_251, 0);
-    assert.equal(estimator.estimate(0).state, "congested");
+    assert.equal(estimator.estimate(150).state, "strained");
+    estimator.onBuffered(11_251, 1000);
+    assert.equal(estimator.estimate(1149).state, "strained");
+    assert.equal(estimator.estimate(1150).state, "congested");
+  });
+});
+
+describe("LinkEstimator: the backlog that stands (C6)", () => {
+  // B is 1,200 kbps: the strained line is 7,500 bytes, the congested one 22,500; a backlog counts
+  // once it has been over a line at every sample for 150 ms.
+  it("does not read a keyframe's burst that the link drains for congestion", () => {
+    const estimator = createLinkEstimator();
+    // A frame every 33 ms. A 27 kB keyframe goes in at 100 and a 3 Mbps link drains it in 72 ms.
+    const samples: [number, number][] = [
+      [0, 1000],
+      [33, 900],
+      [66, 1100],
+      [100, 27_000],
+      [133, 15_000],
+      [166, 3000],
+      [200, 1000],
+    ];
+    for (const [at, bytes] of samples) {
+      estimator.onBuffered(bytes, at);
+      assert.equal(estimator.directed("sent", at).state, "ok", `at ${at}`);
+      // What the channel holds now is still what rule 6 and the replay budget are shown.
+      assert.equal(estimator.directed("sent", at).bufferedBytes, bytes);
+    }
+  });
+
+  it("reads a backlog that is there at every sample for 150 ms for what it is", () => {
+    const estimator = createLinkEstimator();
+    // Strained first: over 7,500 bytes from 0, over 22,500 only from 99.
+    const samples: [number, number, string][] = [
+      [0, 8000, "ok"],
+      [33, 12_000, "ok"],
+      [66, 18_000, "ok"],
+      [99, 23_000, "ok"],
+      [132, 26_000, "ok"],
+      [165, 29_000, "strained"],
+      [198, 31_000, "strained"],
+      [231, 33_000, "strained"],
+      [264, 34_000, "congested"],
+    ];
+    for (const [at, bytes, state] of samples) {
+      estimator.onBuffered(bytes, at);
+      assert.equal(estimator.directed("sent", at).state, state, `at ${at}`);
+    }
+    // And lets go of it as soon as the channel has drained.
+    estimator.onBuffered(500, 297);
+    assert.equal(estimator.directed("sent", 297).state, "ok");
+  });
+
+  it("starts the count again when the backlog dips under the line, even once", () => {
+    const estimator = createLinkEstimator();
+    estimator.onBuffered(30_000, 0);
+    estimator.onBuffered(20_000, 100);
+    estimator.onBuffered(30_000, 133);
+    assert.equal(estimator.directed("sent", 200).state, "strained");
+    assert.equal(estimator.directed("sent", 283).state, "congested");
+  });
+
+  it("reads each sample as it comes with a window of 0: the spec to the letter", () => {
+    const estimator = createLinkEstimator({ tuning: { backlogWindowMs: 0 } });
+    estimator.onBuffered(1000, 0);
+    estimator.onBuffered(27_000, 33);
+    assert.equal(estimator.directed("sent", 33).state, "congested");
   });
 });
 

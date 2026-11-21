@@ -6,9 +6,13 @@
  *
  * Still not real: the media (synthetic frames, no encoder), the signalling (a `BroadcastChannel`
  * between the pages, where the coordinator will be), and the slow link (a rate cap in front of
- * the channel, where E-harness's impairment shim will be: `TransportOptions.wrapChannel`).
+ * the channel, where E-harness's impairment shim will be: `TransportOptions.wrapChannel`). The
+ * link the node sends through is congestion's fake of transport's `Link` (../sim/link.ts), on the
+ * real channels, until E-transport+topology's is merged.
  */
+import { decodePeerMessage, encodePeerMessage } from "../../protocol";
 import { createUplinkProbe } from "../probe";
+import { PipeLink } from "../sim/link";
 import { FakePeer } from "../sim/peer";
 import { STAGE1_SHAPE, createSyntheticProgram } from "../sim/program";
 import { viewerStats } from "../sim/tree";
@@ -88,20 +92,22 @@ function createPagePeer(config: PeerConfig) {
     signalling.postMessage({ run: config.run, from: config.id, to, ...body } satisfies Signal);
 
   /** One link: a peer connection and SPEC §3.2's two channels, neither side waiting for the other's. */
-  const link = (other: string): { connection: RTCPeerConnection; media: RTCDataChannel; opened: Promise<void> } => {
+  const link = (other: string): { connection: RTCPeerConnection; ctl: RTCDataChannel; media: RTCDataChannel; opened: Promise<void> } => {
     const connection = new RTCPeerConnection({ iceServers: [] });
     connections.set(other, connection);
     connection.onicecandidate = (event) => {
       if (event.candidate) signal(other, { candidate: event.candidate.toJSON() });
     };
-    connection.createDataChannel("ctl", { negotiated: true, id: 0, ordered: true });
+    const ctl = connection.createDataChannel("ctl", { negotiated: true, id: 0, ordered: true });
     const media = connection.createDataChannel("media", { negotiated: true, id: 1, ordered: false, maxRetransmits: 0 });
     media.binaryType = "arraybuffer";
-    const opened = new Promise<void>((resolve, reject) => {
-      media.onopen = () => resolve();
-      media.onerror = () => reject(new Error(`media channel to ${other} failed`));
-    });
-    return { connection, media, opened };
+    const open = (channel: RTCDataChannel): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        channel.onopen = () => resolve();
+        channel.onerror = () => reject(new Error(`${channel.label} channel to ${other} failed`));
+      });
+    const opened = Promise.all([open(ctl), open(media)]).then(() => undefined);
+    return { connection, ctl, media, opened };
   };
 
   const links = [...config.children, ...(config.parent === null ? [] : [config.parent])].map((other) => ({ other, ...link(other) }));
@@ -139,16 +145,24 @@ function createPagePeer(config: PeerConfig) {
         signal(other, { description: connection.localDescription!.toJSON() });
       }
       await Promise.all(links.map((entry) => entry.opened));
-      for (const { other, media } of links) {
+      for (const { other, ctl, media } of links) {
         const pipe = new CappedPipe(media);
+        // The fake of transport's `Link` (../sim/link.ts), on the real channels.
+        const fake = new PipeLink(other, pipe, wallClock, (message) => ctl.send(encodePeerMessage(message)));
+        media.onmessage = (event: MessageEvent<ArrayBuffer>) => fake.deliver(new Uint8Array(event.data), wallClock());
+        ctl.onmessage = (event: MessageEvent<string>) => {
+          try {
+            fake.deliverMessage(decodePeerMessage(event.data));
+          } catch {
+            // Not a message: dropped, as SPEC §5.3 says.
+          }
+        };
         if (other === config.parent) {
           up = pipe;
-          peer.setParent(pipe);
-          media.onmessage = (event: MessageEvent<ArrayBuffer>) => peer.fromParent(new Uint8Array(event.data), wallClock());
+          peer.setParent(fake);
         } else {
           down.set(other, pipe);
-          peer.addChild(other, pipe, wallClock());
-          media.onmessage = (event: MessageEvent<ArrayBuffer>) => peer.fromChild(other, new Uint8Array(event.data), wallClock());
+          peer.addChild(other, fake, wallClock());
         }
       }
     },
@@ -209,6 +223,7 @@ function createPagePeer(config: PeerConfig) {
         duplicates: peer.duplicates,
         stats: config.parent === null ? null : viewerStats(peer, fromMs, toMs),
         uplink: peer.up ? peer.up.estimator.estimate(now) : null,
+        layersHeard: peer.layersHeard.map((entry) => ({ at: entry.at, maxTemporal: entry.message.maxTemporal, reason: entry.message.reason })),
         children: [...peer.children.values()].map((port) => ({
           id: port.id,
           caps: port.caps,

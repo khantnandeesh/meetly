@@ -45,6 +45,9 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
   const tree = slowChildTree();
   tree.run(CAP_AT);
   tree.setDown("slow", { delayMs: 15, kbps: 900, queueMs: 300 });
+  tree.run(CAP_AT + 3000);
+  /** Packets the capped link's queue overflowed with, while the cap was settling. */
+  const lostSettling = tree.pipes.get("slow")!.down.lost;
   tree.run(END);
   const port = tree.port("slow");
   const drops = port.caps.filter((change) => change.at >= CAP_AT);
@@ -61,11 +64,12 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
   it("drops the slow child's top layer within the spec's reaction time", () => {
     // SPEC §11.2–§11.3: congested once the channel holds more than 150 ms of B, acted on at the
     // next frame. The link is short by about 420 kbps (video, audio twice, headers), so 22,500
-    // bytes take about 430 ms to pile up; a frame interval more and the layer is gone.
+    // bytes take about 430 ms to pile up; the backlog must then stand for 150 ms (C6, README) and
+    // a frame interval more and the layer is gone: 700 ms here.
     const first = drops[0];
     assert.equal(first.maxTemporal, 1);
     assert.equal(first.reason, "congestion");
-    assert.ok(first.at - CAP_AT <= 700, `first drop after ${first.at - CAP_AT} ms`);
+    assert.ok(first.at - CAP_AT <= 800, `first drop after ${first.at - CAP_AT} ms`);
     // And not before the link had said so: the state at that frame was congested, by backlog.
     const state = port.states.find((entry) => entry.at === first.at)!;
     assert.equal(state.state, "congested");
@@ -82,8 +86,8 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
 
   it("sends the slow child what fits, whole and decodable, and no stale video", () => {
     // From the first GOP that starts after the cap has settled. (The one before it took the
-    // link's queue overflowing in the first second: 6 packets of its keyframe. Getting those back
-    // is NACK's work, T5, and this fake has none.)
+    // link's queue overflowing in the first second: 13 packets, of its keyframe. Getting those
+    // back is NACK's work, T5, and this fake has none.)
     const stats = viewerStats(tree.peer("slow"), CAP_AT + 3000, END - 1000);
     // The base layer, all of it, and nothing above the cap.
     assert.ok(Math.abs(stats.video[0] - stats.captured / 4) <= 1, `${stats.video[0]} base-layer frames of ${stats.captured / 4}`);
@@ -94,7 +98,8 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
     const worst = Math.max(...port.states.filter((entry) => entry.at > CAP_AT + 3000).map((entry) => entry.bufferedBytes));
     assert.ok(worst <= bytesOf(STAGE1_SHAPE.videoKbps, 200), String(worst));
     assert.equal(port.refused.stale, 0);
-    assert.equal(tree.pipes.get("slow")!.down.lost <= 8, true, "next to nothing overflowed the link's queue");
+    assert.ok(lostSettling <= 16, `${lostSettling} packets overflowed the link's queue while the cap settled`);
+    assert.equal(tree.pipes.get("slow")!.down.lost, lostSettling, "and none once it had");
   });
 
   it("never stops the slow child's audio", () => {
@@ -134,6 +139,30 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
 
   it("does not lower the cap of the slow child's own child: that link is fine", () => {
     assert.equal(tree.port("s1").caps.length, 1);
+  });
+
+  it("tells the slow child of every change of its cap, and nobody else of anything (`layers`, SPEC §11.3)", () => {
+    const heard = tree.peer("slow").layersHeard;
+    assert.deepEqual(
+      heard.map((entry) => [entry.message.stream, entry.message.maxTemporal, entry.message.reason]),
+      drops.map((change) => [0, change.maxTemporal, change.reason]),
+    );
+    // On the reliable channel, one hop's delay (15 ms) after the change, as the child's last tick saw it.
+    for (const [i, entry] of heard.entries()) assert.ok(entry.at - drops[i].at >= 10 && entry.at - drops[i].at <= 15, String(entry.at - drops[i].at));
+    for (const id of ["a", "b", "a1", "a2", "b1", "s1"]) assert.deepEqual(tree.peer(id).layersHeard, [], id);
+  });
+
+  it("sends through transport's Link: control, audio and video each in their class, nothing shed", () => {
+    const toSlow = tree.links.get("slow")!.down;
+    const toA = tree.links.get("a")!.down;
+    for (const link of [toSlow, toA]) {
+      assert.ok(link.sentByClass.control > 0 && link.sentByClass.audio > 0 && link.sentByClass.video > 0);
+      assert.equal(link.counters().packetsShed, 0);
+    }
+    // The gate decided what not to send: the slow child's link was handed fewer video packets.
+    assert.ok(toSlow.sentByClass.video < 0.75 * toA.sentByClass.video);
+    // Audio twice to each, the same to both (SPEC [D25], rule 1).
+    assert.equal(toSlow.sentByClass.audio, toA.sentByClass.audio);
   });
 });
 
@@ -204,5 +233,58 @@ describe("a slow child (C3, simulated): what the link looks like afterwards", ()
       return JSON.stringify([tree.port("slow").caps, viewerStats(tree.peer("s1"), 0, 15_000)]);
     };
     assert.equal(run(), run());
+  });
+});
+
+describe("a squeeze, then room (C6): a link that has room for the stream gets every layer back", () => {
+  // The child's link is squeezed to 500 kbps for 3 s, long enough to take it to the base layer,
+  // and then left at a rate with room for the whole stream (about 1,330 kbps with audio and
+  // headers). Keyframes are 27 kB, more than 150 ms of B: each one leaves a backlog the link
+  // drains within a few frames.
+  const squeeze = (kbps: number, estimatorTuning?: { backlogWindowMs: number }) => {
+    const tree = createSimTree({
+      seed: 3,
+      estimatorTuning,
+      peers: [
+        { id: "src", parent: null },
+        { id: "x", parent: "src", down: { delayMs: 15 } },
+      ],
+    });
+    tree.run(3000);
+    tree.setDown("x", { delayMs: 15, kbps: 500, queueMs: 300 });
+    tree.run(6000);
+    assert.equal(tree.port("x").gate.cap.maxTemporal, 0, "the squeeze took it to the base layer");
+    tree.setDown("x", { delayMs: 15, kbps, queueMs: 300 });
+    tree.run(40_000);
+    return tree;
+  };
+
+  for (const kbps of [2000, 3000]) {
+    it(`at ${kbps / 1000} Mbps: the middle layer about 5 s after the squeeze, the top 5 s later, all of it whole`, () => {
+      const tree = squeeze(kbps);
+      const rises = tree.port("x").caps.filter((change) => change.at > 6000);
+      assert.deepEqual(
+        rises.map((change) => [change.maxTemporal, change.reason]),
+        [
+          [1, "restore"],
+          [2, "restore"],
+        ],
+      );
+      assert.ok(rises[0].at - 6000 <= 7000, `first rise ${rises[0].at - 6000} ms after the squeeze`);
+      assert.ok(rises[1].at - rises[0].at >= 5000 && rises[1].at - rises[0].at <= 5100);
+      const stats = viewerStats(tree.peer("x"), 20_000, 39_000);
+      assert.equal(stats.decodable, stats.captured);
+    });
+  }
+
+  it("at 1.5 Mbps, 89% full at the top layer, it holds the middle one", () => {
+    assert.equal(squeeze(1500).port("x").gate.cap.maxTemporal, 1);
+  });
+
+  it("with every backlog sample read as it comes (the spec to the letter), a 3 Mbps link stays at the base layer", () => {
+    // Why the backlog must stand before it counts: each keyframe makes the link strained for a
+    // frame or two, so five seconds of ok never come on a link under about 4.6 Mbps, and the
+    // layers never come back.
+    assert.equal(squeeze(3000, { backlogWindowMs: 0 }).port("x").gate.cap.maxTemporal, 0);
   });
 });

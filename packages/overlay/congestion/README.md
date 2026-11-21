@@ -13,7 +13,7 @@ fake clock before it is anything else.
 | The source's bitrate (C4) | `SourceRateController` | `sourceRate.ts` | `sourceRate.test.ts` |
 | Spare uplink (C5) | `UplinkProbe` | `probe.ts` | `probe.test.ts` |
 | Every threshold of §11 | | `tuning.ts` | |
-| The send path, faked (C3) | | `sim/` | `slowChild.test.ts`, `sim/world.test.ts` |
+| The send path, faked (C3), through a fake of transport's `Link` | | `sim/` | `slowChild.test.ts`, `sim/world.test.ts`, `sim/link.test.ts` |
 | The same on real data channels | | `browser/` | `browser/run.ts` (not part of `npm test`) |
 
 Rules of this module:
@@ -27,7 +27,9 @@ Rules of this module:
 ## What the node must do with it
 
 `sim/peer.ts` is a fake of topology's node that does exactly this and no more; it is the contract
-in code, and the acceptance tests run on it.
+in code, and the acceptance tests run on it. It sends and receives through transport's `Link`
+interface (`transport/types.ts`); `sim/link.ts` is a fake of that link over a simulated pipe or a
+real data channel, which stands in until E-transport+topology's is merged.
 
 - **One estimator per link**, `createLinkEstimator({ bitrateKbps })`, where `bitrateKbps` is the
   video stream's full bitrate (*B* of §11.2; 1,200 if not given). Tell it of every packet handed to
@@ -48,8 +50,11 @@ in code, and the acceptance tests run on it.
 - **The source**: `rate.onChildren(node.childEstimates(), now)` as often as feedback arrives
   (100 ms) or once a second; `rate.onHint` from the coordinator; `target` → the encoder.
 - **The probe**: `probe.next(probeView(estimator, now), now)` on a 10 ms tick, each size sent as
-  one PROBE packet to the parent, until `spareKbps` is a number. A peer that receives PROBE
-  packets must answer with FEEDBACK while they keep coming (see below).
+  one PROBE packet to the parent, until `spareKbps` is a number. The fake sends them in class
+  "replay", the lowest, so a probe never delays anything real. A peer that receives PROBE packets
+  must answer with FEEDBACK while they keep coming (see below).
+- **`onBuffered` before every frame, for every child**, not only when the link looks bad: the
+  state reads how long the backlog has stood (item 14 below), so it needs the samples.
 
 ## Where the spec was silent, or could not be followed to the letter
 
@@ -101,35 +106,55 @@ architect; none changes the wire.
     `maxFanout × 1.15 × B / 0.7` (7,900 kbps for stage 1). It stays harmless on a slow link
     because it never queues more than the link takes between two calls: it finds the link's pace
     rather than flooding it.
+14. **(spec, C6) The backlog must stand for 150 ms before it makes a link strained or congested**
+    (`backlogWindowMs`). Read sample by sample, §11.2 takes every keyframe for trouble: a 27 kB
+    keyframe is more than 150 ms of *B*, all handed to the channel at once, and on a link with
+    room for the stream it is gone a few frames later. The cost of the literal reading was that
+    a link under about 4.6 Mbps that once lost a layer never got it back (rule 5's five seconds of
+    *ok* never came), which would also have pushed the coordinator's audience-wide `hint`
+    (§11.4) down for everyone. With the window, a 2 or 3 Mbps link gets the middle layer back
+    5 s after a squeeze ends and the top 5 s later (`slowChild.test.ts`, "a squeeze, then
+    room", which also shows the literal reading staying at the base layer). The price is 150 ms
+    of reaction to a real deficit: a 900 kbps child loses its top layer at 700 ms rather than
+    533. Rule 6 and the replay budget still read the backlog as it is now, so nothing stale is
+    queued meanwhile. Setting the window to 0 gives the spec to the letter.
 
 ## What was measured
 
 Simulated links (`sim/world.ts`, this module's model of a capped link) and a synthetic program
 (`sim/program.ts`: `L1T3`, layer shares 40/60/100%, a keyframe 4× a base delta frame). One of
-three children capped at 900 kbps under the 1,200 kbps stream, eight peers:
+three children capped at 900 kbps under the 1,200 kbps stream, eight peers. The browser run is
+the same tree on real data channels on loopback, with a rate cap in front of one channel; it ran
+with the machine's load average between 1.7 and 5.1 (4 cores, shared).
 
-| | Simulated | Browser run (real data channels, loopback) |
+| | Simulated | Browser run |
 | --- | --- | --- |
-| First layer dropped, after the cap | 533 ms | 561 ms |
-| Cap settled (at the base layer) | 1,033 ms | 1,061 ms |
+| First layer dropped, after the cap | 700 ms | 727 ms |
+| Cap settled (at the base layer) | 1,233 ms | 1,227 ms |
+| The slow child told (`layers`) | each change, one hop later | each change |
 | Siblings and their subtrees: frames lost | 0 | 0 |
-| Siblings' latency p95, change | 0.00 ms | −0.4 to −0.9 ms |
+| Siblings' latency p95, change | 0.00 ms | +1.5 to +3.5 ms |
 | Slow child's audio lost | 0 | 0 |
-| Slow child's video delay, p95 / max | 258 / 260 ms | 246 / 248 ms |
-| Uplink probe against 1 / 3 / 10 Mbps | 1.00 / 2.99 / 9.98 | 2.68 against 3 |
+| Slow child's video delay, p95 / max | 258 / 261 ms | 245 / 249 ms |
+| With room again (3 Mbps): middle layer, top layer | +6.4 s, +11.4 s | +5.2 s, +10.3 s |
+| Uplink probe against 1 / 3 / 10 Mbps | 1.00 / 2.99 / 9.98 | 2.54 against 3 |
+| Source's uplink filled (3 × 667 kbps): encoder lowered, restored after | 1.0 s, 19 s | not run |
+
+Before C6 (backlog read sample by sample) the first drop came at 533 / 561 ms, and the slow
+child never got its layers back on a 3 Mbps link.
 
 The browser run: `NODE_PATH=$(npm root -g) node --experimental-transform-types --import
-./test/register.mjs packages/overlay/congestion/browser/run.ts`. About 40 s, port 4240.
+./test/register.mjs packages/overlay/congestion/browser/run.ts`. About 55 s, port 4240.
 
 ## Known, and not fixed here
 
 - **On a 900 kbps link the cap ends at the base layer, not the middle one**, though the middle
-  one fits on average (833 of 900 kbps). A keyframe is about 27 kB, more than 150 ms of *B*, so on
-  that link every keyframe reads as a moment of congestion and the five seconds of *ok* that
-  rule 5 asks for never come. The same keyframe keeps any link slower than about 4.6 Mbps from
-  being *ok* for five seconds running, so such a link that has once dropped a layer does not get
-  it back while the cap lasts. This is §11.2's thresholds meeting real keyframes, and is the
-  first thing for C6 to settle against the shim and a real encoder.
+  one fits on average (833 of 900 kbps). At the middle layer the link is 93% full, and each
+  keyframe's backlog takes it longer to drain than the GOP lasts, so it stands. A link of
+  1.5 Mbps holds the middle layer and one of 2 Mbps the top. Rule 3 also drops a second layer
+  500 ms after the first without waiting to see whether the first was enough: on a link just
+  under the stream (1.1 Mbps) the backlog left from before the first drop is still standing
+  then. Waiting for the effect is a change to rule 3, for the architect.
 - **A keyframe takes 237 ms to cross a 900 kbps link**, whatever the gate does. PLAN C3's "no
   video frame more than 200 ms late" cannot hold for keyframes on that link unless keyframes are
   smaller or paced.
@@ -137,3 +162,6 @@ The browser run: `NODE_PATH=$(npm root -g) node --experimental-transform-types -
   starved and gets little that decodes: the keyframe alone overflows a 300 ms queue.
 - **The delay floor** is ten seconds, as §11.1 says, so a queue that has stood for ten seconds
   becomes the floor and reads as none. The backlog signal still sees it at the sender.
+- **Not measured yet**: anything against the harness's impairment shim (H1) or transport's real
+  link and send queue (T1); C4's and C5's harness tests (a capped source uplink, the probe's cost
+  to the prober's children's latency); the gate mix. The browser run's links are on loopback.

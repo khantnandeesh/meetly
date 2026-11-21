@@ -2,10 +2,13 @@
  * A fixed tree of fake peers over simulated pipes, with a synthetic program at its root, and
  * what each viewer got out of it. The deterministic half of the module's acceptance tests.
  */
+import { createLinkEstimator } from "../estimator";
 import { createSourceRateController } from "../sourceRate";
+import { PipeLink } from "./link";
 import { FakePeer, type FrameRecord } from "./peer";
 import { AUDIO_STREAM, STAGE1_SHAPE, VIDEO_STREAM, createSyntheticProgram, type ProgramShape } from "./program";
 import { SimPipe, World, seeded, type PipeProfile } from "./world";
+import type { EstimatorTuning } from "../tuning";
 
 export type TreePeer = {
   id: string;
@@ -24,6 +27,8 @@ export type TreeOptions = {
   tickMs?: number;
   /** Run a `SourceRateController` at the source, fed its children's estimates once a second, with the encoder obeying it. */
   sourceRate?: { minKbps: number };
+  /** Other numbers than `ESTIMATOR_TUNING`'s, for every link's estimator: a tuning run. */
+  estimatorTuning?: Partial<EstimatorTuning>;
 };
 
 const CLEAN: PipeProfile = { delayMs: 5 };
@@ -35,6 +40,8 @@ export function createSimTree(options: TreeOptions) {
   const program = createSyntheticProgram(shape);
   const peers = new Map<string, FakePeer>();
   const pipes = new Map<string, { down: SimPipe; up: SimPipe }>();
+  /** By child: the parent's link to it, and its own to the parent. */
+  const links = new Map<string, { down: PipeLink; up: PipeLink }>();
   const depthOf = (peer: TreePeer): number => (peer.parent === null ? 0 : 1 + depthOf(options.peers.find((other) => other.id === peer.parent)!));
 
   options.peers.forEach((spec, index) => {
@@ -49,6 +56,7 @@ export function createSimTree(options: TreeOptions) {
         audioFrameMs: shape.audioFrameMs,
         // Clocks that agree on nothing, and one that wraps `sendMs` within any run.
         clockOffsetMs: index * 7919 + 60_000,
+        createLinkEstimator: (estimator) => createLinkEstimator({ ...estimator, tuning: options.estimatorTuning }),
       }),
     );
   });
@@ -58,11 +66,21 @@ export function createSimTree(options: TreeOptions) {
     const parent = peers.get(spec.parent)!;
     const down = new SimPipe(world, spec.down ?? CLEAN, random);
     const up = new SimPipe(world, spec.up ?? { delayMs: (spec.down ?? CLEAN).delayMs }, random);
-    down.onmessage = (packet, at) => child.fromParent(packet, at);
-    up.onmessage = (packet, at) => parent.fromChild(spec.id, packet, at);
-    child.setParent(up);
-    parent.addChild(spec.id, down, 0);
+    // Each side holds a transport `Link` (a fake, ./link.ts). The reliable channel takes the
+    // pipe's delay and loses nothing.
+    const ctlDelayMs = (spec.down ?? CLEAN).delayMs;
+    const toChild: PipeLink = new PipeLink(spec.id, down, () => world.now + parent.clockOffsetMs, (message) =>
+      world.after(ctlDelayMs, () => toParent.deliverMessage(message)),
+    );
+    const toParent: PipeLink = new PipeLink(spec.parent, up, () => world.now + child.clockOffsetMs, (message) =>
+      world.after(ctlDelayMs, () => toChild.deliverMessage(message)),
+    );
+    down.onmessage = (packet, at) => toParent.deliver(packet, at + child.clockOffsetMs);
+    up.onmessage = (packet, at) => toChild.deliver(packet, at + parent.clockOffsetMs);
+    child.setParent(toParent);
+    parent.addChild(spec.id, toChild, 0);
     pipes.set(spec.id, { down, up });
+    links.set(spec.id, { down: toChild, up: toParent });
   }
 
   const source = peers.get(options.peers.find((spec) => spec.parent === null)!.id)!;
@@ -99,6 +117,7 @@ export function createSimTree(options: TreeOptions) {
     targets,
     peers,
     pipes,
+    links,
     peer: (id: string): FakePeer => peers.get(id)!,
     /** What the parent of `id` keeps for it: the estimator, the gate, the cap's history. */
     port: (id: string) => peers.get(options.peers.find((spec) => spec.id === id)!.parent!)!.children.get(id)!,

@@ -19,6 +19,12 @@ export type EstimatorTuning = {
   windowMs: number;
   /** The one-way delay's floor is the smallest seen in this long (§11.1). */
   delayFloorMs: number;
+  /**
+   * C6 (see README): §11.2's backlog is judged by its least value over this long, so a keyframe's
+   * burst that the link drains within it is not read as the link falling behind. 0 reads each
+   * sample as it comes, the spec to the letter.
+   */
+  backlogWindowMs: number;
   /** §11.2, strained: `bufferedBytes` over this many ms of B. */
   strainedBufferMs: number;
   strainedLossPct: number;
@@ -36,6 +42,7 @@ export type EstimatorTuning = {
 export const ESTIMATOR_TUNING: EstimatorTuning = {
   windowMs: 1000,
   delayFloorMs: 10_000,
+  backlogWindowMs: 150,
   strainedBufferMs: 50,
   strainedLossPct: 3,
   strainedQueueMs: 40,

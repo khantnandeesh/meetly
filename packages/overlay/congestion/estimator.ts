@@ -136,6 +136,14 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
 
   let rttMs: number | null = null;
   let buffered = 0;
+  /**
+   * C6: the backlog counts against the link once it has stood over a line for `backlogWindowMs`.
+   * A keyframe is several delta frames' worth, all handed to the channel at once; on a link with
+   * room for the stream the backlog it leaves is gone a few frames later, and is not the link
+   * falling behind. One that is still there at every sample for the window is.
+   */
+  const backlogStrained = new Sustained();
+  const backlogCongested = new Sustained();
 
   const onEcho = (now: number, echoMs: number, echoHoldMs: number): void => {
     const sample = rttFromEcho(now, echoMs, echoHoldMs);
@@ -150,10 +158,12 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
     return rxIntervalMinTransit === null || floor === null ? rxQueueDelay : Math.max(0, rxIntervalMinTransit - floor);
   };
 
-  const stateOf = (lossPct: number, queueDelayMs: number, queueHighForMs: number): LinkEstimate["state"] => {
-    if (buffered > bytesOf(streamKbps, tuning.congestedBufferMs) || lossPct >= tuning.congestedLossPct || queueHighForMs >= tuning.congestedQueueForMs)
-      return "congested";
-    if (buffered > bytesOf(streamKbps, tuning.strainedBufferMs) || lossPct >= tuning.strainedLossPct || queueDelayMs >= tuning.strainedQueueMs) return "strained";
+  const stateOf = (lossPct: number, queueDelayMs: number, queueHighForMs: number, now: number): LinkEstimate["state"] => {
+    // The state reads the backlog that stands. The estimate's `bufferedBytes`, which rule 6 and
+    // the replay budget read, stays the channel's backlog as it is now.
+    const standFor = tuning.backlogWindowMs;
+    if (backlogCongested.forMs(now) >= standFor || lossPct >= tuning.congestedLossPct || queueHighForMs >= tuning.congestedQueueForMs) return "congested";
+    if (backlogStrained.forMs(now) >= standFor || lossPct >= tuning.strainedLossPct || queueDelayMs >= tuning.strainedQueueMs) return "strained";
     return "ok";
   };
 
@@ -174,7 +184,7 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
       sendKbps: sendKbps(now),
       deliveredKbps,
       bufferedBytes: buffered,
-      state: stateOf(lossPct, txQueueDelay, txQueueHigh.forMs(now)),
+      state: stateOf(lossPct, txQueueDelay, txQueueHigh.forMs(now), now),
     };
   };
 
@@ -190,7 +200,7 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
       sendKbps: sendKbps(now),
       deliveredKbps: (rxBytes.sum(now).a * 8) / tuning.windowMs,
       bufferedBytes: buffered,
-      state: stateOf(lossPct, queueDelayMs, rxQueueHigh.forMs(now)),
+      state: stateOf(lossPct, queueDelayMs, rxQueueHigh.forMs(now), now),
     };
   };
 
@@ -259,8 +269,10 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
       onEcho(now, heartbeat.echoMs, heartbeat.echoHoldMs);
     },
 
-    onBuffered(bytes) {
+    onBuffered(bytes, now) {
       buffered = bytes;
+      backlogStrained.update(bytes > bytesOf(streamKbps, tuning.strainedBufferMs), now);
+      backlogCongested.update(bytes > bytesOf(streamKbps, tuning.congestedBufferMs), now);
     },
 
     takeFeedback(now): FeedbackBody {
