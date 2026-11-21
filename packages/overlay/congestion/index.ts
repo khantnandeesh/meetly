@@ -2,6 +2,7 @@
  * congestion's public face. Owner: E-congestion. See ./README.md.
  */
 import { notImplemented } from "../runtime";
+import { createLayerGate as layerGate } from "./gate";
 import { createLinkEstimator as linkEstimator, type LinkEstimatorOptions } from "./estimator";
 import type { LayerGate, LayerGateOptions, LinkEstimator, SourceRateController, SourceRateOptions, UplinkProbe } from "./types";
 
@@ -13,7 +14,7 @@ export type { EstimatorTuning, GateTuning, SourceRateTuning } from "./tuning";
 /** `options.bitrateKbps` is *B* of SPEC §11.2; without it, stage 1's 1,200 kbps. */
 export const createLinkEstimator: (options?: LinkEstimatorOptions) => LinkEstimator = linkEstimator;
 
-export const createLayerGate: (options: LayerGateOptions) => LayerGate = () => notImplemented("E-congestion", "congestion.createLayerGate");
+export const createLayerGate: (options: LayerGateOptions) => LayerGate = layerGate;
 
 export const createSourceRateController: (options: SourceRateOptions) => SourceRateController = () =>
   notImplemented("E-congestion", "congestion.createSourceRateController");
