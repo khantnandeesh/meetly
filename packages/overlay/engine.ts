@@ -56,7 +56,12 @@ const PROBE_RETRY_MS = 30_000;
  * the digit, a measurement a hair short would prove one child fewer than the link carries.
  */
 const PROBE_HEADROOM = 1.1;
-const probeTargetKbps = (params: OverlayParams, streamKbps: number) => (PROBE_HEADROOM * params.maxFanout * 1.15 * streamKbps) / 0.7;
+/**
+ * And never less than eligibility itself asks (SPEC §8.1 "uplink": room for two children,
+ * 2 × 1.15 × B): with a fan-out of 1 the first figure is below it, and a probe that stops at its
+ * target could never show a peer eligible.
+ */
+const probeTargetKbps = (params: OverlayParams, streamKbps: number) => PROBE_HEADROOM * Math.max((params.maxFanout * 1.15 * streamKbps) / 0.7, 2 * 1.15 * streamKbps);
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /** The source applies SPEC §11.4's uplink rule once a second. */
