@@ -333,6 +333,13 @@ Rules:
   cache is not answered.
 - A parent spends at most 20% of the stream's bitrate on retransmissions to one child, over any
   second. Beyond that it ignores NACKs. This bounds what a hostile child can cost.
+- **[D36] Nothing is sent again into a backlog** (decided by integrator 2026-11-21). While a
+  child's link holds more than §11.2's strained line (50 ms of *B*), its NACKs for the
+  enhancement layers are not answered: a link that overflowed asks for what it lost, and
+  answering refills the queue it lost it from. NACKs for base-layer (layer 0) and keyframe
+  packets are still answered, within the same budget, because losing a keyframe costs the whole
+  GOP: the parent holds them and sends them once the backlog is under the line again, or drops
+  them after 500 ms, by when they would come too late.
 - A relay does not wait for its own recovery before forwarding. A fragment it recovers late is
   forwarded when it arrives; its children will meanwhile have asked for it themselves, and the
   answer serves them.
@@ -1416,6 +1423,7 @@ Rotating speakers on the overlay. Out of scope.
 | D33 | A frame is played at path + D + audio pipeline; the path followed at once when it grows (integrator, 2026-11-21) | 10.2 |
 | D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
+| D36 | No retransmission of enhancement layers into a backlog over 50 ms of B; base layer and keyframes held until it clears (integrator, 2026-11-21) | 4.6 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
