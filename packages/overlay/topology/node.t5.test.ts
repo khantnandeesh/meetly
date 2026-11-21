@@ -4,7 +4,7 @@ import { describe, it } from "node:test";
 import { NACK_WHOLE_FRAME, PacketType, encodeNack, type MetricsEvent } from "@meetly/overlay";
 import type { LinkEstimator, UplinkProbe } from "@meetly/overlay/congestion/types";
 import type { LinkEstimate } from "@meetly/overlay/types";
-import { createBasicEstimator } from "@meetly/overlay/topology/standins";
+import { createBasicEstimator, createOpenGate, type OpenGate } from "@meetly/overlay/topology/standins";
 import { SimNet, type SimPeer } from "@meetly/overlay/topology/sim";
 
 const stateOf = (peer: SimPeer) => peer.node.status().stripes[0];
@@ -174,6 +174,39 @@ describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
     await net.runAsync(1500);
     assert.deepEqual(results, [null, null]);
     assert.equal(stateOf(leaf).parent, "2");
+  });
+});
+
+describe("node: a repair onto a backup over its fan-out (SPEC §7.5 step 2)", () => {
+  it("counts as lost only what was sent and never arrived, not the layer the backup sheds", async () => {
+    // A gate that does what congestion's does under overload: the top temporal layer stops.
+    const shedding = (options: Parameters<typeof createOpenGate>[0]): OpenGate => {
+      const gate = createOpenGate(options);
+      const admit = gate.admit;
+      gate.admit = (header, ...rest) => (gate.overload && header.temporal >= 2 ? false : admit(header, ...rest));
+      return gate;
+    };
+    const net = new SimNet({ backups: true, params: { sourceFanout: 2, maxFanout: 2 }, createLayerGate: shedding });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    for (const [id, parent, backup] of [["1", "0", null], ["2", "0", null], ["3", "1", "0"], ["4", "1", "0"]] as const) {
+      net.join(id, id === "1" || id === "2" ? "relay" : "leaf", [parent], backup ? [backup] : []);
+      await net.runAsync(300);
+    }
+    await net.runAsync(2000);
+    source.node.takeStats();
+    net.kill("1");
+    await net.runAsync(2500);
+    // Both orphans went to the source, which is now over its fan-out of two and sheds layer 2.
+    assert.deepEqual(source.node.status().children.sort(), ["2", "3", "4"]);
+    assert.ok(source.node.takeStats().relay!.layerDrops > 10);
+    for (const id of ["3", "4"]) {
+      const [repair] = repairs(net.nodes.get(id)!) as Extract<MetricsEvent, { t: "repair" }>[];
+      assert.equal(repair.kind, "warm");
+      assert.equal(repair.framesLost, 0, `peer ${id}: ${repair.framesLost} frames counted lost`);
+      assert.ok(repair.freezeMs <= 250, `froze for ${repair.freezeMs} ms`);
+    }
   });
 });
 

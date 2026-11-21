@@ -201,7 +201,11 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     coordinator: options.coordinatorUrl ? "external" : "auto",
   };
   // The proof's tree: a fan-out of two everywhere, so seven peers fill two levels.
-  const proofTree = { sourceFanout: 2, maxFanout: 2 };
+  // Probation (D18) cut to 3 s in the scenarios that are about repair, not joining: under the
+  // package's coordinator nobody below the source could relay before it, and these kill a relay a
+  // few seconds after the tree fills. The gate scenarios keep the 20 s of production.
+  const short = { probationMs: 3000 };
+  const proofTree = { sourceFanout: 2, maxFanout: 2, ...short };
   switch (name) {
     case "smoke":
     case "proof-tree": {
@@ -211,7 +215,7 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     }
     case "chain-kill": {
       // A fan-out of one makes a chain; the last relay takes the leaves that are left.
-      const config = { ...base, peers: 5, params: { sourceFanout: 1, maxFanout: 1 } };
+      const config = { ...base, peers: 5, params: { sourceFanout: 1, maxFanout: 1, ...short } };
       const at = fillS(config) + 3;
       return { ...config, churn: [{ atS: at, action: "kill", pick: "shallowest-relay", count: 1 }], durationS: at + 6, expect: { peers: 5, minRepairs: 1 } };
     }
@@ -219,7 +223,7 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
       // E-congestion's tree (congestion/browser/run.ts): the source's three children, and four
       // grandchildren under them. One child of the source is capped at 900 kbps under the 1,200
       // kbps stream; 15 s later it has 3 Mbps, room for every layer again.
-      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2 }, program: SYNTHETIC };
+      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: SYNTHETIC };
       const at = fillS(config) + 5;
       return {
         ...config,

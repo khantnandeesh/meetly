@@ -190,7 +190,7 @@ class DecodeTracker {
    * (the last one before `from` is the left edge; with nothing at all after it, the gap runs to
    * `to`), and how many frame ids after that edge, up to the newest seen, never became decodable.
    */
-  gap(from: number, to: number): { freezeMs: number; lost: number } {
+  gap(from: number, to: number, neverSent: (frameId: number) => boolean = () => false): { freezeMs: number; lost: number } {
     let edge: { at: number; id: number } | null = null;
     let previous: number | null = null;
     let longest = 0;
@@ -212,7 +212,10 @@ class DecodeTracker {
     }
     if (inWindow === 0) return { freezeMs: edge ? to - edge.at : 0, lost: 0 };
     const first = edge ? edge.id + 1 : highest - inWindow + 1;
-    return { freezeMs: longest, lost: Math.max(0, highest - first + 1 - inWindow) };
+    // A frame the parent never sent (a layer it was shedding, SPEC §7.5 step 2, §11.3) is not lost.
+    let shed = 0;
+    for (let id = first; id <= highest; id++) if (!this.decodable.has(id) && neverSent(id)) shed++;
+    return { freezeMs: longest, lost: Math.max(0, highest - first + 1 - inWindow - shed) };
   }
 }
 
@@ -574,6 +577,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     }
     peer.lastHeardAt = receivedAt;
     peer.estimator.onReceived(fields.linkSeq, fields.sendMs, packet.byteLength, receivedAt);
+    // Every packet from whoever may be sending media, duplicates included: it is how the
+    // reassembler tells a layer the sender shed from a loss (by the link sequence).
+    if (peer === parent || peer === next || peer === switching?.to) reassembler.noteLinkPacket(peer.id, fields.linkSeq);
     switch (fields.type) {
       case PacketType.Media:
       case PacketType.Parity:
@@ -582,20 +588,13 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       case PacketType.Heartbeat: {
         const heartbeat = decodeHeartbeat(packet);
         if (!heartbeat) malformed++;
-        else {
-          if (peer === parent || peer === next) reassembler.noteLinkPacket(peer.id, fields.linkSeq);
-          onHeartbeat(peer, heartbeat, receivedAt);
-        }
+        else onHeartbeat(peer, heartbeat, receivedAt);
         return;
       }
       case PacketType.Feedback: {
         const feedback = decodeFeedback(packet);
         if (!feedback) malformed++;
-        else {
-          // From the parent only while this node is probing it: not media, so not a loss.
-          if (peer === parent || peer === next) reassembler.noteLinkPacket(peer.id, fields.linkSeq);
-          onFeedback(peer, feedback, receivedAt);
-        }
+        else onFeedback(peer, feedback, receivedAt);
         return;
       }
       case PacketType.Nack: {
@@ -607,7 +606,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       default:
         // PROBE: counted by the estimator; a child probing this node is told how it fared (below).
         if (fields.type === PacketType.Probe) peer.lastProbeAt = receivedAt;
-        if (peer === parent || peer === next) reassembler.noteLinkPacket(peer.id, fields.linkSeq);
     }
   }
 
@@ -1217,8 +1215,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     setPath([self, ...(peer.path ?? [peer.id])]);
     if (old && old !== peer) release(old);
 
+    // The first parent, however it was found (a joiner with nowhere to go at first finds it by cold repair): the node's part of the join event.
+    joinTimes ??= { linked: session(now), firstPacket: null, turn: peer.link.turn };
     if (purpose === "join") {
-      joinTimes = { linked: session(now), firstPacket: null, turn: peer.link.turn };
       lastSwitchAt = now;
       compareAt = now + REBALANCE_COMPARE_MS;
       // One other open link becomes the backup; the rest are closed (SPEC §7.1 step 6).
@@ -1629,7 +1628,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     while (finishing.length > 0 && finishing[0].at <= now) {
       const { record } = finishing.shift()!;
       const stream = primary();
-      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS) : { freezeMs: 0, lost: 0 };
+      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => reassembler.neverSent(stream.config.id, frameId)) : { freezeMs: 0, lost: 0 };
       metric({
         t: "repair",
         stream: stream?.config.id ?? 0,

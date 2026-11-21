@@ -44,14 +44,19 @@ import {
 import type { Listenable, Logger, SessionClock, Unsubscribe } from "./runtime";
 import type { OverlayConnectOptions, OverlayEvents, OverlaySource, OverlayState, OverlayViewer } from "./index";
 
-/** SPEC D18: nobody relays before this long in the session; the probe waits for it too. */
+/** SPEC D18, when the session's params do not say: nobody relays before this long; the probe waits for it too. */
 const PROBATION_MS = 20_000;
 /** SPEC §11.6: the probe runs again this often while the peer is eligible. */
 const REPROBE_MS = 5 * 60_000;
 /** A probe cut short is tried again after this long. */
 const PROBE_RETRY_MS = 30_000;
-/** SPEC §8.1, §11.6 (as amended, [D30]'s commit): a full fan-out's cost: maxFanout × 1.15 × B / 0.7. */
-const probeTargetKbps = (params: OverlayParams, streamKbps: number) => (params.maxFanout * 1.15 * streamKbps) / 0.7;
+/**
+ * SPEC §8.1, §11.6 (as amended): a full fan-out's cost, maxFanout × 1.15 × B / 0.7, and 10% more.
+ * The probe reports no more than its target, and fan-out is that figure's floor: at the target to
+ * the digit, a measurement a hair short would prove one child fewer than the link carries.
+ */
+const PROBE_HEADROOM = 1.1;
+const probeTargetKbps = (params: OverlayParams, streamKbps: number) => (PROBE_HEADROOM * params.maxFanout * 1.15 * streamKbps) / 0.7;
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /** The source applies SPEC §11.4's uplink rule once a second. */
@@ -207,7 +212,12 @@ abstract class PeerEngine {
       });
       this.node = node;
       node.on("metric", (event) => this.pending.push(event));
-      node.on("error", (error) => this.events.emit("error", error));
+      // The node's only error is "no parent could be found; rejoining": a state it comes back from
+      // by itself, not the end of this peer. It is logged and goes in the metrics sample.
+      node.on("error", (error) => {
+        this.options.logger?.warn("overlay", error.message);
+        this.pending.push({ t: "error", at: Math.max(0, this.client.sessionClock.now()), where: "node", message: error.message.slice(0, 512) });
+      });
       node.on("status", () => this.sendStatus());
       node.on("config", (config) => this.onConfig(config));
       node.on("probe", (spare) => this.onProbe(spare));
@@ -224,7 +234,7 @@ abstract class PeerEngine {
         this.caps = { ...this.caps, nat };
         this.sendStatus();
       });
-      if (welcome.role !== "source") this.scheduleProbe(PROBATION_MS);
+      if (welcome.role !== "source") this.scheduleProbe(welcome.params.probationMs ?? PROBATION_MS);
     } catch (error) {
       this.setState("closed");
       throw error;

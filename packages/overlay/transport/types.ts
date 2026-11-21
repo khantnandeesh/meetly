@@ -139,11 +139,17 @@ export interface Reassembler {
   /** Forget frames older than `frameId` on `streamId`: they are past their playout time. */
   expireBefore(streamId: number, frameId: number): void;
   /**
-   * A packet that is not live media (a heartbeat, a probe) arrived from `from` with this
-   * `linkSeq`. It lets `missing` tell a frame that was lost from one the sender never sent on
-   * this link (a layer it is shedding): see ./reassembler.ts.
+   * Any packet arrived from `from` with this `linkSeq` (pushed media is noted by `push`). It
+   * lets `missing` tell a frame that was lost from one the sender never sent on this link (a
+   * layer it is shedding): see ./reassembler.ts.
    */
   noteLinkPacket(from: PeerId, linkSeq: number): void;
+  /**
+   * Whether frame `frameId`, which never arrived, was never sent on the link either: the frames
+   * on each side of it arrived from the same sender with nothing missing from its link sequence
+   * between them (a layer it was shedding). False when that cannot be told.
+   */
+  neverSent(streamId: number, frameId: number): boolean;
   /**
    * `late`: packets of frames already expired. `malformed`: packets that contradict their
    * frame's other packets, or claim more fragments than `maxFragments`.

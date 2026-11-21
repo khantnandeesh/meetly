@@ -20,8 +20,8 @@ import type { Reassembler, ReassemblerOptions } from "./types";
 const WINDOW_FRAMES = 1024;
 /** A hole of more frames than this is not asked for: a NACK is for isolated loss. */
 const MAX_WHOLE_FRAME_GAP = 16;
-/** Non-media link sequence numbers remembered per sender, to explain holes in `linkSeq`. */
-const OTHER_SEQS = 256;
+/** A hole in `linkSeq` longer than this is not examined: it is not one shed layer. */
+const MAX_EXPLAINED_SPAN = 4096;
 
 const DEFAULT_MAX_FRAGMENTS = 4096;
 const DEFAULT_RETRY_MS = 100;
@@ -66,7 +66,12 @@ type StreamState = {
   settledBelow: number;
 };
 
-type SenderState = { seqs: Uint16Array; used: number; next: number };
+/**
+ * Which of a sender's link sequence numbers have arrived, any packet of any type or stream: one
+ * bit per number. Each arrival clears the number half the space ahead, so a bit is never stale
+ * by a whole wrap.
+ */
+type SenderState = { seen: Uint8Array };
 
 export function createReassembler(options: ReassemblerOptions): Reassembler {
   const reorderMs = options.reorderMs;
@@ -117,25 +122,21 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
     if (s.wholeAsks.size > 0) for (const id of s.wholeAsks.keys()) if (id < floor) s.wholeAsks.delete(id);
   };
 
-  const noteOther = (from: PeerId, linkSeq: number) => {
+  const noteArrival = (from: PeerId, linkSeq: number) => {
     let sender = senders.get(from);
-    if (!sender) senders.set(from, (sender = { seqs: new Uint16Array(OTHER_SEQS), used: 0, next: 0 }));
-    sender.seqs[sender.next] = linkSeq;
-    sender.next = (sender.next + 1) % OTHER_SEQS;
-    if (sender.used < OTHER_SEQS) sender.used++;
+    if (!sender) senders.set(from, (sender = { seen: new Uint8Array(8192) }));
+    const seq = linkSeq & 0xffff;
+    sender.seen[seq >> 3] |= 1 << (seq & 7);
+    const stale = (seq + 32768) & 0xffff;
+    sender.seen[stale >> 3] &= ~(1 << (stale & 7));
   };
 
-  /** How many packets known not to be live media `from` sent strictly between two link sequence numbers. */
-  const othersBetween = (from: PeerId, after: number, before: number): number => {
+  /** Whether every packet `from` sent strictly between two link sequence numbers has arrived. */
+  const allArrivedBetween = (from: PeerId, after: number, before: number): boolean => {
     const sender = senders.get(from);
-    if (!sender) return 0;
-    const span = seq16Diff(before, after);
-    let n = 0;
-    for (let i = 0; i < sender.used; i++) {
-      const d = seq16Diff(sender.seqs[i], after);
-      if (d > 0 && d < span) n++;
-    }
-    return n;
+    if (!sender) return false;
+    for (let seq = (after + 1) & 0xffff; seq !== (before & 0xffff); seq = (seq + 1) & 0xffff) if (!(sender.seen[seq >> 3] & (1 << (seq & 7)))) return false;
+    return true;
   };
 
   /**
@@ -147,8 +148,10 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
     if (prev.from !== next.from || prev.seq0 < 0 || next.seq0 < 0) return false;
     const prevEnd = (prev.seq0 + prev.fragCount - 1) & 0xffff;
     const between = seq16Diff(next.seq0, prevEnd) - 1;
-    if (between < 0) return false;
-    if (between - othersBetween(prev.from, prevEnd, next.seq0) !== 0) return false;
+    if (between < 0 || between > MAX_EXPLAINED_SPAN) return false;
+    // Every packet sent in between arrived (audio, heartbeats, another stream's): so nothing of
+    // the missing frames was sent.
+    if (!allArrivedBetween(prev.from, prevEnd, next.seq0)) return false;
     next.gapExplained = true;
     return true;
   };
@@ -183,7 +186,7 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
     push(packet, header, from, receivedAt) {
       if (header.type !== PacketType.Media) return null;
       const retransmit = (header.hopFlags & HopFlag.Retransmit) !== 0;
-      if (retransmit) noteOther(from, header.linkSeq);
+      noteArrival(from, header.linkSeq);
       const s = stream(header.streamId);
       const id = header.frameId;
       if (id < s.floor) {
@@ -292,7 +295,15 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
     },
 
     noteLinkPacket(from, linkSeq) {
-      noteOther(from, linkSeq);
+      noteArrival(from, linkSeq);
+    },
+
+    neverSent(streamId, frameId) {
+      const s = streams.get(streamId);
+      if (!s || s.frames.has(frameId)) return false;
+      const at = lowerBound(s.order, frameId);
+      if (at === 0 || at >= s.order.length) return false;
+      return neverSent(s.frames.get(s.order[at - 1])!, s.frames.get(s.order[at])!);
     },
 
     missing(now, max) {
