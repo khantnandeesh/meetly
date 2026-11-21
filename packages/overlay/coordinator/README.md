@@ -18,6 +18,8 @@ signalling. It never sees media, and a session keeps playing and repairing witho
 | `durableObject.ts` | `OverlayRoom` and the Worker: the core behind hibernatable WebSockets, for production |
 | `wrangler.jsonc` | the Worker `meetly-overlay`, its own, apart from the app's (D13). Never deployed from here |
 | `contract.ts` | the contract suite, written against a URL; `contract.node.test.ts` and `contract.worker.test.ts` run it |
+| `overlay.test.ts` | warm repair with the coordinator dead, under real transport and topology (skips until they are built here) |
+| `client.browser.test.ts` | the client bundled and run in headless Chromium (skips without Playwright) |
 | `testkit.ts`, `wranglerDev.ts` | for tests: a core driven by hand, simulated peers; running `wrangler dev` |
 | `load.ts`, `loadServer.ts` | K6: the load measurement |
 
@@ -46,7 +48,8 @@ npm run test:overlay                                  # everything, the Node con
 OVERLAY_WRANGLER=/path/to/wrangler npm run test:overlay   # and the Worker's, under wrangler dev
 ```
 
-Ports: 4260 (Node contract), 4261–4262 (Worker contract), 4264–4266 (load). Wrangler is not a
+Ports (E-coordinator's range is 4260–4279): 4260 Node contract, 4261–4262 Worker contract,
+4264–4266 load, 4268 the overlay integration test, 4270 the browser client test. Wrangler is not a
 dependency; CI installs a pinned one outside the project (`WRANGLER_VERSION` in ci.yml).
 
 The harness signs tickets with `signTicket` (protocol.ts), starts `startNodeCoordinator` with
