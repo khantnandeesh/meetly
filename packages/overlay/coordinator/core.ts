@@ -184,13 +184,13 @@ class Core implements CoordinatorCore {
           this.onSignal(fx, node, message, now);
           break;
         case "need":
-          this.onNeed(fx, node, message, now);
+          await this.onNeed(fx, node, message, now);
           break;
         case "status":
-          if (this.map.applyStatus(node, message, now)) this.serveWaiting(fx, now);
+          if (this.map.applyStatus(node, message, now)) await this.serveWaiting(fx, now);
           break;
         case "report":
-          this.onReport(fx, node, message, now);
+          await this.onReport(fx, node, message, now);
           break;
         case "metrics":
           this.onMetrics(node, message.sample, now);
@@ -470,7 +470,7 @@ class Core implements CoordinatorCore {
 
     const grant = await this.grantFor(node, now);
     // Someone coming back is where it was; it asks (`need`) if that is no longer true.
-    const assign = resumed || node.role === "source" ? [] : this.offer(node, now);
+    const assign = resumed || node.role === "source" ? [] : await this.offer(fx, node, now);
     let ice: ServerMessageOf<"welcome">["ice"] = [];
     try {
       ice = await this.o.iceServers();
@@ -494,7 +494,7 @@ class Core implements CoordinatorCore {
     });
     if (node.role === "source") {
       if (this.hint.step > 0) this.sendHint(fx);
-      this.serveWaiting(fx, now);
+      await this.serveWaiting(fx, now);
     }
   }
 
@@ -514,9 +514,17 @@ class Core implements CoordinatorCore {
     }
   }
 
-  /** Where a peer with no parent should connect; it is marked as waiting if there is nowhere. */
-  private offer(node: TreeNode, now: number): Assignment[] {
-    const placement = this.streams.length > 0 ? this.map.place(node, { want: "parent", exclude: [], now }) : { parents: [], backups: [] };
+  /**
+   * Where a peer with no parent should connect; it is marked as waiting if there is nowhere. A
+   * joiner with nowhere to go makes room by promotion first (SPEC §6.6), if anyone is eligible.
+   */
+  private async offer(fx: Effect[], node: TreeNode, now: number): Promise<Assignment[]> {
+    if (this.streams.length === 0) {
+      node.waitingSince ??= now;
+      return [];
+    }
+    let placement = this.map.place(node, { want: "parent", exclude: [], now, join: true });
+    if (placement.parents.length === 0 && (await this.promoteFor(fx, node, [], now))) placement = this.map.place(node, { want: "parent", exclude: [], now, join: true });
     if (placement.parents.length === 0) {
       node.waitingSince ??= now;
       return [];
@@ -528,20 +536,42 @@ class Core implements CoordinatorCore {
   }
 
   /** Slots have opened: peers left with nowhere to connect are told where, without their asking again. */
-  private serveWaiting(fx: Effect[], now: number): void {
+  private async serveWaiting(fx: Effect[], now: number): Promise<void> {
     for (const node of this.map.waiting()) {
       if (now - node.lastAssignAt < 2_000) continue;
-      const assign = this.offer(node, now);
+      const assign = await this.offer(fx, node, now);
       if (assign.length > 0) this.send(fx, node.conn, { t: "assign", reason: "join", assign });
     }
   }
 
-  private onNeed(fx: Effect[], node: TreeNode, need: ClientMessageOf<"need">, now: number): void {
+  /**
+   * Makes room for `node` by promoting one eligible leaf that it could hang from (SPEC §6.6,
+   * §8.1): a peer outside its own subtree, connected to the source. The spec's rule (free slots
+   * under a fifth of the audience) is met over the whole tree; this is the same rule applied to
+   * the slots this peer can actually use, which a dead relay's orphans need at once (cold repair,
+   * SPEC §7.5): the slots below the dead relay are cut off with it. True if anyone was promoted.
+   */
+  private async promoteFor(fx: Effect[], node: TreeNode, exclude: readonly PeerId[], now: number): Promise<boolean> {
+    for (const candidate of this.map.promotableFor(node, exclude, now)) {
+      await this.setRole(fx, candidate, "relay", now);
+      return true;
+    }
+    return false;
+  }
+
+  private async onNeed(fx: Effect[], node: TreeNode, need: ClientMessageOf<"need">, now: number): Promise<void> {
     if (node.role === "source") {
       this.send(fx, node.conn, { t: "error", code: "denied", message: "the source needs no parent", id: need.id });
       return;
     }
-    const placement = this.map.place(node, { want: need.want, exclude: need.exclude, now });
+    let placement = this.map.place(node, { want: need.want, exclude: need.exclude, excludeBelow: true, now });
+    if (need.want === "parent" && placement.parents.length === 0) {
+      // A peer that has lost its parent: make room by promotion; failing that, a parent over its
+      // fan-out, which takes a `repair` all the same and sheds a layer (SPEC §7.5), and is
+      // relieved by promotion and `move`s afterwards. Better than no parent at all.
+      if (await this.promoteFor(fx, node, need.exclude, now)) placement = this.map.place(node, { want: "parent", exclude: need.exclude, excludeBelow: true, now });
+      if (placement.parents.length === 0) placement = this.map.place(node, { want: "parent", exclude: need.exclude, excludeBelow: true, now, overload: true });
+    }
     if (need.want === "parent") {
       if (placement.parents.length === 0) node.waitingSince ??= now;
       else this.map.hold(node, placement, now);
@@ -566,7 +596,7 @@ class Core implements CoordinatorCore {
     this.send(fx, to.conn, { t: "signal", from: node.peer, data: signal.data });
   }
 
-  private onReport(fx: Effect[], node: TreeNode, report: ClientMessageOf<"report">, now: number): void {
+  private async onReport(fx: Effect[], node: TreeNode, report: ClientMessageOf<"report">, now: number): Promise<void> {
     const about = this.map.nodes.get(report.peer);
     switch (report.event) {
       case "parent-dead":
@@ -593,7 +623,7 @@ class Core implements CoordinatorCore {
       case "backup-lost":
         break;
     }
-    this.serveWaiting(fx, now);
+    await this.serveWaiting(fx, now);
   }
 
   private onMetrics(node: TreeNode, sample: MetricsSample, now: number): void {
@@ -621,7 +651,7 @@ class Core implements CoordinatorCore {
     // The source's grant names the streams it may publish.
     if (idsChanged) this.send(fx, node.conn, { t: "grant", grant: await this.grantFor(node, now) });
     for (const other of this.map.nodes.values()) if (other.role !== "source" && other.parent === null) other.waitingSince ??= now;
-    this.serveWaiting(fx, now);
+    await this.serveWaiting(fx, now);
   }
 
   /* ------------------------------ leaving ------------------------------ */
@@ -685,7 +715,22 @@ class Core implements CoordinatorCore {
         this.send(fx, move.node.conn, { t: "assign", reason: "move", assign: this.assignments(move.placement) });
       }
     }
-    this.serveWaiting(fx, now);
+    // Relays over their fan-out after taking in repairs (SPEC §7.5): the coordinator "moves
+    // someone". Room is made by promotion if need be, then the excess children are moved.
+    if (this.streams.length > 0) {
+      for (const relief of this.map.overloaded(now)) {
+        for (const child of relief.excess) {
+          let placement = this.map.place(child, { want: "parent", exclude: [relief.node.peer], now, move: true });
+          if (placement.parents.length === 0 && (await this.promoteFor(fx, child, [], now))) placement = this.map.place(child, { want: "parent", exclude: [relief.node.peer], now, move: true });
+          if (placement.parents.length === 0) break;
+          child.lastRebalanceAt = now;
+          this.map.hold(child, placement, now);
+          this.introduce(child, placement, now);
+          this.send(fx, child.conn, { t: "assign", reason: "move", assign: this.assignments(placement) });
+        }
+      }
+    }
+    await this.serveWaiting(fx, now);
 
     // SPEC §6.6: advice to peers more than two levels deeper than the tree needs.
     if (this.streams.length > 0) {
