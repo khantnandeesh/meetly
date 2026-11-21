@@ -877,6 +877,13 @@ with the same `frameId`. Receivers and relays drop the duplicate by id. At 32 kb
 32 kbps, under 3% of the session, and it turns isolated loss on a hop into nothing, with no
 round trip. Audio is never dropped to make room for video (§11.3).
 
+**[D35] An audio frame's `captureUs` is the time of the sound it decodes to**, not of its first
+input sample. Opus decodes each frame to sound that starts its look-ahead earlier than the
+frame's first input sample: 312 samples at 48 kHz, 6.5 ms (measured in Chromium: 6.6 ms). The
+source stamps each Opus frame with its first input sample's capture time less 6.5 ms, so that a
+sound and a picture captured together are played together. *(Decided by integrator
+2026-11-21.)*
+
 ---
 
 ## 10. The jitter buffer and playout
@@ -890,7 +897,8 @@ The contract between the network and the decoders. One jitter buffer per stream;
 
 **Out:** `pop(nowUs)` returns every frame that is *decodable* and *due*, in decode order. A frame
 is decodable if it is a keyframe, or the frame it needs (`frameId − refDelta`) has already been
-handed out, in the same GOP. A frame is due at `captureUs + D`, where *D* is the playout delay.
+handed out, in the same GOP. A frame is due at `captureUs + D`, where *D* is the playout delay
+counted from the frame's arrival, not from its capture: see below.
 
 The buffer never hands out a frame the decoder cannot decode, and never hands out the same frame
 twice.
@@ -912,6 +920,27 @@ NACK time to be answered when the link is losing packets, and is not paid when i
 Only this peer's own *D* adds delay: relays forward without buffering. Glass-to-glass is
 therefore roughly `encode (30) + Σ per hop (one-way delay + 0.5) + D + decode and display (30)`,
 in milliseconds. At depth 4 with 30 ms hops and *D* = 100 that is about 280 ms.
+
+**[D33] The delay a frame is played at is the path, then *D*, then the audio pipeline.**
+*(Decided by integrator 2026-11-21.)* Read literally, "due at `captureUs + D`" makes every frame
+late at any peer whose path is longer than *D*, which is anyone a few hops down; the formula
+above is the intent. So a frame captured at *t* is played at *t* + *path* + *D* + *pipeline*:
+
+- *path* is how long frames take to get here at best: the lowest (arrival − `captureUs`) on the
+  session clock over the last second, for the slower of the two streams, leaving out frames
+  that came by a replay or a retransmission. It includes encoding at the source and every hop.
+  When even the lowest of the last 200 ms says frames now come too late to be played, the path
+  grew (a repair to a parent further down) and that value is taken at once.
+- *D* is the formula above, all of it the network's.
+- *pipeline* is what the sound needs on its way out: a frame reaches the AudioWorklet 15 ms
+  before it renders it, and the worklet renders the sound card's output latency ahead of what
+  is heard. Taking these out of *D* would leave the network almost nothing of *D* = 60 on a
+  sound card with 40 ms of latency, and the second copy of an audio frame (§9.4) would never
+  come in time to help. Without an audio stream it is 0. A light viewer (§13.2) takes the output
+  latency to be 40 ms, so that its latency is a decoding viewer's.
+
+Each jitter buffer is told how much of this is beyond *D* for its own stream, so that §10.4 does
+not take media held for the slower stream, or for the sound card, for a backlog.
 
 ### 10.3 When a frame is not there
 
@@ -957,6 +986,12 @@ worklet reports the `captureUs` of the sample it is playing.
 - *D* is changed by at most one audio frame (20 ms) a second: one is dropped, or one repeated,
   at the quietest frame of that second. **[D26]** (Time-stretching without a pitch change is
   better and is deferred.)
+- **[D34] Further off than that adapts to, playout starts again in the right place.**
+  *(Decided by integrator 2026-11-21.)* When the delay in force leaves less than 25 ms beyond the
+  path and the audio pipeline (§10.2, [D33]), frames are being lost, and creeping up 20 ms a
+  second would lose them for seconds: playout stops and starts again at the target, one audible
+  gap of about the growth. When it is more than 250 ms over the target, the same. A rise in *D*
+  alone is still followed a frame a second. Light viewers follow the same rule.
 
 The player gives the picture as a `MediaStreamTrack`, so a `<video>` element shows it as it
 shows any other.
@@ -1363,6 +1398,9 @@ Rotating speakers on the overlay. Out of scope.
 | D29 | Light viewers in the harness, with decoding viewers as a check | 13.2 |
 | D30 | A backlog counts once it has stood over a line for 150 ms (integrator, 2026-11-21) | 11.2 |
 | D31 | Rule 3: a further drop waits one observation window, and needs the backlog or the loss still over the line (integrator, 2026-11-21) | 11.3 |
+| D33 | A frame is played at path + D + audio pipeline; the path followed at once when it grows (integrator, 2026-11-21) | 10.2 |
+| D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
+| D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms

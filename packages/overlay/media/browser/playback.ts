@@ -8,7 +8,7 @@
 import { MediaFlag, PacketType, type StreamConfig } from "../../protocol";
 import type { Clock, SessionClock } from "../../runtime";
 import type { EncodedFrame } from "../../types";
-import { browserBackends, type AudioBackend, type Backends } from "../backends";
+import { browserBackends, type AudioBackend, type Backends, type DecodedVideo, type VideoBackend } from "../backends";
 import { createPlayerWith, type PlayerImpl } from "../player";
 import { AUDIO_STREAM_ID, OPUS_DELAY_US, VIDEO_STREAM_ID, audioStreamConfig, createProgramSource, videoStreamConfig } from "../source";
 import { DependencyTracker } from "../layers";
@@ -665,5 +665,125 @@ export async function av(options: { seconds?: number; width?: number; height?: n
     appliedDelayMs: round(debug.appliedDelayMs),
     errors: seen.errors,
     eventLoopLagMs,
+  };
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* M6: a decoder that cannot keep up                                                           */
+/* ------------------------------------------------------------------------------------------ */
+
+/**
+ * The real decoder, made slow: what it decodes is let out no faster than one frame every
+ * `slowMs`, as a decoder that takes that long a frame would let it out. (A browser offers no way
+ * to slow its own decoder; this is the same to the player, which only sees frames go in and
+ * come out.)
+ */
+function slowedBackends(control: { slowMs: number }): Backends {
+  return {
+    audio: browserBackends.audio,
+    video(events) {
+      /** When each frame went in, in order; and decoded frames waiting for the time a slow decoder would have let them out. */
+      const inAt: number[] = [];
+      const held: { frame: DecodedVideo; at: number }[] = [];
+      let lastOutAt = 0;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const release = () => {
+        timer = null;
+        const now = performance.now();
+        while (held.length > 0 && now >= (held[0] as { at: number }).at) events.frame((held.shift() as { frame: DecodedVideo }).frame);
+        if (held.length > 0) timer = setTimeout(release, Math.max(0, (held[0] as { at: number }).at - now));
+      };
+      const real: VideoBackend = browserBackends.video({
+        frame: (frame) => {
+          const wentIn = inAt.shift() ?? performance.now();
+          // A decoder that takes slowMs a frame, one frame at a time.
+          const at = control.slowMs > 0 ? Math.max(wentIn, lastOutAt) + control.slowMs : performance.now();
+          lastOutAt = at;
+          held.push({ frame, at });
+          if (!timer) release();
+        },
+        error: events.error,
+      });
+      return {
+        configure: (config) => real.configure(config),
+        decode: (frame) => {
+          inAt.push(performance.now());
+          real.decode(frame);
+        },
+        queueSize: () => real.queueSize() + held.length,
+        reset: () => {
+          inAt.length = 0;
+          for (const { frame } of held.splice(0)) frame.close();
+          real.reset();
+        },
+        show: (frame) => real.show(frame),
+        track: () => real.track(),
+        close: () => {
+          if (timer) clearTimeout(timer);
+          for (const { frame } of held.splice(0)) frame.close();
+          real.close();
+        },
+      };
+    },
+  };
+}
+
+/**
+ * PLAN M6: "a viewer whose decode time exceeds the frame interval asks for a lower layer within
+ * 2 s and recovers". The decoder takes `slowMs` a frame (more than 33 ms at 30 fps) from
+ * `slowFromS` to `slowToS`; the parent, the loopback here, honours what the player asks for
+ * (`wantedLayers`) by not sending the layers above it.
+ */
+export async function m6(options: { seconds?: number; slowMs?: number; slowFromS?: number; slowToS?: number; width?: number; height?: number; bitrateKbps?: number } = {}) {
+  const seconds = options.seconds ?? 30;
+  const slowFromS = options.slowFromS ?? 4;
+  const slowToS = options.slowToS ?? 12;
+  const encoding = encodingFor({ width: 640, height: 360, bitrateKbps: 600, ...options });
+  const clock = createWorkerClock();
+  const sessionClock = createLocalSessionClock(clock, 5_000_000);
+  const { source, errors: sourceErrors, input, stop } = await setupSource(encoding, clock, sessionClock, "camera", false);
+  const control = { slowMs: 0 };
+  const player = createPlayerWith({ sessionClock, clock, playoutMinMs: 60, playoutMaxMs: 400 }, slowedBackends(control));
+  const seen = watch(player);
+  const loopback = createLoopback({ clock, delayMs: 10, seed: 13, deliver: (frame) => player.push(frame) });
+  await player.configure(source.streams().filter((config) => config.kind === "video"));
+  source.on("frame", (frame) => loopback.send(frame));
+  const caps: { atS: number; cap: number }[] = [];
+  let startedAt = 0;
+  const follow = clock.setInterval(() => {
+    // The parent hears what the viewer wants with its next feedback (§4.5, every 100 ms).
+    const cap = player.wantedLayers(VIDEO_STREAM_ID).maxTemporal;
+    loopback.set({ dropLayer: [0, cap < 1 ? 1 : 0, cap < 2 ? 1 : 0] });
+    const atS = (clock.now() - startedAt) / 1000;
+    if (caps.length === 0 || (caps[caps.length - 1] as { cap: number }).cap !== cap) caps.push({ atS: round(atS, 2) as number, cap });
+    control.slowMs = atS >= slowFromS && atS < slowToS ? (options.slowMs ?? 45) : 0;
+  }, 100);
+  startedAt = clock.now();
+  await source.start({ video: input.video });
+  await sleep(seconds * 1000);
+  follow();
+  const fps = (fromS: number, toS: number) => round(seen.rendered.filter((r) => r.renderedUs / 1000 - sessionClock.fromLocal(startedAt) >= fromS * 1000 && r.renderedUs / 1000 - sessionClock.fromLocal(startedAt) < toS * 1000).length / (toS - fromS));
+  const stats = player.stats();
+  await source.stop();
+  stop();
+  await player.close();
+  clock.close();
+  const down = caps.find((c) => c.atS >= slowFromS && c.cap < 2) ?? null;
+  const backUp = caps.find((c) => c.atS >= slowToS && c.cap === 2) ?? null;
+  return {
+    seconds,
+    slowMs: options.slowMs ?? 45,
+    slowFromS,
+    slowToS,
+    caps,
+    downAfterMs: down ? round((down.atS - slowFromS) * 1000) : null,
+    lowestCap: Math.min(...caps.map((c) => c.cap)),
+    backUpAfterMs: backUp ? round((backUp.atS - slowToS) * 1000) : null,
+    fpsBefore: fps(1, slowFromS),
+    fpsSlow: fps(slowFromS + 2.5, slowToS),
+    fpsAfter: fps(Math.min(seconds - 1, slowToS + 8), seconds),
+    decodeMsP95: stats.video?.decodeMsP95 ?? null,
+    freezes: seen.freezes.map((f) => f.ms),
+    errors: [...seen.errors, ...sourceErrors],
   };
 }

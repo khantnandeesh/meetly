@@ -92,6 +92,15 @@ export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
       ["no errors", r.errors.length === 0, r.errors.join("; ")],
     ],
   },
+  m6: {
+    options: { seconds: 30 },
+    check: (r) => [
+      ["a decoder slower than the frame interval asks for a lower layer within 2 s", r.downAfterMs !== null && r.downAfterMs <= 2000, `after ${r.downAfterMs} ms (${r.slowMs} ms a frame from ${r.slowFromS} s); caps ${r.caps.map((c) => `${c.atS}s:${c.cap}`).join(" ")}`],
+      ["and is then left with a rate it can decode", r.lowestCap >= 1 && n(r.fpsSlow) >= 12, `lowest cap ${r.lowestCap}; ${r.fpsBefore} fps before, ${r.fpsSlow} while slow`],
+      ["it recovers once the decoder keeps up again", r.backUpAfterMs !== null && n(r.fpsAfter) >= 25, `back to the top layer ${r.backUpAfterMs} ms after; ${r.fpsAfter} fps`],
+      ["no errors", r.errors.length === 0, r.errors.join("; ")],
+    ],
+  },
   deps: {
     options: { seconds: 6 },
     check: (r) => [
