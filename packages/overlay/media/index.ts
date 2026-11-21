@@ -2,7 +2,7 @@
  * media's public face. Owner: E-media. See ./README.md.
  */
 import { notImplemented } from "../runtime";
-import type { JitterBuffer, JitterBufferOptions, Player, PlayerOptions, ProgramEncoding, ProgramSource, ProgramSourceOptions } from "./types";
+import type { Player, PlayerOptions, ProgramEncoding, ProgramSource, ProgramSourceOptions } from "./types";
 
 export type * from "./types";
 
@@ -14,7 +14,7 @@ export const DEFAULT_ENCODING: ProgramEncoding = {
 
 export const createProgramSource: (options: ProgramSourceOptions) => ProgramSource = () => notImplemented("E-media", "media.createProgramSource");
 
-export const createJitterBuffer: (options: JitterBufferOptions) => JitterBuffer = () => notImplemented("E-media", "media.createJitterBuffer");
+export { createJitterBuffer, playoutDelayTarget } from "./jitterBuffer";
 
 export const createPlayer: (options: PlayerOptions) => Player = () => notImplemented("E-media", "media.createPlayer");
 
