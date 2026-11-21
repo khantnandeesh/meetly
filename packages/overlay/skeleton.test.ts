@@ -15,8 +15,8 @@ import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
 import { startNodeCoordinator } from "@meetly/overlay/coordinator/node";
 import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
 import { DEFAULT_ENCODING, createJitterBuffer, createPlayer } from "@meetly/overlay/media/index";
-import { createGopCache, createOverlayNode } from "@meetly/overlay/topology/index";
-import { CHANNELS, createLinkManager, createReassembler } from "@meetly/overlay/transport/index";
+import { createOverlayNode } from "@meetly/overlay/topology/index";
+import { CHANNELS, createLinkManager } from "@meetly/overlay/transport/index";
 
 describe("overlay skeleton", () => {
   it("is reachable through the @meetly/overlay alias", () => {
@@ -32,8 +32,6 @@ describe("overlay skeleton", () => {
       ["architect", () => createOverlayViewer({ coordinatorUrl: "", ticket: async () => "" })],
       ["architect", () => createOverlaySource({ coordinatorUrl: "", ticket: async () => "" })],
       ["E-transport+topology", () => createLinkManager(undefined as never)],
-      ["E-transport+topology", () => createReassembler(undefined as never)],
-      ["E-transport+topology", () => createGopCache({ maxMs: 0, maxBytes: 0 })],
       ["E-transport+topology", () => createOverlayNode(undefined as never)],
       ["E-media", () => createJitterBuffer(undefined as never)],
       ["E-media", () => createPlayer(undefined as never)],

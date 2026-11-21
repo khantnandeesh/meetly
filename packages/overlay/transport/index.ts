@@ -3,6 +3,7 @@
  */
 import { notImplemented } from "../runtime";
 import type { Capabilities, IceServer } from "../protocol";
+import { createReassembler as createReassemblerImpl } from "./reassembler";
 import type { LinkManager, Reassembler, ReassemblerOptions, TransportOptions } from "./types";
 
 export type * from "./types";
@@ -18,8 +19,7 @@ export const CHANNELS = {
 export const createLinkManager: (options: TransportOptions) => LinkManager = () =>
   notImplemented("E-transport+topology", "transport.createLinkManager");
 
-export const createReassembler: (options: ReassemblerOptions) => Reassembler = () =>
-  notImplemented("E-transport+topology", "transport.createReassembler");
+export const createReassembler: (options: ReassemblerOptions) => Reassembler = createReassemblerImpl;
 
 /**
  * What kind of NAT this browser is behind, for `Capabilities.nat` (SPEC §8.1): gathers

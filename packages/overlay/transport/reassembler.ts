@@ -1,0 +1,332 @@
+/**
+ * Frames from packets, for this peer's own playout, and the list of what to ask for again.
+ * SPEC §4.2, §4.6. Forwarding does not pass through here.
+ *
+ * Telling "lost" from "never sent". Frame ids count every frame of a stream, but a parent that
+ * is shedding a layer for this child (SPEC §11.3) does not send every frame, so a hole in the
+ * frame ids is not by itself a loss. `linkSeq` is: it counts every packet the parent sent on this
+ * link. Fragments of one frame are sent one after another, so from any one live fragment the
+ * reassembler knows the `linkSeq` the frame started and ended at. A hole in the frame ids between
+ * two frames whose link sequences are adjacent (once the heartbeats and retransmissions known to
+ * have been sent in between are counted) was never sent, and is not asked for.
+ *
+ * Owner: E-transport+topology.
+ */
+import { HopFlag, MEDIA_HEADER_BYTES, NACK_WHOLE_FRAME, PacketType, nackItemsFor, seq16Diff, type MediaHeader, type NackItem, type PeerId } from "../protocol";
+import type { ReceivedFrame } from "../types";
+import type { Reassembler, ReassemblerOptions } from "./types";
+
+/** Frames a stream is remembered for behind its newest: older packets are dropped as late. */
+const WINDOW_FRAMES = 1024;
+/** A hole of more frames than this is not asked for: a NACK is for isolated loss. */
+const MAX_WHOLE_FRAME_GAP = 16;
+/** Non-media link sequence numbers remembered per sender, to explain holes in `linkSeq`. */
+const OTHER_SEQS = 256;
+
+const DEFAULT_MAX_FRAGMENTS = 4096;
+const DEFAULT_RETRY_MS = 100;
+
+type FrameRecord = {
+  id: number;
+  /** Arrival of its first packet. */
+  firstAt: number;
+  from: PeerId;
+  fragCount: number;
+  /** The `linkSeq` its fragment 0 had (or would have had), from a live fragment; -1 if only retransmissions were seen. */
+  seq0: number;
+  /** The hole in front of this frame was found to be frames never sent. */
+  gapExplained: boolean;
+  /** Null once the frame is complete. */
+  pending: {
+    header: MediaHeader;
+    parts: (Uint8Array | undefined)[];
+    got: number;
+    bytes: number;
+    arrivedAt: Float64Array;
+    asks: Uint8Array;
+    askedAt: Float64Array;
+    recovered: boolean;
+  } | null;
+};
+
+type StreamState = {
+  frames: Map<number, FrameRecord>;
+  /** The ids in `frames`, ascending. */
+  order: number[];
+  /** Frames below this are over: their packets are dropped. */
+  floor: number;
+  pendingCount: number;
+  /** Whole frames asked for: how often, and when last. */
+  wholeAsks: Map<number, { asks: number; at: number }>;
+};
+
+type SenderState = { seqs: Uint16Array; used: number; next: number };
+
+export function createReassembler(options: ReassemblerOptions): Reassembler {
+  const reorderMs = options.reorderMs;
+  const maxPending = Math.max(1, options.maxPending);
+  const nackRetries = options.nackRetries ?? 1;
+  const retryMs = options.retryMs ?? (() => DEFAULT_RETRY_MS);
+  const maxFragments = options.maxFragments ?? DEFAULT_MAX_FRAGMENTS;
+  const streams = new Map<number, StreamState>();
+  const senders = new Map<PeerId, SenderState>();
+  const counters = { frames: 0, duplicates: 0, expiredIncomplete: 0, late: 0, malformed: 0 };
+
+  const stream = (id: number): StreamState => {
+    let s = streams.get(id);
+    if (!s) streams.set(id, (s = { frames: new Map(), order: [], floor: 0, pendingCount: 0, wholeAsks: new Map() }));
+    return s;
+  };
+
+  const insertOrdered = (order: number[], id: number) => {
+    if (order.length === 0 || order[order.length - 1] < id) {
+      order.push(id);
+      return;
+    }
+    let lo = 0;
+    let hi = order.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (order[mid] < id) lo = mid + 1;
+      else hi = mid;
+    }
+    order.splice(lo, 0, id);
+  };
+
+  /** Forgets everything of `s` below `floor`. */
+  const raiseFloor = (s: StreamState, floor: number) => {
+    if (floor <= s.floor) return;
+    s.floor = floor;
+    let drop = 0;
+    while (drop < s.order.length && s.order[drop] < floor) {
+      const record = s.frames.get(s.order[drop])!;
+      if (record.pending) {
+        counters.expiredIncomplete++;
+        s.pendingCount--;
+      }
+      s.frames.delete(record.id);
+      drop++;
+    }
+    if (drop > 0) s.order.splice(0, drop);
+    if (s.wholeAsks.size > 0) for (const id of s.wholeAsks.keys()) if (id < floor) s.wholeAsks.delete(id);
+  };
+
+  const noteOther = (from: PeerId, linkSeq: number) => {
+    let sender = senders.get(from);
+    if (!sender) senders.set(from, (sender = { seqs: new Uint16Array(OTHER_SEQS), used: 0, next: 0 }));
+    sender.seqs[sender.next] = linkSeq;
+    sender.next = (sender.next + 1) % OTHER_SEQS;
+    if (sender.used < OTHER_SEQS) sender.used++;
+  };
+
+  /** How many packets known not to be live media `from` sent strictly between two link sequence numbers. */
+  const othersBetween = (from: PeerId, after: number, before: number): number => {
+    const sender = senders.get(from);
+    if (!sender) return 0;
+    const span = seq16Diff(before, after);
+    let n = 0;
+    for (let i = 0; i < sender.used; i++) {
+      const d = seq16Diff(sender.seqs[i], after);
+      if (d > 0 && d < span) n++;
+    }
+    return n;
+  };
+
+  /**
+   * Whether the hole in frame ids between `prev` and `next` is frames the sender never sent on
+   * this link: nothing is missing from its link sequence between the two.
+   */
+  const neverSent = (prev: FrameRecord, next: FrameRecord): boolean => {
+    if (next.gapExplained) return true;
+    if (prev.from !== next.from || prev.seq0 < 0 || next.seq0 < 0) return false;
+    const prevEnd = (prev.seq0 + prev.fragCount - 1) & 0xffff;
+    const between = seq16Diff(next.seq0, prevEnd) - 1;
+    if (between < 0) return false;
+    if (between - othersBetween(prev.from, prevEnd, next.seq0) !== 0) return false;
+    next.gapExplained = true;
+    return true;
+  };
+
+  const askable = (asks: number, askedAt: number, now: number) => asks === 0 || (asks <= nackRetries && now - askedAt >= retryMs());
+
+  return {
+    push(packet, header, from, receivedAt) {
+      if (header.type !== PacketType.Media) return null;
+      const retransmit = (header.hopFlags & HopFlag.Retransmit) !== 0;
+      if (retransmit) noteOther(from, header.linkSeq);
+      const s = stream(header.streamId);
+      const id = header.frameId;
+      if (id < s.floor) {
+        counters.late++;
+        return null;
+      }
+      let record = s.frames.get(id);
+      if (!record) {
+        if (header.fragCount > maxFragments) {
+          counters.malformed++;
+          return null;
+        }
+        record = {
+          id,
+          firstAt: receivedAt,
+          from,
+          fragCount: header.fragCount,
+          seq0: -1,
+          gapExplained: false,
+          pending: {
+            header,
+            parts: new Array<Uint8Array | undefined>(header.fragCount),
+            got: 0,
+            bytes: 0,
+            arrivedAt: new Float64Array(header.fragCount).fill(NaN),
+            asks: new Uint8Array(header.fragCount),
+            askedAt: new Float64Array(header.fragCount),
+            recovered: false,
+          },
+        };
+        s.frames.set(id, record);
+        insertOrdered(s.order, id);
+        s.pendingCount++;
+        s.wholeAsks.delete(id);
+        const newest = s.order[s.order.length - 1];
+        if (newest - WINDOW_FRAMES > s.floor) raiseFloor(s, newest - WINDOW_FRAMES);
+        while (s.pendingCount > maxPending) {
+          // Give up on the oldest incomplete frame, and with it on everything before it.
+          const oldest = s.order.find((frameId) => s.frames.get(frameId)!.pending !== null)!;
+          if (oldest === id) break;
+          raiseFloor(s, oldest + 1);
+        }
+      }
+      if (!retransmit && record.seq0 < 0) {
+        record.seq0 = (header.linkSeq - header.fragIndex) & 0xffff;
+        record.from = from;
+      }
+      const pending = record.pending;
+      if (!pending) {
+        counters.duplicates++;
+        return null;
+      }
+      if (header.fragCount !== record.fragCount) {
+        counters.malformed++;
+        return null;
+      }
+      if (pending.parts[header.fragIndex] !== undefined) {
+        counters.duplicates++;
+        return null;
+      }
+      const payload = packet.slice(MEDIA_HEADER_BYTES);
+      pending.parts[header.fragIndex] = payload;
+      pending.arrivedAt[header.fragIndex] = receivedAt;
+      pending.got++;
+      pending.bytes += payload.byteLength;
+      if (header.hopFlags & (HopFlag.Replay | HopFlag.Retransmit)) pending.recovered = true;
+      if (pending.got < record.fragCount) return null;
+
+      let data: Uint8Array;
+      if (record.fragCount === 1) data = payload;
+      else {
+        data = new Uint8Array(pending.bytes);
+        let at = 0;
+        for (const part of pending.parts) {
+          data.set(part!, at);
+          at += part!.byteLength;
+        }
+      }
+      const first = pending.header;
+      record.pending = null;
+      s.pendingCount--;
+      counters.frames++;
+      const frame: ReceivedFrame = {
+        header: {
+          type: first.type,
+          flags: first.flags,
+          streamId: first.streamId,
+          stripe: first.stripe,
+          spatial: first.spatial,
+          temporal: first.temporal,
+          refDelta: first.refDelta,
+          keyDelta: first.keyDelta,
+          frameId: first.frameId,
+          captureUs: first.captureUs,
+          configId: first.configId,
+        },
+        data,
+        firstPacketAt: record.firstAt,
+        completeAt: receivedAt,
+        from,
+        recovered: pending.recovered,
+      };
+      return frame;
+    },
+
+    noteLinkPacket(from, linkSeq) {
+      noteOther(from, linkSeq);
+    },
+
+    missing(now, max) {
+      const items: NackItem[] = [];
+      for (const [streamId, s] of streams) {
+        const order = s.order;
+        const n = order.length;
+        if (n === 0) continue;
+        // laterAt[i]: the earliest arrival of any packet of a frame after order[i].
+        const laterAt = new Float64Array(n);
+        let earliest = Infinity;
+        for (let i = n - 1; i >= 0; i--) {
+          laterAt[i] = earliest;
+          const at = s.frames.get(order[i])!.firstAt;
+          if (at < earliest) earliest = at;
+        }
+        let prev: FrameRecord | null = null;
+        for (let i = 0; i < n && items.length < max; i++) {
+          const record = s.frames.get(order[i])!;
+          // Whole frames missing in front of this one: due once this frame, or a later one, has been here for reorderMs.
+          if (prev && record.id - prev.id > 1 && record.id - prev.id - 1 <= MAX_WHOLE_FRAME_GAP) {
+            const seenLaterAt = Math.min(record.firstAt, laterAt[i]);
+            if (now - seenLaterAt >= reorderMs && !neverSent(prev, record)) {
+              for (let id = prev.id + 1; id < record.id && items.length < max; id++) {
+                const asked = s.wholeAsks.get(id);
+                if (asked && !askable(asked.asks, asked.at, now)) continue;
+                s.wholeAsks.set(id, { asks: (asked?.asks ?? 0) + 1, at: now });
+                items.push({ streamId, frameId: id, firstFrag: NACK_WHOLE_FRAME, mask: 0 });
+              }
+            }
+          }
+          prev = record;
+          const pending = record.pending;
+          if (!pending || items.length >= max) continue;
+          // Fragments missing inside this frame: due once a later fragment, or a later frame, has been here for reorderMs.
+          let ask: number[] | null = null;
+          let later = laterAt[i];
+          for (let frag = record.fragCount - 1; frag >= 0; frag--) {
+            const at = pending.arrivedAt[frag];
+            if (at === at) {
+              if (at < later) later = at;
+            } else if (now - later >= reorderMs && askable(pending.asks[frag], pending.askedAt[frag], now)) {
+              (ask ??= []).push(frag);
+            }
+          }
+          if (!ask) continue;
+          ask.reverse();
+          const frameItems = nackItemsFor(streamId, record.id, ask).slice(0, max - items.length);
+          for (const item of frameItems) {
+            items.push(item);
+            for (const frag of [item.firstFrag, ...Array.from({ length: 16 }, (_, bit) => (item.mask & (1 << bit) ? item.firstFrag + 1 + bit : -1))]) {
+              if (frag < 0) continue;
+              pending.asks[frag]++;
+              pending.askedAt[frag] = now;
+            }
+          }
+        }
+        if (items.length >= max) break;
+      }
+      return items;
+    },
+
+    expireBefore(streamId, frameId) {
+      raiseFloor(stream(streamId), frameId);
+    },
+
+    counters: () => ({ ...counters }),
+  };
+}

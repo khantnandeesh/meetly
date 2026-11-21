@@ -2,11 +2,12 @@
  * topology's public face. Owner: E-transport+topology. See ./README.md.
  */
 import { notImplemented } from "../runtime";
+import { createGopCache as createGopCacheImpl } from "./gopCache";
 import type { GopCache, GopCacheOptions, OverlayNode, OverlayNodeOptions } from "./types";
 
 export type * from "./types";
 
-export const createGopCache: (options: GopCacheOptions) => GopCache = () => notImplemented("E-transport+topology", "topology.createGopCache");
+export const createGopCache: (options: GopCacheOptions) => GopCache = createGopCacheImpl;
 
 /**
  * SPEC §8, all pure. `parentCost` (§8.3) and `judgeRelay` (§8.1–§8.2) are also imported by the
