@@ -12,7 +12,7 @@ import { NotImplementedError, PROTOCOL_VERSION, createOverlaySource, createOverl
 import { ROUTES } from "@meetly/overlay/coordinator/index";
 import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
 import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
-import { DEFAULT_ENCODING, createJitterBuffer, createPlayer } from "@meetly/overlay/media/index";
+import { DEFAULT_ENCODING } from "@meetly/overlay/media/index";
 import { CHANNELS } from "@meetly/overlay/transport/index";
 
 describe("overlay skeleton", () => {
@@ -28,8 +28,6 @@ describe("overlay skeleton", () => {
     const stubs: [string, () => unknown][] = [
       ["architect", () => createOverlayViewer({ coordinatorUrl: "", ticket: async () => "" })],
       ["architect", () => createOverlaySource({ coordinatorUrl: "", ticket: async () => "" })],
-      ["E-media", () => createJitterBuffer(undefined as never)],
-      ["E-media", () => createPlayer(undefined as never)],
       ["E-harness", () => buildReport([])],
     ];
     for (const [owner, call] of stubs) {

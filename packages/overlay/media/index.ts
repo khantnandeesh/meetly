@@ -1,8 +1,7 @@
 /**
  * media's public face. Owner: E-media. See ./README.md.
  */
-import { notImplemented } from "../runtime";
-import type { JitterBuffer, JitterBufferOptions, Player, PlayerOptions, ProgramEncoding, ProgramSource, ProgramSourceOptions } from "./types";
+import type { ProgramEncoding } from "./types";
 
 export type * from "./types";
 
@@ -12,11 +11,13 @@ export const DEFAULT_ENCODING: ProgramEncoding = {
   audio: { codec: "opus", sampleRate: 48000, channels: 1, bitrateKbps: 32, frameUs: 20000 },
 };
 
-export const createProgramSource: (options: ProgramSourceOptions) => ProgramSource = () => notImplemented("E-media", "media.createProgramSource");
+export { createProgramSource, VIDEO_STREAM_ID, AUDIO_STREAM_ID } from "./source";
 
-export const createJitterBuffer: (options: JitterBufferOptions) => JitterBuffer = () => notImplemented("E-media", "media.createJitterBuffer");
+export { createJitterBuffer, playoutDelayTarget } from "./jitterBuffer";
 
-export const createPlayer: (options: PlayerOptions) => Player = () => notImplemented("E-media", "media.createPlayer");
+export { createPlayer } from "./player";
 
-/** The WebCodecs codec strings this browser can decode, for `Capabilities.decode`. */
-export const probeDecoders: () => Promise<string[]> = () => notImplemented("E-media", "media.probeDecoders");
+export { probeDecoders } from "./probe";
+
+export { createProgramComposer } from "./compose";
+export type { ProgramComposer, ProgramComposerOptions } from "./compose";
