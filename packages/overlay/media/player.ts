@@ -4,7 +4,15 @@
  *
  * One clock decides when: the *playhead*, the capture time being presented now. With sound
  * playing it is read from the audio worklet (audio is the master, §10.5); otherwise it is the
- * session clock less the playout delay. Each jitter buffer is asked what is due at the playhead.
+ * session clock less the delay in force. Each jitter buffer is asked what is due at the playhead.
+ *
+ * The delay in force is the *path* plus *D*. The path is how long frames take to get here at
+ * best: capture and encode at the source, then every hop (the floor of session time at arrival
+ * less `captureUs`, over the last second, for the slower of the two streams). *D* is the jitter
+ * buffer's playout delay (§10.2) on top of that. SPEC §10.1 says a frame is due at
+ * `captureUs + D`; taken literally, a viewer whose path is longer than *D* (any viewer a few hops
+ * down) would find every frame late. §10.2's own account of glass-to-glass (encode + the hops +
+ * *D* + decode) is the intent, and is what this does.
  *
  * With `decode: false` (the harness's light viewers, §13.2) nothing is decoded: a frame is
  * "rendered" when the jitter buffer hands it out, which is when a decoder would have got it.
@@ -12,7 +20,7 @@
 import { MediaFlag, type StreamConfig } from "../protocol";
 import type { Cancel } from "../runtime";
 import type { LayerCap, ReceivedFrame } from "../types";
-import { AudioPlayout, GROW_WHEN_SHORT_MS, SHRINK_WHEN_LONG_MS } from "./audioPlayout";
+import { AudioPlayout, GROW_WHEN_SHORT_MS, RESYNC_SLACK_MS, RESYNC_WHEN_OFF_MS, SHRINK_WHEN_LONG_MS } from "./audioPlayout";
 import { browserBackends, type AudioBackend, type Backends, type DecodedVideo, type VideoBackend } from "./backends";
 import { Emitter } from "./emitter";
 import { createJitterBuffer, type JitterBufferImpl } from "./jitterBuffer";
@@ -21,8 +29,25 @@ import type { Player, PlayerEvents, PlayerOptions, PlayerStats, PlayoutFrame } f
 
 /** How often the player looks at its clocks. */
 export const TICK_MS = 5;
-/** Audio is handed to its decoder this long before it is to be heard: decoding, and the way to the audio thread. */
-export const AUDIO_LEAD_US = 10_000;
+/**
+ * Audio is handed to its decoder this long before it is to be heard: a tick, decoding, and the
+ * way to the audio thread. While a frame is to be dropped the sequencer needs the frame after it
+ * too, so the lead grows by one frame; that costs nothing, since the delay is then too long.
+ */
+export const AUDIO_LEAD_US = 15_000;
+/**
+ * A video frame is decoded when the sound reaches its capture time, and shown when it comes out
+ * of the decoder, a few milliseconds late. This much more keeps it inside the window of §10.5
+ * when a delay change moves the sound back a frame at once.
+ */
+export const VIDEO_BEHIND_US = 5_000;
+/**
+ * The path's floor is taken over this long, so that a burst of delay is ridden out by D rather
+ * than followed; but when even the floor of a shorter window says frames come too late to be
+ * played (the path itself grew: a repair to a parent further away), that is followed at once.
+ */
+export const PATH_WINDOW_MS = 1000;
+export const PATH_GREW_WINDOW_MS = 200;
 /** A video frame may be shown this late; later, a discardable one is dropped instead (§10.5). */
 export const SHOW_LATE_US = 45_000;
 /** A gap between two rendered frames longer than this is a freeze (§12.2). */
@@ -42,6 +67,28 @@ const LAYER_UP_FAILED_MS = 5000;
 
 type PendingDecode = { frameId: number; decodeOnly: boolean; discardable: boolean; at: number };
 
+/** The least time frames of one stream have taken to get here, over a sliding window: a monotonic deque of (arrival, transit). */
+class PathFloor {
+  private readonly samples: { at: number; ms: number }[] = [];
+
+  constructor(private readonly windowMs: number) {}
+
+  add(at: number, ms: number): void {
+    while (this.samples.length > 0 && (this.samples[this.samples.length - 1] as { ms: number }).ms >= ms) this.samples.pop();
+    this.samples.push({ at, ms });
+  }
+
+  /** Forget what arrived before `at`: it came by a path that is no longer the one. */
+  forgetBefore(at: number): void {
+    while (this.samples.length > 1 && (this.samples[0] as { at: number }).at < at) this.samples.shift();
+  }
+
+  floor(now: number): number | null {
+    while (this.samples.length > 1 && (this.samples[0] as { at: number }).at < now - this.windowMs) this.samples.shift();
+    return this.samples.length > 0 ? (this.samples[0] as { ms: number }).ms : null;
+  }
+}
+
 type VideoState = {
   config: StreamConfig;
   buffer: JitterBufferImpl;
@@ -55,8 +102,11 @@ type VideoState = {
   first: boolean;
   width: number;
   height: number;
-  /** Time in the decoder of recent frames, for the statistics and for the layer rule. */
+  /** The decoder's time per frame, recent ones (from going in, or from the frame before coming out, to coming out): the statistics and the layer rule. */
   decodeMs: number[];
+  lastOutputAt: number;
+  path: PathFloor;
+  pathRecent: PathFloor;
   sinceCheck: number[];
   topLayer: number;
   cap: number;
@@ -73,6 +123,8 @@ type AudioState = {
   backend: AudioBackend | null;
   playout: AudioPlayout | null;
   blocked: boolean;
+  path: PathFloor;
+  pathRecent: PathFloor;
   /** Light mode: what a sequencer would have counted. */
   lightPlayedMs: number;
   lightConcealedMs: number;
@@ -82,8 +134,13 @@ type AudioState = {
 export type PlayerDebug = {
   playheadUs: number;
   audioIsClock: boolean;
+  /** The delay in force, path included: session time less the playhead. */
   appliedDelayMs: number;
+  /** The delay wanted: the path plus D. */
   targetDelayMs: number;
+  pathMs: number | null;
+  /** The jitter buffer's D. */
+  playoutDelayMs: number;
   layerCap: number;
   audio: ReturnType<AudioPlayout["counters"]> | null;
   buffers: Record<number, ReturnType<JitterBufferImpl["stats"]>>;
@@ -164,6 +221,9 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
           width: config.width ?? 0,
           height: config.height ?? 0,
           decodeMs: [],
+          lastOutputAt: -Infinity,
+          path: new PathFloor(PATH_WINDOW_MS),
+          pathRecent: new PathFloor(PATH_GREW_WINDOW_MS),
           sinceCheck: [],
           topLayer: top,
           cap: top,
@@ -195,7 +255,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     }
     const state: AudioState = existing
       ? { ...existing, config }
-      : { config, buffer: this.makeBuffer(config), backend: null, playout: null, blocked: false, lightPlayedMs: 0, lightConcealedMs: 0, lightLastId: -1 };
+      : { config, buffer: this.makeBuffer(config), backend: null, playout: null, blocked: false, path: new PathFloor(PATH_WINDOW_MS), pathRecent: new PathFloor(PATH_GREW_WINDOW_MS), lightPlayedMs: 0, lightConcealedMs: 0, lightLastId: -1 };
     this.audio = state;
     if (!this.decoding) return;
     const frameUs = config.frameUs ?? 20_000;
@@ -231,8 +291,15 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
 
   push(frame: ReceivedFrame): void {
     const id = frame.header.streamId;
-    if (this.video && this.video.config.id === id) this.video.buffer.push(frame);
-    else if (this.audio && this.audio.config.id === id) this.audio.buffer.push(frame);
+    const stream = this.video && this.video.config.id === id ? this.video : this.audio && this.audio.config.id === id ? this.audio : null;
+    if (!stream) return;
+    // How long it took to get here. A replayed or retransmitted frame says nothing about the path.
+    if (!frame.recovered) {
+      const transitMs = this.options.sessionClock.now() - frame.header.captureUs / 1000;
+      stream.path.add(this.options.clock.now(), transitMs);
+      stream.pathRecent.add(this.options.clock.now(), transitMs);
+    }
+    stream.buffer.push(frame);
   }
 
   setLinkHints(hints: { jitterMs: number; rttMs: number | null; lossPct: number }): void {
@@ -243,9 +310,41 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
 
   /* ------------------------------ the clock ------------------------------ */
 
-  private targetDelayMs(): number {
+  /** The jitter buffer's D. Audio's and video's are told the same link, so they agree. */
+  private playoutDelayMs(): number {
     const buffer = this.audio?.buffer ?? this.video?.buffer;
     return buffer ? buffer.delayUs() / 1000 : this.options.playoutMinMs;
+  }
+
+  /** How long the slower stream's frames take to get here at best; null before any has. */
+  private pathMs(): number | null {
+    const now = this.options.clock.now();
+    const slower = (floor: (stream: VideoState | AudioState) => number | null) => {
+      const video = this.video ? floor(this.video) : null;
+      const audio = this.audio ? floor(this.audio) : null;
+      if (video === null) return audio;
+      return audio === null ? video : Math.max(audio, video);
+    };
+    const path = slower((stream) => stream.path.floor(now));
+    const recent = slower((stream) => stream.pathRecent.floor(now));
+    // Everything lately has come too late to be played: the path is longer now, and what came
+    // before by the shorter one is no guide to it.
+    if (path !== null && recent !== null && this.appliedMs !== null && recent > path && recent + RESYNC_SLACK_MS > this.appliedMs) {
+      this.video?.path.forgetBefore(now - PATH_GREW_WINDOW_MS);
+      this.audio?.path.forgetBefore(now - PATH_GREW_WINDOW_MS);
+      return slower((stream) => stream.path.floor(now));
+    }
+    return path;
+  }
+
+  /** The shortest delay that does not lose frames that come by the path. */
+  private leastDelayMs(): number {
+    return Math.max(0, this.pathMs() ?? 0) + RESYNC_SLACK_MS;
+  }
+
+  /** The delay wanted between capture and playout: the path, then D. */
+  private targetDelayMs(): number {
+    return Math.max(0, this.pathMs() ?? 0) + this.playoutDelayMs();
   }
 
   /**
@@ -263,8 +362,13 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     this.audioIsClock = false;
     const target = this.targetDelayMs();
     const now = this.options.clock.now();
-    if (this.appliedMs === null || !this.audio) {
+    if (this.appliedMs === null || !this.audio || this.pathMs() === null) {
       // No sound to keep in step with: the delay is simply the target (§10.2).
+      // Until a frame has come, the path is not known: nothing is latched yet.
+      if (this.pathMs() === null) return nowUs - Math.round(target * 1000);
+      this.appliedMs = target;
+    } else if ((this.appliedMs < this.leastDelayMs() && this.appliedMs < target) || this.appliedMs - target > RESYNC_WHEN_OFF_MS) {
+      // As the audio would: too far off to adapt to a frame a second, so start again in the right place.
       this.appliedMs = target;
     } else if (now - this.appliedSteppedAt >= 1000) {
       // Sound that is not decoded here (a light viewer), or not allowed to play yet: move as
@@ -287,19 +391,20 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     if (this.closed) return;
     const nowUs = this.nowUs();
     const audio = this.audio;
-    if (audio?.playout && !audio.blocked) audio.playout.tick(nowUs, this.targetDelayMs());
+    if (audio?.playout && !audio.blocked) audio.playout.tick(nowUs, this.targetDelayMs(), this.leastDelayMs());
     const playheadUs = this.playheadUs(nowUs);
 
     if (audio) {
       // "Due" in a jitter buffer is captureUs + D on the session clock; asked at playhead + D,
       // that is the playhead reaching captureUs, whatever delay playout is really at.
-      const lead = this.decoding ? AUDIO_LEAD_US : 0;
+      const lead = this.decoding ? AUDIO_LEAD_US + (audio.playout?.wantsDrop() ? (audio.config.frameUs ?? 20_000) : 0) : 0;
       const frames = audio.buffer.pop(playheadUs + audio.buffer.delayUs() + lead);
       if (frames.length > 0) this.playAudio(audio, frames);
     }
     const video = this.video;
     if (video) {
-      const frames = video.buffer.pop(playheadUs + video.buffer.delayUs());
+      const behind = this.decoding && this.audioIsClock ? VIDEO_BEHIND_US : 0;
+      const frames = video.buffer.pop(playheadUs - behind + video.buffer.delayUs());
       for (const frame of frames) this.decodeVideo(video, frame, nowUs);
       const now = this.options.clock.now();
       if (now - this.lastLayerCheck >= LAYER_CHECK_MS) {
@@ -382,6 +487,9 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       video.dropped++;
       return;
     }
+    // Above what this viewer asked for (a parent may not have caught up yet): only frames of the
+    // same layer or above build on it, so it is not decoded, and nothing that needed it is.
+    if (header.temporal > video.cap) return;
     // A decoder that is behind is spared what nothing depends on.
     if (discardable && backend.queueSize() >= DECODER_BEHIND_FRAMES) {
       video.dropped++;
@@ -409,7 +517,10 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       decoded.close();
       return;
     }
-    const took = this.options.clock.now() - pending.at;
+    // The decoder's time for this frame: from when it went in, or from when the one before it came out if it had to wait for that.
+    const now = this.options.clock.now();
+    const took = now - Math.max(pending.at, video.lastOutputAt);
+    video.lastOutputAt = now;
     video.decodeMs.push(took);
     if (video.decodeMs.length > 120) video.decodeMs.shift();
     video.sinceCheck.push(took);
@@ -534,7 +645,10 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
         ? { playedMs: counters.playedMs, concealedMs: counters.concealedMs, underruns: counters.late, avOffsetMs: video?.avOffsetMs ?? 0 }
         : { playedMs: audio.lightPlayedMs, concealedMs: audio.lightConcealedMs, underruns: 0, avOffsetMs: 0 };
     }
-    return { video: videoStats, audio: audioStats, playoutDelayMs: Math.round(this.appliedMs ?? this.targetDelayMs()) };
+    // The playout delay is D, what this viewer adds to its path (§4.5 `playoutDelayMs`), as it stands.
+    const pathMs = this.pathMs() ?? 0;
+    const appliedMs = this.appliedMs ?? this.targetDelayMs();
+    return { video: videoStats, audio: audioStats, playoutDelayMs: Math.max(0, Math.round(appliedMs - pathMs)) };
   }
 
   /** More than `stats()` says, for tests and for looking at a run. Not part of the contract. */
@@ -548,6 +662,8 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       audioIsClock: this.audioIsClock,
       appliedDelayMs: this.appliedMs ?? this.targetDelayMs(),
       targetDelayMs: this.targetDelayMs(),
+      pathMs: this.pathMs(),
+      playoutDelayMs: this.playoutDelayMs(),
       layerCap: this.video?.cap ?? 0,
       audio: this.audio?.playout?.counters() ?? null,
       buffers,

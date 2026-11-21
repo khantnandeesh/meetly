@@ -308,6 +308,7 @@ export function audioWorkletModule(): { Sequencer: new (sampleRate: number, fram
       declare tap: Float32Array | null;
       declare tapAt: number;
       declare tapFrame: number;
+      declare changes: number;
 
       constructor(options?: { processorOptions?: { frameUs?: number } }) {
         super();
@@ -317,6 +318,7 @@ export function audioWorkletModule(): { Sequencer: new (sampleRate: number, fram
         this.tap = null;
         this.tapAt = 0;
         this.tapFrame = 0;
+        this.changes = 0;
         this.port.onmessage = (event: MessageEvent) => {
           const message = event.data;
           if (message.t === "pcm") this.sequencer.push(message.us, message.pcm);
@@ -343,7 +345,14 @@ export function audioWorkletModule(): { Sequencer: new (sampleRate: number, fram
             this.tapAt = 0;
           }
         }
-        if (++this.quanta % 4 === 0) this.port.postMessage({ t: "report", report: this.sequencer.report() });
+        // A report every four blocks; and at once when the timeline has just moved by a frame, so
+        // that the picture, timed by it, is not shown a frame early or late in between.
+        const report = this.sequencer.report();
+        const changes = report.drops + report.repeats;
+        if (++this.quanta % 4 === 0 || changes !== this.changes) {
+          this.changes = changes;
+          this.port.postMessage({ t: "report", report });
+        }
         return true;
       }
     }

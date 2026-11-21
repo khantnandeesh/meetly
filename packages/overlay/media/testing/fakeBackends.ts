@@ -113,6 +113,7 @@ export class FakeAudioBackend implements AudioBackend {
   private current: "running" | "suspended" | "closed";
   private frame = this.frameBase;
   private quanta = 0;
+  private changes = 0;
   private cancel: (() => void) | null = null;
   private renderedUntil = 0;
 
@@ -138,7 +139,13 @@ export class FakeAudioBackend implements AudioBackend {
         this.sequencer.render(block, this.frame);
         for (const sample of block) this.output.push(sample);
         this.frame += QUANTUM;
-        if (++this.quanta % 4 === 0) this.events.report(this.sequencer.report());
+        // As the worklet does: every four blocks, and at once after a delay change.
+        const report = this.sequencer.report();
+        const changes = report.drops + report.repeats;
+        if (++this.quanta % 4 === 0 || changes !== this.changes) {
+          this.changes = changes;
+          this.events.report(report);
+        }
       }
     }, 1);
   }

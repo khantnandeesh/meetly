@@ -11,8 +11,14 @@ import type { AudioBackend } from "./backends";
 /** The delay is moved when it is this far from its target: more by a repeat, less by a drop. */
 export const GROW_WHEN_SHORT_MS = 10;
 export const SHRINK_WHEN_LONG_MS = 20;
-/** Further off than this is not adapted to, one frame a second: playout starts again in the right place. */
+/**
+ * A delay further off than this is not adapted to, a frame a second: playout starts again in the
+ * right place. Too long a delay only costs latency, so it is borne up to `RESYNC_WHEN_OFF_MS`
+ * over the target. Too short a one loses frames once it leaves less than `RESYNC_SLACK_MS` beyond
+ * the path (after a repair to a parent further away, say), so that is not borne at all.
+ */
 export const RESYNC_WHEN_OFF_MS = 250;
+export const RESYNC_SLACK_MS = 25;
 /** One change a second. */
 export const ADJUST_INTERVAL_MS = 1000;
 /** A report older than this says nothing about now. */
@@ -33,6 +39,8 @@ export class AudioPlayout {
   private lastAdjustAt = -Infinity;
   private startedAt = -Infinity;
   private resyncs = 0;
+  /** The delay is long enough that a frame is to be dropped. */
+  private wantDrop = false;
   /** Recent readings of (context time − local time), seconds: the largest is the true offset. */
   private readonly offsets: number[] = [];
   private offsetAt = 0;
@@ -62,6 +70,7 @@ export class AudioPlayout {
   restart(): void {
     if (this.started) this.backend.post({ t: "stop" });
     this.started = false;
+    this.wantDrop = false;
     this.firstUs = null;
     this.report = null;
     this.offsets.length = 0;
@@ -88,8 +97,11 @@ export class AudioPlayout {
     return this.report.playUs + (sinceReport - this.backend.outputLatency()) * 1e6;
   }
 
-  /** Call often. `nowUs` is session time; `targetMs` the playout delay wanted. */
-  tick(nowUs: number, targetMs: number): void {
+  /**
+   * Call often. `nowUs` is session time; `targetMs` the delay wanted, capture to loudspeaker;
+   * `leastMs` the shortest that does not lose frames (the path, and a little).
+   */
+  tick(nowUs: number, targetMs: number, leastMs = 0): void {
     if (this.backend.state() !== "running") return;
     const offset = this.sampleClocks();
     const now = this.clock.now();
@@ -109,7 +121,8 @@ export class AudioPlayout {
     if (playheadUs === null || this.report === null) return;
     const delayMs = (nowUs - playheadUs) / 1000;
     const error = delayMs - targetMs;
-    if (Math.abs(error) > RESYNC_WHEN_OFF_MS && now - this.startedAt > 2 * REPORT_STALE_MS) {
+    this.wantDrop = error >= SHRINK_WHEN_LONG_MS;
+    if ((error > RESYNC_WHEN_OFF_MS || (delayMs < leastMs && error < 0)) && now - this.startedAt > 2 * REPORT_STALE_MS) {
       this.resyncs++;
       this.restart();
       return;
@@ -126,6 +139,11 @@ export class AudioPlayout {
 
   isStarted(): boolean {
     return this.started;
+  }
+
+  /** A frame is to be dropped: the sequencer needs the one after it in good time. */
+  wantsDrop(): boolean {
+    return this.started && this.wantDrop;
   }
 
   counters(): AudioPlayoutCounters {
