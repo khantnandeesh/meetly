@@ -8,7 +8,7 @@
  * How to run it is in ../README.md. It needs Playwright on NODE_PATH, as test/e2e does.
  *
  * What is and is not real is listed at the top of ./page.ts. This is congestion's own check, kept
- * small (8 peers, about 55 s); E-harness's **slow-child** scenario is the one PLAN accepts C3 on,
+ * small (8 peers, about 60 s); E-harness's **slow-child** scenario is the one PLAN accepts C3 on,
  * and replaces this when the node and the impairment shim exist.
  *
  * Port 4240 (E-congestion's range). Everything started here is stopped here.
@@ -96,7 +96,7 @@ async function main(): Promise<number> {
         await Promise.all([...pages].map(async ([id, page]) => [id, await page.evaluate(([f, t]: number[]) => window.__econg.peer!.report(f, t), [from, to])] as const)),
       );
 
-    // 6 s clean, then the cap, then 20 s with it, then 13 s with room again.
+    // 6 s clean, then 900 kbps for 20 s, 3 Mbps for 12 s, 1.1 Mbps for 10 s.
     await sleep(6200);
     const capAt = await on("src").evaluate((kbps: number) => {
       window.__econg.peer!.capDown("slow", kbps);
@@ -108,14 +108,24 @@ async function main(): Promise<number> {
     const after = await reports(capAt, end - 500);
     const settled = await reports(capAt + 3000, end - 500);
 
-    // C6: the cap goes up to 3 Mbps, room for the whole stream. The layers come back.
+    // C6: the cap goes up to 3 Mbps, room for the whole stream. The top layer comes back.
     const roomAt = await on("src").evaluate(() => {
       window.__econg.peer!.capDown("slow", 3000);
       return window.__econg.peer!.now();
     });
-    await sleep(13_000);
+    await sleep(12_000);
     const roomEnd = await on("src").evaluate(() => window.__econg.peer!.now());
     const room = await reports(roomAt, roomEnd);
+
+    // Rule 3 (integrator): just under the stream, 1.1 Mbps, the child settles on the middle layer too.
+    const nearAt = await on("src").evaluate(() => {
+      window.__econg.peer!.capDown("slow", 1100);
+      return window.__econg.peer!.now();
+    });
+    await sleep(10_000);
+    const nearEnd = await on("src").evaluate(() => window.__econg.peer!.now());
+    const near = await reports(nearAt + 3000, nearEnd - 500);
+    const nearDrops = near.get("src")!.children.find((child) => child.id === "slow")!.caps.filter((change) => change.at >= nearAt);
 
     // C5: a1's uplink to its parent capped at 3 Mbps, probed at 8.
     await on("a1").evaluate(() => window.__econg.peer!.capUp(3000));
@@ -127,6 +137,16 @@ async function main(): Promise<number> {
 
     const slowPort = after.get("src")!.children.find((child) => child.id === "slow")!;
     const drops = slowPort.caps.filter((change) => change.at >= capAt);
+    // If the cap went down twice, what the link looked like in the window before the second.
+    const beforeSecondDrop =
+      drops.length > 1
+        ? (await on("src").evaluate(([from, to]: number[]) => window.__econg.peer!.trace("slow", from, to), [drops[1].at - 1200, drops[1].at + 1])).map((entry) => [
+            Math.round(entry.at - drops[1].at),
+            entry.state[0],
+            Math.round(entry.bufferedBytes),
+            +entry.lossPct.toFixed(1),
+          ])
+        : null;
     const checks: Check[] = [];
     const check = (name: string, pass: boolean, value: unknown, limit: string): void => void checks.push({ name, pass, value, limit });
 
@@ -148,20 +168,19 @@ async function main(): Promise<number> {
       drops.length ? Math.round(drops[0].at - capAt) : null,
       "<= 1000 (simulated: 700)",
     );
-    const last = drops[drops.length - 1];
     check(
-      "the cap settled, ms after the cap",
-      drops.length >= 1 && last.at - capAt <= 2000 && drops.length <= 2,
-      drops.length ? Math.round(last.at - capAt) : null,
-      "<= 2000 (PLAN C3)",
+      "the cap settled on the middle layer, with one drop (rule 3's window)",
+      drops.length === 1 && drops[0].maxTemporal === 1 && drops[0].at - capAt <= 2000,
+      drops.map((change) => `${change.maxTemporal} at +${Math.round(change.at - capAt)}`),
+      "one drop, to layer 1, within 2000 ms (PLAN C3)",
     );
     check("the slow child is not starved", slowPort.starvedAt.length === 0, slowPort.starvedAt, "none");
     const slow = settled.get("slow")!.stats!;
     check(
-      "the slow child got the base layer, whole",
-      Math.abs(slow.video[0] - slow.captured / 4) <= 2 && slow.video[2] === 0,
+      "the slow child got the base and middle layers, whole",
+      Math.abs(slow.video[0] - slow.captured / 4) <= 2 && Math.abs(slow.video[1] - slow.captured / 4) <= 2 && slow.video[2] === 0 && slow.decodable >= slow.video[0] + slow.video[1] - 1,
       slow.video,
-      `about ${Math.round(slow.captured / 4)} base frames, none of layer 2`,
+      `about ${Math.round(slow.captured / 4)} frames of each of layers 0 and 1, none of layer 2`,
     );
     check(
       "the slow child's audio never stopped",
@@ -188,10 +207,23 @@ async function main(): Promise<number> {
     );
     const rises = room.get("src")!.children.find((child) => child.id === "slow")!.caps.filter((change) => change.at >= roomAt);
     check(
-      "with room again (3 Mbps), the slow child's layers came back, ms",
-      rises.length === 2 && rises[1].maxTemporal === 2 && rises[1].at - roomAt <= 12_500,
+      "with room again (3 Mbps), the slow child's top layer came back, ms",
+      rises.length === 1 && rises[0].maxTemporal === 2 && rises[0].at - roomAt <= 7000,
       rises.map((change) => `${change.maxTemporal} at +${Math.round(change.at - roomAt)}`),
-      "middle then top, within 12.5 s (simulated: 6.4 and 11.4 s)",
+      "the top layer, within 7 s (5 s ok after the last keyframe it struggled with)",
+    );
+    const nearSlow = near.get("slow")!.stats!;
+    check(
+      "at 1.1 Mbps, one drop, to the middle layer, within 2 s",
+      nearDrops.length === 1 && nearDrops[0].maxTemporal === 1 && nearDrops[0].at - nearAt <= 2000,
+      nearDrops.map((change) => `${change.maxTemporal} at +${Math.round(change.at - nearAt)}`),
+      "one drop, to layer 1 (simulated: +1,200 ms)",
+    );
+    check(
+      "at 1.1 Mbps, the base and middle layers, whole",
+      Math.abs(nearSlow.video[1] - nearSlow.captured / 4) <= 2 && nearSlow.video[2] === 0 && nearSlow.decodable >= nearSlow.video[0] + nearSlow.video[1] - 1,
+      nearSlow.video,
+      "layers 0 and 1, none of layer 2",
     );
     check("uplink probe against a 3 Mbps cap, kbps", Math.abs(spareKbps - 3000) <= 750, spareKbps, "3000 ± 25% (PLAN C5)");
     const a1 = duringProbe.get("a1")!.stats!;
@@ -221,8 +253,10 @@ async function main(): Promise<number> {
       afterCap: Object.fromEntries([...after].map(([id, r]) => [id, pick(r)])),
       afterCapSettled: { slow: pick(settled.get("slow")!), s1: pick(settled.get("s1")!) },
       withRoomAgain: { caps: rises.map((change) => ({ msAfter: Math.round(change.at - roomAt), maxTemporal: change.maxTemporal })), slow: pick(room.get("slow")!) },
+      atNearlyTheStream: { capKbps: 1100, caps: nearDrops.map((change) => ({ msAfter: Math.round(change.at - nearAt), maxTemporal: change.maxTemporal })), slow: pick(near.get("slow")!) },
       probe: { capKbps: 3000, targetKbps: 8000, durationMs: 1000, spareKbps },
       timerLagMaxMs: Object.fromEntries([...after].map(([id, r]) => [id, +r.lagMaxMs.toFixed(1)])),
+      beforeSecondDrop,
       checks,
     };
     console.log(JSON.stringify(result, null, 1));

@@ -190,6 +190,11 @@ function createPagePeer(config: PeerConfig) {
 
     now: wallClock,
 
+    /** What one child's link looked like, frame by frame, in a stretch of time. */
+    trace(child: string, fromMs: number, toMs: number) {
+      return peer.children.get(child)!.states.filter((entry) => entry.at >= fromMs && entry.at < toMs);
+    },
+
     /** Caps what this peer sends to one child. Null lifts the cap. */
     capDown(child: string, kbps: number | null, queueMs = 300): void {
       down.get(child)!.setCap(kbps, queueMs);

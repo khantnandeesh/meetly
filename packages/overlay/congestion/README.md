@@ -58,8 +58,8 @@ real data channel, which stands in until E-transport+topology's is merged.
 
 ## Where the spec was silent, or could not be followed to the letter
 
-Each is the smallest choice that worked. Those marked **(spec)** want a line in SPEC.md from the
-architect; none changes the wire.
+Each is the smallest choice that worked. Those marked **(spec)** are now in SPEC.md, decided by
+the integrator on 2026-11-21 (§11.2, §11.3, §11.5, §11.6, §8.1); none changes the wire.
 
 1. **Which direction `estimate()` describes.** A link has two, and `LinkEstimate` has room for
    one. It is the direction that carries the media: a peer that hears fresh feedback and sends at
@@ -113,55 +113,80 @@ architect; none changes the wire.
     a link under about 4.6 Mbps that once lost a layer never got it back (rule 5's five seconds of
     *ok* never came), which would also have pushed the coordinator's audience-wide `hint`
     (§11.4) down for everyone. With the window, a 2 or 3 Mbps link gets the middle layer back
-    5 s after a squeeze ends and the top 5 s later (`slowChild.test.ts`, "a squeeze, then
+    about 5 s after a squeeze ends and the top 5 s later (`slowChild.test.ts`, "a squeeze, then
     room", which also shows the literal reading staying at the base layer). The price is 150 ms
     of reaction to a real deficit: a 900 kbps child loses its top layer at 700 ms rather than
     533. Rule 6 and the replay budget still read the backlog as it is now, so nothing stale is
     queued meanwhile. Setting the window to 0 gives the spec to the letter.
+15. **(spec, C6) Rule 3's second drop waits to see what the first did.** As the integrator set
+    it: after a drop, the next waits one observation window, the longer of `dropHoldMinMs`
+    (1 s) and `dropHoldRttFactor` (2) × the link's reaction time (`rttMs` + `reactionMs`, 250:
+    a feedback interval and the backlog's standing window); and it drops only if the backlog or
+    the loss is still over the line. What "still over the line" had to mean, to meet the
+    integrator's target (900 kbps and 1.1 Mbps children settle on the middle layer), measured
+    in the simulation and in the browser:
+    - the loss is at or over §11.2's congested line (10%), or the backlog has stood over the
+      congested line (150 ms of *B*) at every frame for the whole window and its low point in
+      the window is no lower than in the window before: the last drop did not help;
+    - congestion by queue delay alone is not enough. A link that only just carries the middle
+      layer reads ok for a second between keyframes and then, for each keyframe's queue,
+      congested by delay for half a second, with the backlog under the line (the browser run
+      showed this; the literal reading dropped it to the base layer 2 to 6 s in);
+    - this holds from the first drop until the cap next rises (rule 5). The first drop, and a
+      failed rise's drop back, are as the spec says: at the next frame.
+
+    The first drop's reaction time is unchanged. A link that needs two drops (600 kbps) gets the
+    second one window after the first: at 1.9 s, inside PLAN C3's 2 s. Watching the window lasts
+    up to 1.3 s on a 400 ms round trip.
 
 ## What was measured
 
 Simulated links (`sim/world.ts`, this module's model of a capped link) and a synthetic program
 (`sim/program.ts`: `L1T3`, layer shares 40/60/100%, a keyframe 4× a base delta frame). One of
 three children capped at 900 kbps under the 1,200 kbps stream, eight peers. The browser run is
-the same tree on real data channels on loopback, with a rate cap in front of one channel; it ran
-with the machine's load average between 1.7 and 5.1 (4 cores, shared).
+the same tree on real data channels on loopback, with a rate cap in front of one channel; its
+two passing runs after rule 3's change had the machine's load average between 2.0 and 3.1
+(4 cores, shared; earlier runs went up to 7).
 
-| | Simulated | Browser run |
+| | Simulated | Browser run (two runs) |
 | --- | --- | --- |
-| First layer dropped, after the cap | 700 ms | 727 ms |
-| Cap settled (at the base layer) | 1,233 ms | 1,227 ms |
+| First layer dropped, after the cap | 700 ms | 727, 728 ms |
+| Cap settled | the middle layer, one drop | the middle layer, one drop |
+| What the slow child gets once settled | layers 0 and 1, all decodable: 15 fps | 124 + 123 of 495 frames: 15 fps |
 | The slow child told (`layers`) | each change, one hop later | each change |
 | Siblings and their subtrees: frames lost | 0 | 0 |
-| Siblings' latency p95, change | 0.00 ms | +1.5 to +3.5 ms |
+| Siblings' latency p95, change | 0.00 ms | −1.2 to +1.0 ms |
 | Slow child's audio lost | 0 | 0 |
-| Slow child's video delay, p95 / max | 258 / 261 ms | 245 / 249 ms |
-| With room again (3 Mbps): middle layer, top layer | +6.4 s, +11.4 s | +5.2 s, +10.3 s |
-| Uplink probe against 1 / 3 / 10 Mbps | 1.00 / 2.99 / 9.98 | 2.54 against 3 |
+| Slow child's video delay, p50 / p95 / max | 101 / 237 / 261 ms | 70 / 229 / 254 ms |
+| With room again (3 Mbps): top layer back | +5 s after the last keyframe it struggled with | +5.3, +5.4 s |
+| At 1.1 Mbps: one drop, to the middle layer | at 1,200 ms | at 1,324, 1,208 ms |
+| At 600 kbps: the base layer | second drop 1,034 ms after the first | not run |
+| Uplink probe against 1 / 3 / 10 Mbps | 1.00 / 2.99 / 9.98 | 2.72, 2.69 against 3 |
 | Source's uplink filled (3 × 667 kbps): encoder lowered, restored after | 1.0 s, 19 s | not run |
 
-Before C6 (backlog read sample by sample) the first drop came at 533 / 561 ms, and the slow
-child never got its layers back on a 3 Mbps link.
+Before C6 the first drop came at 533 / 561 ms, a 900 kbps child ended at the base layer (7.5 fps),
+and no child got its layers back on a 3 Mbps link.
 
 The browser run: `NODE_PATH=$(npm root -g) node --experimental-transform-types --import
-./test/register.mjs packages/overlay/congestion/browser/run.ts`. About 55 s, port 4240.
+./test/register.mjs packages/overlay/congestion/browser/run.ts`. About 60 s, port 4240.
 
 ## Known, and not fixed here
 
-- **On a 900 kbps link the cap ends at the base layer, not the middle one**, though the middle
-  one fits on average (833 of 900 kbps). At the middle layer the link is 93% full, and each
-  keyframe's backlog takes it longer to drain than the GOP lasts, so it stands. A link of
-  1.5 Mbps holds the middle layer and one of 2 Mbps the top. Rule 3 also drops a second layer
-  500 ms after the first without waiting to see whether the first was enough: on a link just
-  under the stream (1.1 Mbps) the backlog left from before the first drop is still standing
-  then. Waiting for the effect is a change to rule 3, for the architect.
 - **A keyframe takes 237 ms to cross a 900 kbps link**, whatever the gate does. PLAN C3's "no
   video frame more than 200 ms late" cannot hold for keyframes on that link unless keyframes are
   smaller or paced.
+- **Below the top layer, a deficit seen only as path delay waits for loss.** Rule 3's second drop
+  reads the backlog and the loss, not queue delay. A bottleneck past the sender that queues
+  without overflowing shows only as delay, and is shed only once it loses packets.
 - **A link slower than the base layer** (about 640 kbps with audio and headers) is announced as
   starved and gets little that decodes: the keyframe alone overflows a 300 ms queue.
 - **The delay floor** is ten seconds, as §11.1 says, so a queue that has stood for ten seconds
   becomes the floor and reads as none. The backlog signal still sees it at the sender.
+- **The harness shim's `bufferedAmount` counts bytes that are only on their way** (the delay
+  line), where `RTCDataChannel`'s does not. With the 150 ms window it does not matter at the
+  gate mix's delays (15 to 60 ms), but on "bad" (60 ms) a keyframe in flight reads about 28 kB,
+  just under rule 6's 30 kB: a larger real keyframe would be refused as stale in the harness and
+  not in a browser. For E-harness.
 - **Not measured yet**: anything against the harness's impairment shim (H1) or transport's real
   link and send queue (T1); C4's and C5's harness tests (a capped source uplink, the probe's cost
   to the prober's children's latency); the gate mix. The browser run's links are on loopback.

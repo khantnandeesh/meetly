@@ -13,6 +13,10 @@ const FRAME_MS = 1000 / 30;
 /** B is 1,200 kbps: 200 ms of it is 30,000 bytes, 250 ms is 37,500. */
 const B = 1200;
 
+/**
+ * A link's estimate. A congested one has, unless told otherwise, a backlog standing over §11.2's
+ * line (22,500 bytes) and under rule 6's (30,000): the link is not keeping up, and nothing is stale.
+ */
 const link = (state: LinkEstimate["state"], more: Partial<LinkEstimate> = {}): LinkEstimate => ({
   rttMs: 30,
   lossPct: 0,
@@ -20,7 +24,7 @@ const link = (state: LinkEstimate["state"], more: Partial<LinkEstimate> = {}): L
   jitterMs: 1,
   sendKbps: 1300,
   deliveredKbps: 1300,
-  bufferedBytes: 0,
+  bufferedBytes: state === "congested" ? 25_000 : 0,
   state,
   ...more,
 });
@@ -143,12 +147,12 @@ describe("LayerGate rule 2: a frame above the cap is not sent; the cap starts at
   });
 });
 
-describe("LayerGate rule 3: down one layer when congested, at the next frame, at most once in 500 ms", () => {
-  it("drops at the very next frame, then again only 500 ms later, and stops at the base layer", () => {
+describe("LayerGate rule 3: down one layer when congested, at the next frame; the next drop waits to see what the first did", () => {
+  it("drops at the very next frame, then, with the backlog not falling, again one observation window (1 s) later, and stops at the base layer", () => {
     const h = harness();
     h.run(1000, link("ok"));
     const at = h.now;
-    h.run(1500, link("congested"));
+    h.run(2500, link("congested", { bufferedBytes: 25_000 }));
     assert.deepEqual(
       h.changes.map((change) => [change.cap.maxTemporal, change.reason]),
       [
@@ -157,10 +161,77 @@ describe("LayerGate rule 3: down one layer when congested, at the next frame, at
       ],
     );
     assert.equal(h.changes[0].at, at, "the first drop is at the frame that found the link congested");
-    // The second is at the first frame 500 ms or more after the first: no sooner, no later.
+    // The second is at the first frame a second or more after the first: no sooner, no later.
     const between = h.changes[1].at - h.changes[0].at;
-    assert.ok(between >= 500 - 1e-6 && between < 500 + FRAME_MS + 1e-6, String(between));
+    assert.ok(between >= 1000 - 1e-6 && between < 1000 + FRAME_MS + 1e-6, String(between));
     assert.deepEqual(h.gate.cap, { maxSpatial: 0, maxTemporal: 0 });
+  });
+
+  it("makes the window twice the link's reaction time when that is longer: a 400 ms round trip waits 1.3 s", () => {
+    const h = harness();
+    h.run(2000, link("congested", { rttMs: 400, bufferedBytes: 25_000 }));
+    const between = h.changes[1].at - h.changes[0].at;
+    assert.ok(between >= 1300 - 1e-6 && between < 1300 + FRAME_MS + 1e-6, String(between));
+  });
+
+  it("does not drop again while the backlog is going down: the first drop is working", () => {
+    const h = harness();
+    // Congested all along, but draining: 40 kB at the drop, 1 kB less every frame.
+    let backlog = 40_000;
+    for (let i = 0; i < 90; i++) h.frame(link("congested", { bufferedBytes: (backlog -= 1000) + 1000 }));
+    assert.deepEqual(
+      h.changes.map((change) => change.cap.maxTemporal),
+      [1],
+    );
+  });
+
+  it("does not drop again while the backlog, though over the line all along, is lower each window", () => {
+    const h = harness();
+    let backlog = 29_000;
+    for (let i = 0; i < 90; i++) h.frame(link("congested", { bufferedBytes: (backlog -= 50) + 50 }));
+    assert.ok(backlog > 22_500);
+    assert.deepEqual(
+      h.changes.map((change) => change.cap.maxTemporal),
+      [1],
+    );
+  });
+
+  it("drops again after the window if the loss is over the line, whatever the backlog does", () => {
+    const h = harness();
+    let backlog = 40_000;
+    for (let i = 0; i < 40; i++) h.frame(link("congested", { bufferedBytes: (backlog -= 500) + 500, lossPct: 12 }));
+    assert.deepEqual(
+      h.changes.map((change) => change.cap.maxTemporal),
+      [1, 0],
+    );
+  });
+
+  it("below the top, congestion by queue delay alone never drops a second layer, however it comes and goes", () => {
+    const h = harness();
+    h.run(100, link("congested"));
+    // A link that just carries the middle layer: ok for a second and a half, then a keyframe's
+    // queue makes it congested by delay for 600 ms, with the backlog under the line.
+    for (let gop = 0; gop < 10; gop++) {
+      h.run(1400, link("ok"));
+      h.run(600, link("congested", { bufferedBytes: 10_000, queueDelayMs: 150 }));
+    }
+    assert.equal(h.gate.cap.maxTemporal, 1);
+    // A backlog that then stands over the line and does not come down is a second drop, a window on.
+    const from = h.now;
+    h.run(1100, link("congested"));
+    assert.equal(h.gate.cap.maxTemporal, 0);
+    assert.ok(h.changes[1].at - from <= 1000 + FRAME_MS, String(h.changes[1].at - from));
+  });
+
+  it("a rise ends the watch: congestion right after it drops at once (rule 5)", () => {
+    const h = harness();
+    h.run(100, link("congested"));
+    h.run(5100, link("ok"));
+    assert.equal(h.gate.cap.maxTemporal, 2);
+    const at = h.now;
+    h.run(FRAME_MS, link("congested", { bufferedBytes: 10_000, queueDelayMs: 150 }));
+    assert.equal(h.gate.cap.maxTemporal, 1);
+    assert.equal(h.changes[2].at, at);
   });
 
   it("applies to the frame that found the link congested", () => {
@@ -202,7 +273,7 @@ describe("LayerGate rule 4: while strained the cap does not move", () => {
 describe("LayerGate rule 5: up one layer after 5 s ok; a rise that fails doubles the wait", () => {
   it("rises one layer after five seconds ok, not before, and one more after five more", () => {
     const h = harness();
-    h.run(1000, link("congested"));
+    h.run(1100, link("congested"));
     assert.equal(h.gate.cap.maxTemporal, 0);
     const okFrom = h.now;
     h.run(4990, link("ok"));
@@ -298,7 +369,7 @@ describe("LayerGate rule 6: no stale video", () => {
 describe("LayerGate rule 7: starved", () => {
   it("announces starved after 1 s congested at the base layer, once, and resumes only at a keyframe the link can take", () => {
     const h = harness();
-    h.run(600, link("congested")); // two drops: the cap is at the base layer from 500 ms
+    h.run(1100, link("congested")); // two drops, a second apart (rule 3): the base layer from 1 s
     assert.equal(h.gate.cap.maxTemporal, 0);
     const atBase = h.changes[1].at;
     h.run(900, link("congested"));
@@ -328,7 +399,7 @@ describe("LayerGate rule 7: starved", () => {
 
   it("is not starved by congestion that lets up within the second", () => {
     const h = harness();
-    h.run(600, link("congested"));
+    h.run(1100, link("congested"));
     for (let i = 0; i < 10; i++) {
       h.run(900, link("congested"));
       h.run(100, link("strained"));
@@ -338,7 +409,7 @@ describe("LayerGate rule 7: starved", () => {
 
   it("announces again if the link starves again", () => {
     const h = harness();
-    h.run(2000, link("congested"));
+    h.run(2100, link("congested"));
     assert.equal(h.starved.length, 1);
     h.run(2100, link("ok")); // a keyframe passes: resumed
     assert.equal(h.gate.starved, false);
@@ -369,7 +440,7 @@ describe("LayerGate rule 8: overload caps every child one layer down", () => {
 
   it("does not lower a cap that congestion has already put lower, nor raise it when it ends", () => {
     const h = harness();
-    h.run(600, link("congested"));
+    h.run(1100, link("congested"));
     assert.equal(h.gate.cap.maxTemporal, 0);
     h.gate.setOverload(true);
     h.gate.setOverload(false);
@@ -399,7 +470,7 @@ describe("LayerGate rule 9: a child may ask for less; the cap is the lower of wh
   it("sends the lower of the two, whichever it is", () => {
     const h = harness();
     h.gate.setWanted({ maxSpatial: 0, maxTemporal: 1 });
-    h.run(600, link("congested")); // what fits: 0
+    h.run(1100, link("congested")); // what fits: 0
     assert.equal(h.gate.cap.maxTemporal, 0);
     h.gate.setWanted({ maxSpatial: 0, maxTemporal: 2 });
     assert.equal(h.gate.cap.maxTemporal, 0, "asking for more does not make it fit");
@@ -435,7 +506,7 @@ describe("LayerGate rule 9: a child may ask for less; the cap is the lower of wh
 describe("LayerGate: every change of cap is announced, with its reason", () => {
   it("emits one change for each move, and none when nothing moved", () => {
     const h = harness();
-    h.run(600, link("congested"));
+    h.run(1100, link("congested"));
     h.run(10_200, link("ok"));
     h.gate.setOverload(true);
     h.gate.setOverload(false);

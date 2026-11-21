@@ -6,11 +6,17 @@
 import { MediaFlag, type MediaHeader } from "../protocol";
 import type { LayerCap, LinkEstimate } from "../types";
 import { Emitter } from "./emitter";
-import { GATE_TUNING, bytesOf, type GateTuning } from "./tuning";
+import { ESTIMATOR_TUNING, GATE_TUNING, bytesOf, type GateTuning } from "./tuning";
 import type { LayerGate, LayerGateEvents, LayerGateOptions } from "./types";
 
 /** Stage 1's audio stream (SPEC §2): what a gate that was not told its `kind` takes for audio. */
 const STAGE1_AUDIO_STREAM = 1;
+
+/** What the round trip is taken to be before there is an echo: SPEC §8.3's figure for an unmeasured link. */
+const UNKNOWN_RTT_MS = 150;
+
+/** SPEC §11.2's congested line for loss (`ESTIMATOR_TUNING.congestedLossPct`). */
+const CONGESTED_LOSS_PCT = ESTIMATOR_TUNING.congestedLossPct;
 
 /** How many frames back the gate remembers what it did. `refDelta` is one byte, so this covers every reference. */
 const MEMORY = 256;
@@ -29,7 +35,7 @@ export type InspectableLayerGate = LayerGate & {
 };
 
 export function createLayerGate(options: LayerGateOptions): InspectableLayerGate {
-  const tuning: GateTuning = { ...GATE_TUNING, ...options.tuning };
+  const tuning: Required<GateTuning> = { ...GATE_TUNING, ...options.tuning };
   const emitter = new Emitter<LayerGateEvents>();
   const top = Math.max(0, options.temporalLayers - 1);
   const topSpatial = Math.max(0, (options.spatialLayers ?? 1) - 1);
@@ -46,6 +52,17 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
 
   let okSince: number | null = null;
   let lastDropAt = -Infinity;
+  /**
+   * Rule 3 (integrator, 2026-11-21): from a drop until the cap next rises, a further drop is a
+   * second drop and is decided on the backlog and the loss.
+   */
+  let watching = false;
+  /** The backlog at every frame for the last two windows, oldest first (rule 3's second drop). */
+  let backlog: { at: number; bytes: number }[] = [];
+  /** Since when every backlog sample has been over the congested line, or null. */
+  let overSince: number | null = null;
+  /** §11.2's congested line for the backlog: 150 ms of B. */
+  const congestedBytes = bytesOf(options.bitrateKbps, ESTIMATOR_TUNING.congestedBufferMs);
   /** A rise still on probation (rule 5), or null. */
   let lastRiseAt: number | null = null;
   let riseAfterMs = tuning.riseAfterMs;
@@ -70,6 +87,16 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
     if (reason !== null) emitter.emit("change", { ...cap }, reason);
   };
 
+  /**
+   * Rule 3, as decided by the integrator (2026-11-21): after a drop, the next waits one
+   * observation window, so the link has time to show what the first did. At least
+   * `dropHoldMinMs`, or `dropHoldRttFactor` × the time the link takes to react (a round trip,
+   * a feedback interval and the backlog's standing window), whichever is longer; never less than
+   * `dropEveryMs`, the spec's own floor.
+   */
+  const holdAfterDropMs = (estimate: LinkEstimate): number =>
+    Math.max(tuning.dropEveryMs, tuning.dropHoldMinMs, tuning.dropHoldRttFactor * ((estimate.rttMs ?? UNKNOWN_RTT_MS) + tuning.reactionMs));
+
   /** Rules 3, 4, 5 and 7: move the cap with the state of the link. */
   const step = (estimate: LinkEstimate, now: number): void => {
     let state = estimate.state;
@@ -86,10 +113,33 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
       riseAfterMs = tuning.riseAfterMs;
     }
 
+    const hold = holdAfterDropMs(estimate);
+    backlog.push({ at: now, bytes: estimate.bufferedBytes });
+    if (backlog[0].at <= now - 2 * hold) backlog = backlog.filter((sample) => sample.at > now - 2 * hold);
+    if (estimate.bufferedBytes <= congestedBytes) overSince = null;
+    else if (overSince === null) overSince = now;
+
     if (state === "congested") {
       if (fits > 0) {
         baseCongestedSince = null;
-        if (now - lastDropAt >= tuning.dropEveryMs) {
+        let drop: boolean;
+        if (!watching) drop = now - lastDropAt >= tuning.dropEveryMs; // fresh congestion: at the next frame
+        else if (now - lastDropAt < hold) drop = false; // the last drop is still being watched
+        else {
+          // Below the top, and a window after the last drop: down again only if the loss is over
+          // the line, or if the backlog has stood over the line for the whole of the last window
+          // and its low point is no lower than in the window before it: the last drop did not
+          // help. A backlog that came under the line, or is coming down, is the last drop working.
+          // Congestion by queue delay alone is not enough: between two keyframes a link that only
+          // just carries its layer reads ok for a second, and then congested for the keyframe's queue.
+          const low = (from: number, to: number): number =>
+            backlog.reduce((least, sample) => (sample.at > from && sample.at <= to ? Math.min(least, sample.bytes) : least), Infinity);
+          const stoodOver = overSince !== null && now - overSince >= hold;
+          const fell = low(now - hold, now) < low(now - 2 * hold, now - hold);
+          drop = estimate.lossPct >= CONGESTED_LOSS_PCT || (stoodOver && !fell);
+        }
+        if (drop) {
+          watching = true;
           if (lastRiseAt !== null) {
             // Rule 5: the rise did not hold. Back down, and wait twice as long before the next.
             riseAfterMs = Math.min(riseAfterMs * 2, tuning.riseAfterMaxMs);
@@ -118,6 +168,7 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
       fits++;
       lastRiseAt = now;
       okSince = now;
+      watching = false; // congestion after a rise is a failed rise (rule 5): it drops at once
       settle("restore");
     }
   };

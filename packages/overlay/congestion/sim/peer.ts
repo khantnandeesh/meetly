@@ -80,7 +80,7 @@ export type ChildPort = {
   sent: number[];
   refused: Record<Exclude<GateVerdict, "sent">, number>;
   /** The link's state at each video frame, for a test to read the timeline from. */
-  states: { at: number; state: LinkEstimate["state"]; bufferedBytes: number }[];
+  states: { at: number; state: LinkEstimate["state"]; bufferedBytes: number; lossPct: number; queueDelayMs: number }[];
 };
 
 export type FrameRecord = {
@@ -213,7 +213,7 @@ export class FakePeer {
     const admit = port.gate.admit(header, frameBytes, estimate, now);
     port.decisions.set(header.frameId, admit);
     if (port.decisions.size > 512) for (const old of port.decisions.keys()) if (port.decisions.size > 256) port.decisions.delete(old);
-    port.states.push({ at, state: estimate.state, bufferedBytes: estimate.bufferedBytes });
+    port.states.push({ at, state: estimate.state, bufferedBytes: estimate.bufferedBytes, lossPct: estimate.lossPct, queueDelayMs: estimate.queueDelayMs });
     port.offered[header.temporal]++;
     if (admit) port.sent[header.temporal]++;
     else {

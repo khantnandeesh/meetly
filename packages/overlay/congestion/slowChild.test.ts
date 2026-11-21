@@ -76,12 +76,14 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
     assert.ok(state.bufferedBytes > bytesOf(STAGE1_SHAPE.videoKbps, 150));
   });
 
-  it("settles the slow child's cap within 2 s, and keeps it there", () => {
-    assert.ok(drops.length >= 1 && drops.length <= 2);
-    const last = drops[drops.length - 1];
-    assert.ok(last.at - CAP_AT <= 2000, `settled after ${last.at - CAP_AT} ms`);
-    assert.ok(last.maxTemporal < 2);
-    assert.deepEqual(port.starvedAt, [], "the base layer fits: the child is not starved");
+  it("settles the slow child's cap on the middle layer within 2 s, and keeps it there", () => {
+    // Rule 3 as the integrator decided it: after the first drop the gate watches a window (1 s
+    // here) and, with the backlog going down, does not drop again. The middle layer (about 830
+    // of 900 kbps with audio and headers) is what fits.
+    assert.equal(drops.length, 1);
+    assert.equal(drops[0].maxTemporal, 1);
+    assert.ok(drops[0].at - CAP_AT <= 2000, `settled after ${drops[0].at - CAP_AT} ms`);
+    assert.deepEqual(port.starvedAt, [], "the child is not starved");
   });
 
   it("sends the slow child what fits, whole and decodable, and no stale video", () => {
@@ -89,12 +91,14 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
     // link's queue overflowing in the first second: 13 packets, of its keyframe. Getting those
     // back is NACK's work, T5, and this fake has none.)
     const stats = viewerStats(tree.peer("slow"), CAP_AT + 3000, END - 1000);
-    // The base layer, all of it, and nothing above the cap.
+    // The base and middle layers, all of them, and nothing above the cap: 15 fps.
     assert.ok(Math.abs(stats.video[0] - stats.captured / 4) <= 1, `${stats.video[0]} base-layer frames of ${stats.captured / 4}`);
-    assert.equal(stats.video[1] + stats.video[2], 0);
-    assert.equal(stats.decodable, stats.video[0]);
-    // Once settled the backlog is a keyframe at most (26,667 bytes here): under rule 6's line of
-    // 200 ms of B, so nothing was held back as stale, and nothing overflowed the link's queue.
+    assert.ok(Math.abs(stats.video[1] - stats.captured / 4) <= 1, `${stats.video[1]} middle-layer frames of ${stats.captured / 4}`);
+    assert.equal(stats.video[2], 0);
+    assert.equal(stats.decodable, stats.video[0] + stats.video[1]);
+    // Once settled the backlog is a keyframe and a little at most (26,667 bytes is the keyframe):
+    // under rule 6's line of 200 ms of B, so nothing was held back as stale, and nothing
+    // overflowed the link's queue.
     const worst = Math.max(...port.states.filter((entry) => entry.at > CAP_AT + 3000).map((entry) => entry.bufferedBytes));
     assert.ok(worst <= bytesOf(STAGE1_SHAPE.videoKbps, 200), String(worst));
     assert.equal(port.refused.stale, 0);
@@ -167,27 +171,26 @@ describe("a slow child (C3, simulated): one of three children capped at 900 kbps
 });
 
 describe("a slow child (C3, simulated): what the link looks like afterwards", () => {
-  it("gives the layers back when the link recovers: one after 5 s ok, the next after 5 more", () => {
+  it("gives the top layer back when the link recovers, 5 s after it was last anything but ok", () => {
     const tree = slowChildTree();
     tree.run(CAP_AT);
     tree.setDown("slow", { delayMs: 15, kbps: 900, queueMs: 300 });
     tree.run(20_000);
-    assert.equal(tree.port("slow").gate.cap.maxTemporal, 0);
+    assert.equal(tree.port("slow").gate.cap.maxTemporal, 1);
     tree.setDown("slow", { delayMs: 15 });
     tree.run(40_000);
     const rises = tree.port("slow").caps.filter((change) => change.reason === "restore" && change.at > 20_000);
     assert.deepEqual(
       rises.map((change) => change.maxTemporal),
-      [1, 2],
+      [2],
     );
     // Five seconds after the link was last anything but ok (the last keyframe it struggled with,
-    // a little before the cap came off), and then five more.
+    // a little before the cap came off).
     const states = tree.port("slow").states;
     const lastTrouble = Math.max(...states.filter((entry) => entry.state !== "ok").map((entry) => entry.at));
     assert.ok(lastTrouble < 20_000);
     assert.ok(rises[0].at - lastTrouble >= 5000 && rises[0].at - lastTrouble <= 5100, String(rises[0].at - lastTrouble));
     assert.ok(rises[0].at - 20_000 <= 5100);
-    assert.ok(rises[1].at - rises[0].at >= 5000 && rises[1].at - rises[0].at <= 5100);
     const stats = viewerStats(tree.peer("slow"), 32_000, 39_000);
     assert.equal(stats.decodable, stats.captured);
   });
@@ -233,6 +236,47 @@ describe("a slow child (C3, simulated): what the link looks like afterwards", ()
       return JSON.stringify([tree.port("slow").caps, viewerStats(tree.peer("s1"), 0, 15_000)]);
     };
     assert.equal(run(), run());
+  });
+});
+
+describe("rule 3's observation window (integrator, 2026-11-21): a child settles on the layer that fits", () => {
+  const capped = (kbps: number) => {
+    const tree = createSimTree({
+      seed: 5,
+      peers: [
+        { id: "src", parent: null },
+        { id: "a", parent: "src", down: { delayMs: 15 } },
+        { id: "x", parent: "src", down: { delayMs: 15 } },
+      ],
+    });
+    tree.run(CAP_AT);
+    tree.setDown("x", { delayMs: 15, kbps, queueMs: 300 });
+    tree.run(40_000);
+    return { tree, drops: tree.port("x").caps.filter((change) => change.at >= CAP_AT), stats: viewerStats(tree.peer("x"), CAP_AT + 5000, 39_000) };
+  };
+
+  for (const kbps of [900, 1100]) {
+    it(`at ${kbps} kbps: one drop, to the middle layer, and 15 fps of it whole`, () => {
+      const { drops, stats } = capped(kbps);
+      assert.deepEqual(
+        drops.map((change) => change.maxTemporal),
+        [1],
+      );
+      assert.ok(drops[0].at - CAP_AT <= 2000, `dropped after ${drops[0].at - CAP_AT} ms`);
+      assert.ok(Math.abs(stats.video[1] - stats.captured / 4) <= 1 && stats.video[2] === 0, String(stats.video));
+      assert.equal(stats.decodable, stats.video[0] + stats.video[1]);
+    });
+  }
+
+  it("at 600 kbps, where the middle layer does not fit, the second drop comes one window after the first, within 2 s", () => {
+    const { drops } = capped(600);
+    assert.deepEqual(
+      drops.map((change) => change.maxTemporal),
+      [1, 0],
+    );
+    const between = drops[1].at - drops[0].at;
+    assert.ok(between >= 1000 && between <= 1100, String(between));
+    assert.ok(drops[1].at - CAP_AT <= 2000, `settled after ${drops[1].at - CAP_AT} ms`);
   });
 });
 

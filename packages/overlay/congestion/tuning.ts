@@ -53,8 +53,11 @@ export const ESTIMATOR_TUNING: EstimatorTuning = {
   feedbackFreshMs: 3000,
 };
 
-export const GATE_TUNING: GateTuning = {
+export const GATE_TUNING: Required<GateTuning> = {
   dropEveryMs: 500,
+  dropHoldMinMs: 1000,
+  dropHoldRttFactor: 2,
+  reactionMs: 250,
   riseAfterMs: 5000,
   riseProbationMs: 3000,
   riseAfterMaxMs: 60_000,
