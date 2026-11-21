@@ -14,6 +14,7 @@ import { createServer, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { build } from "esbuild";
+import type { Scenarios } from "./page";
 
 type Page = {
   goto(url: string): Promise<unknown>;
@@ -24,23 +25,28 @@ type Page = {
 };
 type Browser = { newPage(): Promise<Page>; close(): Promise<void> };
 type Check = [name: string, ok: boolean, detail: string];
-type Scenario = { options: Record<string, unknown>; args?: string[]; check: (result: any) => Check[] };
+/** What a scenario of the page returns. */
+type ResultOf<Name extends keyof Scenarios> = Awaited<ReturnType<Scenarios[Name]>>;
+type Scenario<Name extends keyof Scenarios> = { options: Record<string, unknown>; args?: string[]; check: (result: ResultOf<Name>) => Check[] };
 
 const PORT = Number(process.env.OVERLAY_MEDIA_PORT ?? 4220);
 const here = import.meta.dirname;
 const loadavg = () => readFileSync("/proc/loadavg", "utf8").split(" ").slice(0, 3).join(" ");
 
-export const SCENARIOS: Record<string, Scenario> = {
+/** A measurement that was not made fails every comparison. */
+const n = (value: number | null | undefined): number => value ?? Number.NaN;
+
+export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
   m1: {
     options: { seconds: 20 },
     check: (r) => [
-      ["video bitrate within 15% of the target", Math.abs(r.videoKbps - r.targetKbps) <= 0.15 * r.targetKbps, `${r.videoKbps} of ${r.targetKbps} kbps`],
+      ["video bitrate within 15% of the target", Math.abs(n(r.videoKbps) - r.targetKbps) <= 0.15 * r.targetKbps, `${r.videoKbps} of ${r.targetKbps} kbps`],
       ["a keyframe every 60 frames", r.keyGapMin === 60 && r.keyGapMax === 60, `gaps ${r.keyGapMin}..${r.keyGapMax} over ${r.keyframes} keyframes`],
       ["every header obeys §9.2", r.headerProblems.length === 0, r.headerProblems.join("; ") || `${r.frames} frames`],
-      ["capture to frame event p95 ≤ 40 ms", r.captureToFrameMs.p95 <= 40, `p50 ${r.captureToFrameMs.p50}, p95 ${r.captureToFrameMs.p95}, max ${r.captureToFrameMs.max} ms`],
+      ["capture to frame event p95 ≤ 40 ms", n(r.captureToFrameMs.p95) <= 40, `p50 ${r.captureToFrameMs.p50}, p95 ${r.captureToFrameMs.p95}, max ${r.captureToFrameMs.max} ms`],
       ["the encoder never holds more than 2 frames", r.maxEncoderFrames <= 2, `${r.maxEncoderFrames} at most; ${r.skippedBusy} skipped`],
       ["a decoder takes every frame", r.decodeErrors.length === 0 && r.decoded >= r.frames - 2, `${r.decoded} of ${r.frames}`],
-      ["audio: 50 Opus frames a second, 20 ms apart, each announced twice", Math.abs(r.audioFps - 50) < 1 && r.audioStepUs.min >= 19000 && r.audioStepUs.max <= 21000 && r.audioAnnounced >= 2 * r.audioFrames - 2, `${r.audioFps} fps, steps ${r.audioStepUs.min}..${r.audioStepUs.max} µs, ${r.audioAnnounced} announcements of ${r.audioFrames} frames, ${r.audioKbps} kbps`],
+      ["audio: 50 Opus frames a second, 20 ms apart, each announced twice", Math.abs(n(r.audioFps) - 50) < 1 && n(r.audioStepUs.min) >= 19000 && n(r.audioStepUs.max) <= 21000 && r.audioAnnounced >= 2 * r.audioFrames - 2, `${r.audioFps} fps, steps ${r.audioStepUs.min}..${r.audioStepUs.max} µs, ${r.audioAnnounced} announcements of ${r.audioFrames} frames, ${r.audioKbps} kbps`],
       ["no errors", r.errors.length === 0, r.errors.join("; ")],
     ],
   },
@@ -49,7 +55,7 @@ export const SCENARIOS: Record<string, Scenario> = {
     check: (r) => [
       ["every header obeys §9.2", r.headerProblems.length === 0, r.headerProblems.join("; ") || r.pattern.join(" ")],
       ["the control (a needed frame removed, its dependents kept) is noticed", r.controlDifferent > 0, `${r.controlDifferent} frames decode differently`],
-      ...r.results.map((p: any): Check => [`${p.policy}: what the headers allow decodes, to the same pixels`, p.errors.length === 0 && p.decoded === p.kept && p.differentPixels === 0, `${p.decoded} of ${p.kept} decoded (of ${p.of}); ${p.differentPixels} differ ${p.firstDifferent.join(",")} ${p.errors.join("; ")}`]),
+      ...r.results.map((p): Check => [`${p.policy}: what the headers allow decodes, to the same pixels`, p.errors.length === 0 && p.decoded === p.kept && p.differentPixels === 0, `${p.decoded} of ${p.kept} decoded (of ${p.of}); ${p.differentPixels} differ ${p.firstDifferent.join(",")} ${p.errors.join("; ")}`]),
     ],
   },
 };
@@ -84,13 +90,14 @@ async function launch(extra: string[] = []): Promise<Browser> {
 
 async function main(): Promise<void> {
   const [which = "all", json] = process.argv.slice(2);
-  const names = which === "all" ? Object.keys(SCENARIOS) : which.split(",");
-  for (const name of names) if (!SCENARIOS[name]) throw new Error(`no scenario "${name}": ${Object.keys(SCENARIOS).join(", ")}`);
+  const known = Object.keys(SCENARIOS) as (keyof Scenarios)[];
+  const names = which === "all" ? known : (which.split(",") as (keyof Scenarios)[]);
+  for (const name of names) if (!known.includes(name)) throw new Error(`no scenario "${name}": ${known.join(", ")}`);
   const server = await serve(await bundle());
   let failed = 0;
   try {
     for (const name of names) {
-      const scenario = SCENARIOS[name]!;
+      const scenario = SCENARIOS[name] as Scenario<typeof name>;
       const options = { ...scenario.options, ...(json ? (JSON.parse(json) as Record<string, unknown>) : {}) };
       const browser = await launch(scenario.args);
       const before = loadavg();
@@ -103,10 +110,10 @@ async function main(): Promise<void> {
         });
         await page.goto(`http://127.0.0.1:${PORT}/`);
         if (options.click) await page.click("#go");
-        const result = await page.evaluate(({ name, options }) => (globalThis as any).mediaTest[name](options), { name, options });
+        const result = await page.evaluate(({ name, options }) => (globalThis as unknown as { mediaTest: Record<string, (options: unknown) => Promise<unknown>> }).mediaTest[name]!(options), { name, options });
         console.log(`\n## ${name} ${JSON.stringify(options)}   load before ${before}, after ${loadavg()}`);
         if (process.env.OVERLAY_MEDIA_JSON) console.log(JSON.stringify(result, null, 1));
-        const checks = scenario.check(result);
+        const checks = scenario.check(result as ResultOf<typeof name>);
         if (errors.length) checks.push(["no uncaught errors in the page", false, errors.join("; ")]);
         for (const [label, ok, detail] of checks) {
           console.log(`${ok ? "  ok  " : "  FAIL"} ${label}  (${detail})`);

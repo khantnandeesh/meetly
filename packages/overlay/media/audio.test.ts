@@ -140,10 +140,15 @@ describe("audio sequencer §10.5", () => {
     const seq = sequencer();
     seq.start(0, 0);
     let pushed = 0;
+    let asked = false;
     const out = render(seq, 0, 150 * FRAME, (frame) => {
       // Decoded audio arrives two frames ahead of its turn.
       while (pushed * FRAME < frame + 3 * FRAME) seq.push(pushed * FRAME_US, tone(pushed++ * FRAME_US));
-      if (frame === 60 * FRAME + 64) seq.adjust(-1);
+      // (The feed is called every 128 samples; the request lands mid-frame.)
+      if (!asked && frame >= 60 * FRAME + 64) {
+        asked = true;
+        seq.adjust(-1);
+      }
     });
     const report = seq.report();
     assert.equal(report.drops, 1);
@@ -158,9 +163,13 @@ describe("audio sequencer §10.5", () => {
     const seq = sequencer();
     seq.start(0, 0);
     let pushed = 0;
+    let asked = false;
     const out = render(seq, 0, 150 * FRAME, (frame) => {
       while (pushed * FRAME < frame + 3 * FRAME) seq.push(pushed * FRAME_US, tone(pushed++ * FRAME_US));
-      if (frame === 60 * FRAME + 64) seq.adjust(1);
+      if (!asked && frame >= 60 * FRAME + 64) {
+        asked = true;
+        seq.adjust(1);
+      }
     });
     const report = seq.report();
     assert.equal(report.repeats, 1);
@@ -176,10 +185,14 @@ describe("audio sequencer §10.5", () => {
       seq.start(0, 0);
       let pushed = 0;
       let changedAt = -1;
+      let asked = false;
       render(seq, 0, 200 * FRAME, (frame) => {
         while (pushed * FRAME < frame + 3 * FRAME) seq.push(pushed * FRAME_US, tone(pushed++ * FRAME_US));
         // Asked for just after the tone's quiet 60 ms (slots 30 to 32 of each second) has gone by.
-        if (frame === 85 * FRAME + 64) seq.adjust(dir);
+        if (!asked && frame >= 85 * FRAME + 64) {
+          asked = true;
+          seq.adjust(dir);
+        }
         const report = seq.report();
         if (changedAt < 0 && report.drops + report.repeats === 1) changedAt = Math.round((report.playUs as number) / FRAME_US) % 50;
       });
@@ -196,8 +209,10 @@ describe("audio sequencer §10.5", () => {
     let seen = 0;
     // A tone with no quiet part.
     const steady = (us: number) => tone(us).map((_, i) => 0.5 * Math.sin((2 * Math.PI * 440 * (Math.round((us * SAMPLE_RATE) / 1e6) + i)) / SAMPLE_RATE));
-    render(seq, 0, 400 * FRAME, (frame) => {
-      while (pushed * FRAME < frame + 3 * FRAME) seq.push(pushed * FRAME_US, steady(pushed++ * FRAME_US));
+    const out = render(seq, 0, 400 * FRAME, (frame) => {
+      // Decoded audio keeps three frames ahead of what is playing, however far the drops have moved that on.
+      const playingUs = seq.report().playUs ?? 0;
+      while (pushed * FRAME_US < playingUs + 3 * FRAME_US) seq.push(pushed * FRAME_US, steady(pushed++ * FRAME_US));
       if (frame % (10 * FRAME) === 0 && frame >= 60 * FRAME) seq.adjust(-1);
       const report = seq.report();
       if (report.drops > seen) {
@@ -207,6 +222,9 @@ describe("audio sequencer §10.5", () => {
     });
     assert.ok(changes.length >= 4 && changes.length <= 7, `${changes.length} changes in 6.8 s`);
     for (let i = 1; i < changes.length; i++) assert.ok((changes[i] as number) - (changes[i - 1] as number) >= 0.99, `changes ${changes[i - 1]} and ${changes[i]} s`);
+    // Made in the loud part of the sound, each change is still a cross-fade: no step.
+    assert.ok(maxStep(out, FRAME) <= MAX_STEP, `a step of ${maxStep(out, FRAME)}`);
+    assert.equal(seq.report().concealed, 0);
   });
 
   it("stop empties it; start begins again", () => {

@@ -373,4 +373,5 @@ export async function deps(options: { seconds?: number; width?: number; height?:
 }
 
 const scenarios = { m1, deps };
+export type Scenarios = typeof scenarios;
 (globalThis as unknown as { mediaTest: typeof scenarios }).mediaTest = scenarios;

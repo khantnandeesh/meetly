@@ -168,14 +168,17 @@ export function audioWorkletModule(): { Sequencer: new (sampleRate: number, fram
       return (sum * 4) / pcm.length;
     }
 
-    /** Whether this frame is where a pending delay change should be made. */
-    quietEnough(pcm: Float32Array): boolean {
+    /**
+     * Whether a pending delay change should be made here, where the sound it touches has this
+     * energy: the louder of the two frames a cross-fade joins, so that neither end of it is loud.
+     */
+    quietEnough(energy: number): boolean {
       if (this.slots - this.lastAdjust < ADJUST_EVERY_S * this.perSecond) return false;
       // The second is up: this frame will have to do.
       if (this.slots - this.pendingSince >= this.perSecond) return true;
       let quietest = Infinity;
       for (let i = 0; i < this.energies.length; i++) quietest = Math.min(quietest, this.energies[i] as number);
-      return this.energy(pcm) <= quietest * 1.5 + 1e-7;
+      return energy <= quietest * 1.5 + 1e-7;
     }
 
     /** `from` fading into `to`, over one frame: it starts as `from` starts and ends as `to` ends. */
@@ -219,7 +222,7 @@ export function audioWorkletModule(): { Sequencer: new (sampleRate: number, fram
 
       let frame = head.pcm;
       const next = this.queue[1];
-      if (this.pending < 0 && next && Math.abs(next.us - (this.slotUs + this.frameUs)) <= tolerance && this.quietEnough(frame)) {
+      if (this.pending < 0 && next && Math.abs(next.us - (this.slotUs + this.frameUs)) <= tolerance && this.quietEnough(Math.max(this.energy(frame), this.energy(next.pcm)))) {
         // Drop: this frame and the next, cross-faded into the time of one.
         frame = this.crossfade(head.pcm, next.pcm);
         this.queue.splice(0, 2);
@@ -228,7 +231,7 @@ export function audioWorkletModule(): { Sequencer: new (sampleRate: number, fram
         this.drops++;
         this.pending = 0;
         this.lastAdjust = this.slots;
-      } else if (this.pending > 0 && this.quietEnough(frame)) {
+      } else if (this.pending > 0 && this.quietEnough(Math.max(this.energy(frame), this.last ? this.energy(this.last) : 0))) {
         // Repeat: a frame of cross-fade that leads back into this one, which then plays whole.
         frame = this.crossfade(head.pcm, this.last || this.silence);
         this.slotUs -= this.frameUs;

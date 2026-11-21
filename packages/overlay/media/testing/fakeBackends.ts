@@ -11,14 +11,26 @@ import type { AudioBackend, AudioBackendEvents, Backends, DecodedVideo, VideoBac
 export const SAMPLE_RATE = 48000;
 const QUANTUM = 128;
 
+/** Where in each second the tone is quiet (the 20 ms frames 30 to 32), and how long it takes to get there and back. */
+const QUIET_FROM_S = 0.6;
+const QUIET_TO_S = 0.66;
+const RAMP_S = 0.002;
+
+/** The tone's amplitude at sample `n`: 0.5, but 0.005 in the quiet 60 ms, reached by 2 ms ramps outside it so that the tone itself never steps. */
+function toneAmplitude(n: number): number {
+  const t = (n / SAMPLE_RATE) % 1;
+  if (t >= QUIET_FROM_S && t < QUIET_TO_S) return 0.005;
+  if (t >= QUIET_FROM_S - RAMP_S && t < QUIET_FROM_S) return 0.5 + ((t - (QUIET_FROM_S - RAMP_S)) / RAMP_S) * (0.005 - 0.5);
+  if (t >= QUIET_TO_S && t < QUIET_TO_S + RAMP_S) return 0.005 + ((t - QUIET_TO_S) / RAMP_S) * (0.5 - 0.005);
+  return 0.5;
+}
+
 /** The sound a fake decoder makes of a frame captured at `captureUs`: a 440 Hz tone, continuous across frames, quiet for 60 ms of every second. */
 export function tone(captureUs: number, frameUs = 20000): Float32Array {
   const length = Math.round((SAMPLE_RATE * frameUs) / 1e6);
   const pcm = new Float32Array(length);
-  const slot = Math.round(captureUs / frameUs) % 50;
-  const amplitude = slot >= 30 && slot < 33 ? 0.005 : 0.5;
   const first = Math.round((captureUs * SAMPLE_RATE) / 1e6);
-  for (let i = 0; i < length; i++) pcm[i] = amplitude * Math.sin((2 * Math.PI * 440 * (first + i)) / SAMPLE_RATE);
+  for (let i = 0; i < length; i++) pcm[i] = toneAmplitude(first + i) * Math.sin((2 * Math.PI * 440 * (first + i)) / SAMPLE_RATE);
   return pcm;
 }
 
