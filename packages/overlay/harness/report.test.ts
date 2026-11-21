@@ -290,6 +290,15 @@ describe("harness report", () => {
     assert.equal(buildReport(results).measuredClockMs?.max, 17);
   });
 
+  it("says what the stream really was, as viewers at depth 1 received it", () => {
+    const results = goodRun();
+    const rx = (peer: string, kbps: number) => ({ ...sample(peer, 1, 1, [100]), up: { parent: "src", rttMs: 10, lossPct: 0, queueDelayMs: 0, rxKbps: kbps, nacksSent: 0, retransmitsReceived: 0, duplicates: 0, turn: false } });
+    results[0].samples = [rx("x1", 1150), rx("x2", 1180), { ...rx("deep", 300), depth: 2 }];
+    const report = buildReport(results);
+    assert.deepEqual([report.streamKbps.n, report.streamKbps.p50, report.streamKbps.max], [2, 1150, 1180]);
+    assert.match(renderReport(report), /depth 1 received it: p50 1150 kbps/);
+  });
+
   it("says where joins' time went", () => {
     const report = buildReport(goodRun());
     // join(): start 100, welcome 110, linked 120, firstPacket 130, firstFrame 100 + ms.

@@ -67,7 +67,12 @@ export type ChurnEvent =
   | { atS: number; action: "kill"; pick: PeerPick; count: number }
   | { atS: number; action: "leave"; pick: PeerPick; count: number }
   | { atS: number; action: "join"; count: number; profile?: string }
-  | { atS: number; action: "impair"; pick: PeerPick; count: number; profile: string }
+  /**
+   * `link` "access" (the default): the profile is the peer's own network, on every link it has.
+   * "from-parent": only the one link to whoever is its parent at that moment, as if that parent's
+   * link to it were the slow one; its links to its own children stay clean (PLAN C3).
+   */
+  | { atS: number; action: "impair"; pick: PeerPick; count: number; profile: string; link?: "access" | "from-parent" }
   | { atS: number; action: "kill-coordinator"; forS: number };
 
 /** Whom a churn event falls on. Resolved against the coordinator's tree at that moment, with the run's seed. */
@@ -272,6 +277,8 @@ export type SwarmReport = {
     /** The two machines' wall clocks may differ by up to this (theirs plus shard 0's). */
     ntpBoundMs?: number | null;
   }[];
+  /** What the stream really was: `up.rxKbps` of every viewer at depth 1, sample by sample. Too low, and a "slow" cap is not under it. */
+  streamKbps: Quantiles;
   /** Viewer-plus-source clock disagreement as measured against wall clocks, with their bounds; null when a shard could not be read so. */
   measuredClockMs: Quantiles | null;
   /** Where joins' time went: connect() to welcome, to a parent linked, to its first packet, to the first frame. Exact. */
@@ -309,7 +316,8 @@ export type ReportOptions = { peers?: number; minRepairs?: number };
  */
 export interface PageApi {
   start(options: PageStartOptions): Promise<void>;
-  setProfile(profile: ImpairmentProfile | null): void;
+  /** With `onlyPeer`, the profile applies to the link to that peer alone ("parent": the current parent's), and every other link is clean. */
+  setProfile(profile: ImpairmentProfile | null, onlyPeer?: PeerId | "parent"): void;
   /** Samples not yet taken by an earlier call. */
   takeSamples(): MetricsSample[];
   /** Leave as a person would. */

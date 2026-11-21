@@ -92,6 +92,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
 
   const seen = new Set<string>();
   const shardNotes = new Map<string, number[]>();
+  const streamKbps: number[] = [];
   const joinPhases = { welcome: [] as number[], linked: [] as number[], firstPacket: [] as number[], firstFrame: [] as number[] };
   const decoders = new Set<string>();
   let decodersKnown = false;
@@ -104,6 +105,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     const key = `${s.peer}/${s.seq}`;
     if (seen.has(key)) return;
     seen.add(key);
+    if (s.up && s.depth === 1 && s.role !== "source") streamKbps.push(s.up.rxKbps);
     if (s.video && s.role !== "source") {
       frames.rendered += s.video.rendered;
       frames.dropped += s.video.dropped;
@@ -280,6 +282,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     honesty,
     clockByShard,
     measuredClockMs,
+    streamKbps: exactQuantiles(streamKbps),
     joinPhasesMs: {
       welcome: exactQuantiles(joinPhases.welcome),
       linked: exactQuantiles(joinPhases.linked),
@@ -333,6 +336,7 @@ export function renderReport(report: SwarmReport): string {
   for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) if (q.n > 0) lines.push(row(`Latency at depth ${depth === "255" ? "unknown" : depth}`, q, ""));
   if (report.glassToGlassDecoding.n) lines.push(row("Latency, decoding viewers (D29)", report.glassToGlassDecoding, ""));
   if (report.glassToGlassLight.n) lines.push(row("Latency, light viewers (D29)", report.glassToGlassLight, ""));
+  if (report.streamKbps.n) lines.push("", `The stream as viewers at depth 1 received it: p50 ${Math.round(report.streamKbps.p50 ?? 0)} kbps, p95 ${Math.round(report.streamKbps.p95 ?? 0)} kbps, over ${report.streamKbps.n} samples (retransmissions and replays included).`);
   const jp = report.joinPhasesMs;
   if (jp.welcome.n) {
     lines.push("", "Where a join's time goes (exact, over every join):", "", "| Phase (ms) | p50 | p95 | max |", "| --- | ---: | ---: | ---: |");

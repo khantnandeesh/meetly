@@ -235,14 +235,17 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     case "slow-child": {
       // E-congestion's tree (congestion/browser/run.ts): the source's three children, and four
       // grandchildren under them. One child of the source is capped at 900 kbps under the 1,200
-      // kbps stream; 15 s later it has 3 Mbps, room for every layer again.
-      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: SYNTHETIC };
+      // kbps stream, on the source's link to it only; 15 s later it has 3 Mbps, room for every layer.
+      // A real encode padded to 1,200 kbps (the package's encoder fed moving noise; the stand-in
+      // pads too), so that 900 kbps really is under the stream.
+      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: GATE_PROGRAM };
       const at = settledS(config);
       return {
         ...config,
         churn: [
-          { atS: at, action: "impair", pick: "shallowest-relay", count: 1, profile: "cap-900" },
-          { atS: at + SLOW_CHILD.liftAfterS, action: "impair", pick: "impaired", count: 1, profile: "cap-3000" },
+          // The source's link to the child is the slow one (PLAN C3), not the child's own uplink to its children.
+          { atS: at, action: "impair", pick: "shallowest-relay", count: 1, profile: "cap-900", link: "from-parent" },
+          { atS: at + SLOW_CHILD.liftAfterS, action: "impair", pick: "impaired", count: 1, profile: "cap-3000", link: "from-parent" },
         ],
         durationS: at + SLOW_CHILD.liftAfterS + 15,
         expect: { peers: 8, minRepairs: 0 },
