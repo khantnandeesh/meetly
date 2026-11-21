@@ -119,7 +119,37 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
 
-## The whole engine (H6): the latest gate, 19 runners
+## The whole engine (H6): a laid-out gate, 20 runners
+
+[44960914556](https://github.com/khantnandeesh/meetly/actions/runs/44960914556) (attempt 1),
+`gate integration`: overlay-integration at d9eb663, the newest commit whose CI had passed when the
+run was planned (39ae7d3, with D37–D39, passed a few minutes later). The run was laid out by
+`layout.ts`: the coordinator alone on shard 0 (itself behind a symmetric NAT, which a coordinator
+does not mind), the source alone on shard 1, 199 viewers over shards 2–18, and shard 19 excluded
+as late (it was still queued for a runner after six minutes). No runner it laid out was on AWS this
+time. It covers cone-NAT peers only: no TURN was offered.
+
+**Invalid**: 9 viewer runners were over the health bar, at load 4.01–7.8 with about 12 peers each
+(timer lag was 10 ms at p99 on every runner), and 7 viewers who joined in the run's last minutes
+never rendered. Everything else held: 200 of the run's peers ran, 4,574 repairs, clocks 10.5 ms as
+measured (63.5 ms by SPEC §4.1's bound), light and decoding viewers in agreement.
+
+| Measure (ms) | p50 | p95 | p99 | Gate |
+| --- | ---: | ---: | ---: | ---: |
+| Join (312) | 3,500 | over 10,000 | over 10,000 | 3,000 |
+| Repair (4,574: 528 warm, 257 cold, 3,789 wait) | 1,650 | 7,500 | over 10,000 | 500 |
+| Glass-to-glass latency | 410 | 700 | 850 | 500 |
+| Freezes (15,516) | 1,550 | 7,000 | over 10,000 | |
+
+Joins: connect() to welcome p50 424 ms; welcome to a parent linked p50 555 ms, p95 20.9 s;
+first packet to first frame p50 1.0 s, p95 6.5 s.
+
+**The health bar cannot be met at 200 peers on this account.** A free account runs 20 jobs at
+once. Less the coordinator's runner and the source's, 18 are left for 199 viewers: 11 or 12 each,
+and with the package's engine that is a load of 3.5–7.8 on 4 vCPUs. Only a lighter page, a higher
+bar, or more runners at once (a paid plan's 40 or 60) gets there.
+
+## The whole engine (H6): the 19-runner gate before the layout
 
 [44956480109](https://github.com/khantnandeesh/meetly/actions/runs/44956480109), `gate
 integration`: overlay-integration at d9eb663, 13 of 13 factories real; the package's Node

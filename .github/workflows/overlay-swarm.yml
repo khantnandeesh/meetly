@@ -150,7 +150,7 @@ jobs:
         if: matrix.shard != 0
         uses: actions/upload-artifact@v6
         with:
-          name: nat-${{ matrix.run }}-${{ matrix.shard }}
+          name: nat-${{ matrix.run }}-a${{ github.run_attempt }}-${{ matrix.shard }}
           path: nat/nat-${{ matrix.shard }}.json
           retention-days: 1
 
@@ -161,7 +161,7 @@ jobs:
           set -euo pipefail
           mkdir -p "$OUT" rendezvous
           # Six minutes for every other shard to get a runner and report; one still queued is late.
-          bash packages/overlay/harness/ci/collect.sh "nat-$RUN-" $(( SHARDS - 1 )) nat 360
+          bash packages/overlay/harness/ci/collect.sh "nat-$RUN-a$GITHUB_RUN_ATTEMPT-" $(( SHARDS - 1 )) nat 360
           node packages/overlay/harness/swarm.mjs layout --shards "$SHARDS" --nat-dir nat > "$OUT/layout.json"
           cat "$OUT/layout.json"
           secret=$(openssl rand -hex 24)
@@ -184,14 +184,14 @@ jobs:
         if: matrix.shard == 0
         uses: actions/upload-artifact@v6
         with:
-          name: rendezvous-${{ matrix.run }}
+          name: rendezvous-${{ matrix.run }}-a${{ github.run_attempt }}
           path: rendezvous/rendezvous.json
           retention-days: 1
       - name: Wait for shard 0's rendezvous
         if: matrix.shard != 0
         run: |
           set -euo pipefail
-          bash packages/overlay/harness/ci/rendezvous.sh "rendezvous-$RUN" rendezvous
+          bash packages/overlay/harness/ci/rendezvous.sh "rendezvous-$RUN-a$GITHUB_RUN_ATTEMPT" rendezvous
           secret=$(jq -r .secret rendezvous/rendezvous.json)
           echo "::add-mask::$secret"
           echo "COORDINATOR=$(jq -r .url rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
@@ -242,7 +242,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: swarm-${{ matrix.run }}-shard-${{ matrix.shard }}
+          name: swarm-${{ matrix.run }}-shard-${{ matrix.shard }}-a${{ github.run_attempt }}
           path: swarm-out/
           retention-days: 14
           if-no-files-found: warn
@@ -296,7 +296,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: swarm-${{ matrix.dir }}
+          name: swarm-${{ matrix.dir }}-a${{ github.run_attempt }}
           path: swarm-out/
           retention-days: 14
           if-no-files-found: warn
@@ -318,7 +318,8 @@ jobs:
       - run: npm ci
       - uses: actions/download-artifact@v6
         with:
-          pattern: swarm-*
+          # This attempt's only: a re-run of the workflow keeps the artifacts of the attempts before it.
+          pattern: swarm-*-a${{ github.run_attempt }}
           path: artifacts
           merge-multiple: true
       - name: One report per run
