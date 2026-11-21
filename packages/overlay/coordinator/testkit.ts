@@ -217,6 +217,14 @@ export class FakeClock implements Clock {
 export type SimPeer = {
   conn: ConnId;
   peer: PeerId;
+  identity: string;
+  /** The grant it holds: what it shows in `resume`. */
+  grant: string;
+  /**
+   * Welcomed with no streams: its node has nothing to subscribe to, and nothing it is sent later
+   * changes that (topology's node takes its streams from `welcome`). It never joins.
+   */
+  stuck: boolean;
   capable: boolean;
   role: OverlayRole;
   /** The fan-out its grant allows (`fanout:<n>` in the scope, D38), or null for the role's own. */
@@ -287,7 +295,7 @@ export class Swarm {
   private readonly standbyBackups: boolean;
 
   constructor(
-    readonly rig: Rig,
+    public rig: Rig,
     readonly streams: StreamConfig[] = STREAMS,
     options: SwarmOptions = {},
   ) {
@@ -314,8 +322,8 @@ export class Swarm {
   }
 
   async addSource(): Promise<SimPeer> {
-    const { conn, peer } = await this.rig.join("host", "source", relayCaps({ uplinkKbps: 50_000 }));
-    const sim: SimPeer = { conn, peer, capable: true, role: "source", grantFanout: null, caps: relayCaps({ uplinkKbps: 50_000 }), parent: null, backup: null, depth: 0, kids: new Set(), joinedAt: this.rig.now, placedAt: this.rig.now, statusAt: 0, dirty: true, alive: true, backupAskedAt: 0, lost: null };
+    const { conn, peer, welcome } = await this.rig.join("host", "source", relayCaps({ uplinkKbps: 50_000 }));
+    const sim: SimPeer = { conn, peer, identity: "host", grant: welcome.grant, stuck: false, capable: true, role: "source", grantFanout: null, caps: relayCaps({ uplinkKbps: 50_000 }), parent: null, backup: null, depth: 0, kids: new Set(), joinedAt: this.rig.now, placedAt: this.rig.now, statusAt: 0, dirty: true, alive: true, backupAskedAt: 0, lost: null };
     this.peers.set(peer, sim);
     this.source = sim;
     await this.rig.say(conn, { t: "streams", streams: this.streams });
@@ -325,11 +333,52 @@ export class Swarm {
 
   async addViewer(capable: boolean): Promise<SimPeer> {
     const caps = capable ? relayCaps() : leafCaps();
-    const { conn, peer, welcome } = await this.rig.join(`viewer-${this.count++}`, "viewer", caps);
-    const sim: SimPeer = { conn, peer, capable, role: "leaf", grantFanout: null, caps, parent: null, backup: null, depth: 255, kids: new Set(), joinedAt: this.rig.now, placedAt: null, statusAt: 0, dirty: false, alive: true, backupAskedAt: 0, lost: null };
-    this.peers.set(peer, sim);
-    this.onAssign(sim, welcome.assign, "join");
+    const identity = `viewer-${this.count++}`;
+    const conn = await this.rig.open(identity, "viewer");
+    const answers = await this.rig.say(conn, { t: "hello", v: 1, caps });
+    // A welcome may wait for the streams (core.ts `helloWaiting`): it then comes in `flush`.
+    const welcome = answers.find((message): message is ServerMessageOf<"welcome"> => message.t === "welcome");
+    this.rig.inbox.set(conn, answers.filter((message) => message !== welcome));
+    const sim: SimPeer = { conn, peer: welcome?.peer ?? `(waiting ${identity})`, identity, grant: welcome?.grant ?? "", stuck: welcome !== undefined && welcome.streams.length === 0, capable, role: "leaf", grantFanout: null, caps, parent: null, backup: null, depth: 255, kids: new Set(), joinedAt: this.rig.now, placedAt: null, statusAt: 0, dirty: false, alive: true, backupAskedAt: 0, lost: null };
+    if (welcome) {
+      this.peers.set(sim.peer, sim);
+      this.onAssign(sim, welcome.assign, "join");
+    } else this.unwelcomed.add(sim);
     return sim;
+  }
+
+  /** Viewers whose `hello` has not been answered yet. */
+  readonly unwelcomed = new Set<SimPeer>();
+
+  /**
+   * The Node coordinator is killed and started again with the same storage (SPEC §6.6): every
+   * socket drops; each peer comes back with `resume` in its own time over `spreadS` seconds,
+   * in a random order, and says where it is; `during` runs at each of those seconds (joiners).
+   */
+  async restart(spreadS: number, random: () => number, during?: (second: number) => Promise<void>): Promise<void> {
+    const next = new Rig(this.rig.options, { now: this.rig.now + 500, stored: this.rig.stored });
+    next.apply(await next.core.restore(Object.fromEntries(this.rig.stored), [], next.now));
+    this.rig = next;
+    const live = [...this.peers.values()].filter((peer) => peer.alive);
+    // Until it is back, a peer cannot reach the coordinator: it says nothing (see `say`).
+    for (const peer of live) peer.conn = "";
+    const at = new Map(live.map((peer) => [peer, Math.floor(random() * spreadS)]));
+    for (let second = 0; second <= spreadS; second++) {
+      for (const peer of live) {
+        if (at.get(peer) !== second) continue;
+        const conn = await next.open(peer.identity, peer.role === "source" ? "source" : "viewer");
+        const answers = await next.say(conn, { t: "hello", v: 1, caps: peer.caps, ...(peer.grant ? { resume: { peer: peer.peer, grant: peer.grant } } : {}) });
+        const welcome = answers.find((message): message is ServerMessageOf<"welcome"> => message.t === "welcome");
+        next.inbox.set(conn, answers.filter((message) => message !== welcome));
+        peer.conn = conn;
+        if (welcome) peer.grant = welcome.grant;
+        if (peer.role === "source") await this.say(peer, { t: "streams", streams: this.streams });
+        peer.statusAt = 0;
+        peer.dirty = true;
+      }
+      await during?.(second);
+      await this.second();
+    }
   }
 
   /** A tab killed without warning (SPEC §7.4): its socket drops, its children repair. */
@@ -407,6 +456,7 @@ export class Swarm {
   }
 
   private async say(peer: SimPeer, message: ClientMessage): Promise<void> {
+    if (peer.conn === "") return;
     this.rig.apply(await this.rig.core.message(peer.conn, encodeClientMessage(message), this.rig.now));
   }
 
@@ -437,6 +487,7 @@ export class Swarm {
   }
 
   private onAssign(peer: SimPeer, assign: Assignment[], reason: "join" | "need" | "rebalance" | "move"): void {
+    if (peer.stuck) return;
     const first = assign[0];
     if (!first) return;
     if (reason === "rebalance") {
@@ -497,11 +548,29 @@ export class Swarm {
       // it first, and a joiner sent to the new relay needs a link set up before it arrives.
       const assigns: [SimPeer, ServerMessageOf<"assign">][] = [];
       const demoted: SimPeer[] = [];
+      for (const peer of [...this.unwelcomed]) {
+        const messages = this.rig.take(peer.conn);
+        const welcome = messages.find((message): message is ServerMessageOf<"welcome"> => message.t === "welcome");
+        if (!welcome) {
+          this.rig.inbox.set(peer.conn, messages);
+          continue;
+        }
+        this.unwelcomed.delete(peer);
+        peer.peer = welcome.peer;
+        peer.grant = welcome.grant;
+        peer.stuck = welcome.streams.length === 0;
+        peer.joinedAt = this.rig.now;
+        this.peers.set(peer.peer, peer);
+        this.rig.inbox.set(peer.conn, messages.filter((message) => message !== welcome));
+        this.onAssign(peer, welcome.assign, "join");
+      }
       for (const peer of this.peers.values()) {
         if (!peer.alive) continue;
         for (const message of this.rig.take(peer.conn)) {
           if (message.t === "assign") assigns.push([peer, message]);
+          else if (message.t === "grant") peer.grant = message.grant;
           else if (message.t === "role") {
+            peer.grant = message.grant;
             if (peer.role === "relay" && message.role === "leaf") demoted.push(peer);
             peer.role = message.role;
             peer.grantFanout = grantFanout(message.grant);

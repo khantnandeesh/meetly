@@ -82,6 +82,7 @@ class Core implements CoordinatorCore {
   /** Ticket nonces already used, and when each ticket expires (seconds). */
   private readonly nonces = new Map<string, number>();
   private readonly samples: MetricsSample[] = [];
+
   private streams: StreamConfig[] = [];
   private key: SessionKey | null = null;
   private ended: string | null = null;
@@ -103,6 +104,17 @@ class Core implements CoordinatorCore {
     if (stored.session) this.key = await this.importSession(stored.session).catch(() => null);
     await this.ready(fx, now);
     this.ended = stored.ended ?? null;
+    // What the source said the streams are, kept with the session: so that a viewer arriving
+    // before the source has resumed is welcomed with them, and can be placed as soon as the
+    // feeders have reported (found by the harness: joiners admitted just after a restart were
+    // welcomed with no streams, and topology's node takes its streams from `welcome`).
+    if (stored.streams && this.streams.length === 0) {
+      try {
+        this.streams = JSON.parse(stored.streams) as StreamConfig[];
+      } catch {
+        this.streams = [];
+      }
+    }
     for (const [key, value] of Object.entries(stored)) if (key.startsWith("nonce:")) this.nonces.set(key.slice(6), Number(value));
     for (const { conn: id, attachment } of conns) {
       let a: Attachment;
@@ -656,6 +668,7 @@ class Core implements CoordinatorCore {
     if (sameJson(streams, this.streams)) return;
     const before = this.publishIds().join();
     this.streams = streams;
+    fx.push({ type: "persist", key: "streams", value: streams.length > 0 ? JSON.stringify(streams) : null });
     const idsChanged = this.publishIds().join() !== before;
     for (const other of this.map.nodes.values()) if (other !== node) this.send(fx, other.conn, { t: "streams", streams });
     // The source's grant names the streams it may publish.

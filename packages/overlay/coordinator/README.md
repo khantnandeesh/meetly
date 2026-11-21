@@ -20,7 +20,7 @@ signalling. It never sees media, and a session keeps playing and repairing witho
 | `contract.ts` | the contract suite, written against a URL; `contract.node.test.ts` and `contract.worker.test.ts` run it |
 | `overlay.test.ts` | warm repair with the coordinator dead, under real transport and topology (skips until they are built here) |
 | `client.browser.test.ts` | the client bundled and run in headless Chromium (skips without Playwright) |
-| `orphans.test.ts`, `provisional.test.ts`, `churn.test.ts` | cold repair finds slots; D38; the depth under the gate's churn, in the simulator |
+| `orphans.test.ts`, `provisional.test.ts`, `churn.test.ts`, `restart.test.ts` | cold repair finds slots; D38; the depth under the gate's churn; joiners just after a restart (simulator) |
 | `testkit.ts`, `wranglerDev.ts` | for tests: a core driven by hand, simulated peers; running `wrangler dev` |
 | `load.ts`, `loadServer.ts` | K6: the load measurement |
 
@@ -33,7 +33,8 @@ Rules of this module:
 
 - The tree map is soft state, rebuilt from peers' `status`. Store only what cannot be rebuilt:
   the signing key (with the session clock's start), used ticket nonces, whether the session has
-  ended.
+  ended, and the streams the source last named (so a viewer that arrives after a restart, before
+  the source has resumed, is welcomed with them: `restart.test.ts`).
 - Never be on the repair path. A peer tells you about a repair after it has happened.
 - `node.ts` and `durableObject.ts` are imported by path, never re-exported from `index.ts`: a
   browser bundle must not pull in Node's `http` or a Worker's globals.
