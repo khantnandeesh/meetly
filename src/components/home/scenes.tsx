@@ -58,14 +58,7 @@ export function ShareScene({ s, layout }: { s: ShareState; layout: "wide" | "com
               {weeks.map((week, index) => {
                 const newest = week === s.week;
                 const level = newest && !s.grown ? 0.02 : signups(week) / top;
-                return (
-                  <span
-                    key={week}
-                    data-out={index === 0 || undefined}
-                    data-last={newest || undefined}
-                    style={vars({ "--k": index - 1, "--h": level.toFixed(3) })}
-                  />
-                );
+                return <span key={week} data-out={index === 0 || undefined} data-last={newest || undefined} style={vars({ "--k": index - 1, "--h": level.toFixed(3) })} />;
               })}
             </div>
           </div>
@@ -181,9 +174,39 @@ export const POLL_POSTER: PollState = { poll: 0, step: 0, vote: "yes", ended: fa
 // first with yours in it), then ends. The last option of each runs off the tile's foot: only the
 // top of its row shows, so it has no words.
 const POLLS = [
-  { question: "Which day for the offsite?", by: "Sam", options: ["Monday", "Tuesday", "Wednesday", "Thursday"], mine: 2, steps: [[1, 2, 7, 2], [1, 3, 8, 2], [2, 3, 10, 3]] },
-  { question: "Lunch on the day?", by: "Noor", options: ["Tacos", "Sushi", "Pizza", "Salads"], mine: 1, steps: [[2, 3, 1, 1], [3, 5, 1, 2], [3, 6, 2, 2]] },
-  { question: "Where should we meet?", by: "Theo", options: ["Lisbon", "Berlin", "Online", "London"], mine: 0, steps: [[4, 2, 1, 1], [5, 3, 2, 1], [7, 3, 2, 2]] },
+  {
+    question: "Which day for the offsite?",
+    by: "Sam",
+    options: ["Monday", "Tuesday", "Wednesday", "Thursday"],
+    mine: 2,
+    steps: [
+      [1, 2, 7, 2],
+      [1, 3, 8, 2],
+      [2, 3, 10, 3],
+    ],
+  },
+  {
+    question: "Lunch on the day?",
+    by: "Noor",
+    options: ["Tacos", "Sushi", "Pizza", "Salads"],
+    mine: 1,
+    steps: [
+      [2, 3, 1, 1],
+      [3, 5, 1, 2],
+      [3, 6, 2, 2],
+    ],
+  },
+  {
+    question: "Where should we meet?",
+    by: "Theo",
+    options: ["Lisbon", "Berlin", "Online", "London"],
+    mine: 0,
+    steps: [
+      [4, 2, 1, 1],
+      [5, 3, 2, 1],
+      [7, 3, 2, 2],
+    ],
+  },
 ] as const;
 export const POLL_STEPS = 3;
 export const pollAt = (index: number) => POLLS[index % POLLS.length];
@@ -331,11 +354,7 @@ const RAISERS: Person[] = ["priya", "jonas", "kofi", "ines", "amara"];
 const PLACES = ["1st", "2nd", "3rd"];
 // Everyone, you first, then A to Z (PeoplePanel.tsx): the six the panel counts. It starts under
 // the three hands, past the tile's foot.
-const EVERYONE: { id: Person; note?: string }[] = [
-  { id: "dana", note: "You · Host" },
-  { id: "amara" },
-  { id: "ines" },
-];
+const EVERYONE: { id: Person; note?: string }[] = [{ id: "dana", note: "You · Host" }, { id: "amara" }, { id: "ines" }];
 
 /**
  * The People panel (Conference.tsx, PeoplePanel.tsx) as the host sees it: raised hands first, in
@@ -406,23 +425,25 @@ export function HandsScene({ s, num = plain }: { s: HandsState; num?: Num }) {
             );
           })}
         </div>
-        <div className="eyebrow mt-1 flex h-10 items-end gap-2 px-5 pb-1.5">
-          In this meeting
-          <span className="tracking-normal tabular-nums">6</span>
-        </div>
-        <div className="px-2">
-          {EVERYONE.map(({ id, note }) => (
-            <div key={id} className="flex h-14 items-center gap-3 px-3">
-              <Face name={PEOPLE[id].name} color={PEOPLE[id].color} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[0.9375rem] font-medium">{PEOPLE[id].name}</span>
-                {note && <span className="block text-xs text-muted">{note}</span>}
-              </span>
-              <span className="grid size-8 place-items-center text-muted">
-                <Mic className="size-[1.125rem]" />
-              </span>
-            </div>
-          ))}
+        <div className="gm-everyone">
+          <div className="eyebrow mt-1 flex h-10 items-end gap-2 px-5 pb-1.5">
+            In this meeting
+            <span className="tracking-normal tabular-nums">6</span>
+          </div>
+          <div className="px-2">
+            {EVERYONE.map(({ id, note }) => (
+              <div key={id} className="flex h-14 items-center gap-3 px-3">
+                <Face name={PEOPLE[id].name} color={PEOPLE[id].color} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[0.9375rem] font-medium">{PEOPLE[id].name}</span>
+                  {note && <span className="block text-xs text-muted">{note}</span>}
+                </span>
+                <span className="grid size-8 place-items-center text-muted">
+                  <Mic className="size-[1.125rem]" />
+                </span>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

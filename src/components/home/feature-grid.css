@@ -716,10 +716,15 @@
 .gm-place[data-first] {
   color: var(--accent);
 }
-/* The 1st, given the floor, speaking: the panel's bars, in the text colour, moving only then. */
+/* The 1st, given the floor, speaking: the panel's bars, in the text colour, moving only then.
+   Hidden, they are paused where they are (not stopped), so they pick up from that frame. */
 .gm-hands .bars {
   color: var(--text);
 }
 .gm-hands .bars[data-show="false"] > i {
-  animation: none;
+  animation-play-state: paused;
+}
+/* Everyone else, under the queue, on a lasting layer of its own. */
+.gm-everyone {
+  will-change: transform;
 }

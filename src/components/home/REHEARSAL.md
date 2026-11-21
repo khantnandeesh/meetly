@@ -129,12 +129,21 @@ The home e2e suite also samples the grid every 100ms for 21s. It checks that:
   - `lopsided` lane chips: Reactions.tsx's own `pl-2 pr-3`;
   - `jump` on a poll count's left edge when it gains a digit: the product's own reflow;
   - `vanishes with no exit` on a poll figure: an outgoing tick already faded;
-  - `jump` on the hands' speaking bars: the bars moving while the 1st speaks.
+  - (cleared since) `jump` on the hands' speaking bars and `steps in its box` on the list below
+    the queue: hidden bars are now paused, not stopped, and that list has a lasting layer.
 - The review's optional fixed-width poll counts were tried and left out: a fixed percent column
   opened a visible gap ("1 ·   8%"), which read worse than the product's own reflow.
+
+## Checked after the review
+
+- **Reduced motion, 1440 and 390:** no stage loads and no animation runs in the grid. Two stills
+  taken 6s apart are pixel-identical.
+- **Motion at 768 and 390,** sampled every 100ms for 24s with the whole grid in view:
+  - at most one tile moves at a time, and all five take turns;
+  - no control or payoff is cut by its tile, and the page never scrolls sideways.
+- **A real phone viewport (390 × 844):** only the tiles on screen take turns, still one at a time.
 
 ## Not checked
 
 - Safari and Firefox, and real devices.
-- An independent review of v3 (the reviewer reviews it before the founder).
-- Widths between those filmed (390, 768, 1024, 1440) only by posters.
+- 1024 in motion (posters only).
