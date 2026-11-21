@@ -1,11 +1,19 @@
 /*
- * The home page's feature grid (FeatureGrid.tsx). Plain CSS, scoped under .fg, so it is never in
- * Tailwind's layers: the pictures carry `ss-stage` for the stageshow film checks, and these
- * unlayered rules always win over the kit's own `.ss-stage` rules if the hero has loaded them.
+ * The home page's feature grid (FeatureGrid.tsx, scenes.tsx, GridStages.tsx). Plain CSS, scoped
+ * under .fg, so it sits outside Tailwind's layers and always wins over the stage kit's own rules.
  *
  * One column on a phone (each tile 358 wide at 390, like the hero), two from 48rem with the screen
- * share across both, three from 64rem: the screen share two thirds of the first row, then three
- * equal tiles. Every tile shares the radius, the padding and copy at the top; the pictures differ.
+ * share across both, three from 72rem: the screen share two thirds of the first row, then three
+ * equal tiles. Three columns wait until a tile is about 350 wide, where a hand's name and the
+ * noise menu's hint fit whole.
+ *
+ * One frame for all five: the same radius, ground, gutter and copy position. Each picture fills the
+ * tile below its copy, out to the tile's edges, and is drawn at 1:1 at the tile's own width: the
+ * product surface starts on the copy's gutter, right under the copy, and the tile's bottom edge
+ * crops it. The reaction tile is a call's video tile, the whole tile, with its copy on it.
+ *
+ * Every state change below moves only transform and opacity, on the app's own motion tokens
+ * (globals.css): arrivals on --ease-enter, departures faster on --ease-exit, moves on --ease-move.
  */
 
 .fg-heading {
@@ -25,29 +33,58 @@
   list-style: none;
 }
 
+/* The tile is a window onto the call: its ground is the call's own page, so the product's surfaces
+   sit on it raised, as they do in a meeting. */
 .fg-tile {
   position: relative;
   display: flex;
   flex-direction: column;
+  height: var(--fg-h);
   overflow: hidden;
   border-radius: 1.5rem;
-  background: var(--surface);
+  background:
+    radial-gradient(120% 70% at 30% -10%, rgb(255 255 255 / 0.035), transparent 60%),
+    var(--bg);
   box-shadow: inset 0 0 0 1px var(--border);
-  padding: var(--fg-pad);
+  padding: var(--fg-pad) var(--fg-pad) 0;
+  isolation: isolate;
+}
+/* The tile's hairline sits over the picture, so a picture never covers the tile's edge. */
+.fg-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px var(--border);
+  pointer-events: none;
 }
 
-.fg-copy {
+.fg-title {
+  position: relative;
+  z-index: 2;
   margin: 0;
-  max-width: 34rem;
-  font-size: 1rem;
-  line-height: 1.45;
-  color: var(--muted);
-  text-wrap: pretty;
-}
-.fg-copy strong {
+  font-size: 1.0625rem;
   font-weight: 600;
+  line-height: 1.35;
   color: var(--text);
 }
+.fg-line {
+  position: relative;
+  z-index: 2;
+  margin: 0.125rem 0 0;
+  font-size: 0.9375rem;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+/* Heights. One height for every tile from 48rem, so every crop is composed for it: it falls on a
+   list running on (a menu's next group, a poll's next option, the panel's next section), never
+   through a word that matters, and a full gutter clear of the last thing that does. On a phone the
+   copy sits 4px higher, so the tiles are 4px shorter: either way a one-line tile's picture is 280px
+   tall (scenes.tsx counts on it). The screen share is a short, wide picture. */
+.fg-tile { --fg-h: 347px; }
+.fg-tile[data-feature="share"] { --fg-h: 256px; }
 
 @media (width >= 40rem) {
   .fg-grid {
@@ -67,201 +104,597 @@
   .fg-wide {
     grid-column: span 2;
   }
-  .fg-copy {
-    font-size: 1.0625rem;
-  }
+  .fg-tile[data-feature] { --fg-h: 351px; }
+  /* Alone in its row, the screen share keeps the desktop's proportion as it widens, so the screen
+     is always cropped by about a third. */
+  .fg-tile[data-feature="share"] { --fg-h: auto; aspect-ratio: 2 / 1; }
 }
-@media (width >= 64rem) {
+@media (width >= 72rem) {
   .fg-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
+  .fg-tile[data-feature="share"] { --fg-h: 351px; aspect-ratio: auto; }
 }
 
-/* ------------------------------------------------------------------ pictures */
+/* ------------------------------------------------------------- the pictures */
 
-/* A picture: drawn at its native size, never scaled with the grid. Set out in full here, so the
-   stageshow kit's own .ss-stage rules (position, font, colour) never reach it. */
-.fg-pic.ss-stage {
+/* A picture's slot: everything under the copy, out to the tile's sides and bottom. */
+.gm-slot {
   position: relative;
-  top: auto;
-  left: auto;
-  transform: none;
-  margin-top: 1.5rem;
-  font-family: var(--font-sans);
-  font-size: 1rem;
-  font-weight: 400;
-  line-height: 1.5;
-  letter-spacing: normal;
-  color: var(--text);
-  white-space: normal;
-  user-select: none;
-  -webkit-font-smoothing: antialiased;
-}
-
-/* 1. Screen share. Wide, the tile runs off the tile's right edge (only the shared page is cut);
-   narrow, the whole tile is drawn smaller, as a computer's screen is, so the banner, its button
-   and the label always show whole. */
-.fg-share {
-  container-type: inline-size;
-  margin-right: calc(-1 * var(--fg-pad));
-  overflow: hidden; /* the picture owns its crop, at the tile's edge */
-}
-.fg-share-frame {
-  position: relative;
-  overflow: hidden;
-  width: calc(100% + 3rem);
-  /* Its row's height: tall enough for the banner, the label and the slide's top, and no taller
-     than the noise statement beside it, which then fills its tile. */
-  height: 13.75rem;
-  border-radius: 1.25rem;
-  background: #000;
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
-  --fg-visible: calc(100% - 3rem);
-}
-.fg-share-page {
-  position: absolute;
-  top: 22%;
-  bottom: -0.75rem;
-  left: calc(var(--fg-visible) / 2);
-  translate: -50% 0;
-  width: min(78%, 36rem);
-  display: flex;
-  flex-direction: column;
-  gap: 9%;
-  padding: 6% 6% 0;
-  border-radius: 6px;
-  background: #f4f3ef;
-}
-.fg-share-page i {
-  display: block;
-  height: 9px;
-  border-radius: 5px;
-  background: #d9d7d0;
-}
-.fg-share-page .fg-share-title {
-  width: 38%;
-  height: 14px;
-  background: #b9b7b0;
-}
-.fg-share-cols {
-  display: grid;
-  flex: 1;
-  grid-template-columns: 1.3fr 1fr;
-  gap: 8%;
-}
-.fg-share-chart {
-  display: flex;
-  align-items: flex-end;
-  gap: 8%;
-  height: 72%;
-  border-bottom: 2px solid #d9d7d0;
-}
-.fg-share-chart span {
-  flex: 1;
-  border-radius: 3px 3px 0 0;
-  background: #cfcdc5;
-}
-.fg-share-lines {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.fg-share-banner {
-  position: absolute;
-  top: 0.75rem;
-  left: calc(var(--fg-visible) / 2);
-  translate: -50% 0;
-  z-index: 2;
-}
-.fg-share-label {
-  position: absolute;
-  bottom: 0.5rem;
-  left: 0.5rem;
-  z-index: 2;
-}
-@container (width < 32.5rem) {
-  /* The screen at 400 × 236, scaled to the width between the copy's edge and the tile's padding. */
-  .fg-share-frame {
-    --fg-visible: 100%;
-    width: 25rem;
-    height: 14.75rem;
-    transform-origin: 0 0;
-    scale: tan(atan2(calc(100cqw - 1.5rem), 25rem));
-    margin-bottom: calc(14.75rem * (tan(atan2(calc(100cqw - 1.5rem), 25rem)) - 1));
-  }
-  .fg-share-page {
-    top: 26%;
-    width: 84%;
-  }
-}
-
-/* 2. Noise suppression: the setting's name, a statement right under it, and the menu's hint. */
-.fg-statement {
-  display: flex;
-  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 1.25rem calc(-1 * var(--fg-pad)) 0;
   container-type: inline-size;
 }
-.fg-statement-label {
-  display: flex;
-  align-items: center;
-  gap: 0.875rem;
+/* The video tile is the whole tile; the copy sits on it. */
+.gm-slot[data-scene="reactions"] {
+  position: absolute;
+  inset: 0;
   margin: 0;
-  font-size: 1.0625rem;
-  font-weight: 600;
 }
-.fg-glyph {
-  display: grid;
-  width: 2.75rem;
-  height: 2.75rem;
-  flex: none;
-  place-items: center;
-  border-radius: 0.75rem;
-  background: var(--surface-2);
-  box-shadow: inset 0 0 0 1px var(--border);
-  color: var(--accent);
+.gm-poster,
+.gm-poster-layout,
+.gm-live {
+  position: absolute;
+  inset: 0;
 }
-/* Sized to the tile, so the statement fills it rather than leaving a band under its last line. */
-.fg-statement-big {
-  margin: 1.75rem 0 0;
-  font-size: clamp(2.25rem, 15.5cqw, 3.25rem);
-  font-weight: 600;
-  line-height: 1.05;
-  letter-spacing: -0.02em;
-  text-wrap: balance;
+.gm-poster {
+  overflow: hidden;
 }
-.fg-statement-line {
-  margin: 0.875rem 0 0;
-  font-size: 1rem;
-  line-height: 1.45;
-  color: var(--muted);
+.gm-poster-layout[data-layout="compact"] {
+  display: none;
 }
-@media (width >= 48rem) {
-  .fg-statement-line {
-    font-size: 1.0625rem;
-  }
-}
-
-/* 3. Polls: the card as a voter sees it, at its size in the call. */
-.fg-poll {
-  max-width: 22.5rem;
-}
-
-/* 4. Reactions: the lane sits at the bottom left, as in a call, shown a quarter larger than life
-   (one small component in a tile), so it fills the room under the copy. A phone shows three rows. */
-.fg-pic.fg-reactions {
-  margin-top: auto;
-  padding-top: 1.5rem;
-}
-.fg-lane {
-  zoom: 1.25;
-}
-@media (width < 48rem) {
-  .fg-desktop-only {
+@container (width < 520px) {
+  .gm-slot[data-scene="share"] .gm-poster-layout[data-layout="wide"] {
     display: none;
   }
+  .gm-slot[data-scene="share"] .gm-poster-layout[data-layout="compact"] {
+    display: block;
+  }
+}
+/* The animation lies over its poster until it has drawn its first frame. */
+.gm-handover {
+  z-index: 1;
+}
+.gm-stage .ss-stage {
+  overflow: hidden; /* each picture owns its crop */
+  color: var(--text);
+  background: transparent;
 }
 
-/* 5. Raised hands: the People list's section, its avatars and heading on the copy's edge. */
-.fg-hands {
-  margin-inline: -1.25rem;
+/* --------------------------------------------------------------- the scenes */
+
+.gm-scene {
+  /* A rolling percentage writes "58%", as the call does, not "58 %". */
+  --ss-count-unit-gap: 0;
+  position: absolute;
+  inset: 0;
+  font-family: var(--font-sans);
+  font-feature-settings: "cv11", "ss03";
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--text);
+  text-align: start;
+  -webkit-font-smoothing: antialiased;
+}
+.gm-scene [data-show] {
+  transition:
+    opacity var(--dur-base) var(--ease-enter),
+    transform var(--dur-base) var(--ease-enter);
+}
+.gm-scene [data-show="false"] {
+  opacity: 0;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-exit);
+}
+
+/* 1. Share: the presenter's screen-share tile, the shared screen filling it edge to edge, pinned
+   on the gutters and running off the tile's foot. */
+.gm-share-frame {
+  position: absolute;
+  top: 0;
+  left: var(--fg-pad);
+  right: var(--fg-pad);
+  aspect-ratio: 16 / 10;
+  overflow: hidden;
+  border-radius: 1.25rem;
+  background: #000;
+  box-shadow: 0 24px 60px -24px rgb(0 0 0 / 0.8);
+}
+.gm-share-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  border-radius: inherit;
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.06);
+  pointer-events: none;
+}
+/* The computer's screen. On a phone it is drawn at 0.8, banner and all, so the banner fits whole. */
+.gm-share-screen {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  container-type: inline-size;
+}
+.gm-share[data-layout="compact"] .gm-share-screen {
+  width: 125%;
+  height: 125%;
+  transform: scale(0.8);
+  transform-origin: 0 0;
+}
+.gm-share-wait {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding-bottom: 12%;
+  color: var(--muted);
+  font-size: 15px;
+}
+/* What is being shared: a slide, the whole screen. Sized with the screen, as a screenshot is. */
+.gm-share-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: calc(64px + 3cqw) 7cqw 0;
+  background: #f4f3ef;
+  color: #1d1d22;
+  will-change: transform, opacity;
+  transition-duration: 320ms !important;
+}
+.gm-share-page[data-show="false"] {
+  transform: scale(0.98);
+}
+/* On a phone the banner keeps a phone gutter from the screen's top once drawn at 0.8 (24 x 0.8),
+   and the slide starts under it. */
+.gm-share[data-layout="compact"] .gm-share-banner {
+  top: 24px;
+}
+.gm-share[data-layout="compact"] .gm-share-page {
+  padding-top: calc(80px + 3cqw);
+}
+.gm-slide-kicker {
+  font-size: max(12.5px, 1.6cqw);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  color: #8b887f;
+}
+.gm-slide-title {
+  margin-top: 0.6cqw;
+  font-family: var(--font-display);
+  font-size: max(17px, 3.6cqw);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+.gm-slide-chart {
+  display: flex;
+  align-items: flex-end;
+  gap: 2.2cqw;
+  height: 20cqw; /* runs on past the tile's foot */
+  margin-top: 3.4cqw;
+  border-bottom: max(1.5px, 0.25cqw) solid #d8d5cc;
+}
+.gm-slide-chart span {
+  flex: 1;
+  border-radius: 0.7cqw 0.7cqw 0 0;
+  background: #d8d5cc;
+}
+.gm-slide-chart span[data-last] {
+  background: #2c2c34;
+}
+.gm-share-banner {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  translate: -50% 0;
+  z-index: 2;
+  will-change: transform, opacity;
+}
+.gm-share-banner[data-show="false"] {
+  transform: scale(0.96);
+}
+.gm-stop {
+  transition: background-color var(--dur-fast);
+}
+.gm-stop[data-hover],
+.gm-stop[data-pressed] {
+  background: var(--danger-hover);
+}
+
+/* 2. Noise: the microphone's signal across the tile, edge to edge, over the Audio settings menu,
+   which is pinned on the gutters and runs off the tile's foot. */
+.gm-wave {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 97px;
+}
+.gm-wave-bars {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.gm-wave-bars span {
+  flex: none;
+  width: 4px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transform-origin: center;
+  transition: transform 380ms var(--ease-move);
+}
+/* A label on the signal's midline, just after the spikes it names. */
+.gm-wave-tag {
+  position: absolute;
+  top: calc(50% - 11px);
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 22px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  box-shadow: 0 0 0 3px var(--bg);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 500;
+  will-change: transform, opacity;
+  transition:
+    opacity var(--dur-base) var(--ease-enter),
+    transform var(--dur-base) var(--ease-enter);
+}
+/* Even widths, so the 14px icon sits on whole pixels as the tag moves. */
+.gm-wave-tag[data-at="keys"] {
+  left: 112px;
+  width: 78px;
+}
+.gm-wave-tag[data-at="dog"] {
+  left: 244px;
+  width: 50px;
+}
+.gm-noise[data-on="true"] .gm-wave-tag {
+  opacity: 0;
+  transform: translateY(4px) scale(0.92);
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-exit);
+}
+/* The .menu look (globals.css) without its opening animation. */
+.gm-menu {
+  position: absolute;
+  top: 113px;
+  left: var(--fg-pad);
+  right: var(--fg-pad);
+  padding: 6px;
+  border-radius: 1rem;
+  background: var(--surface-2);
+  box-shadow:
+    inset 0 0 0 1px var(--border-strong),
+    0 18px 50px -12px rgb(0 0 0 / 0.7);
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+}
+.gm-menu-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem 0.375rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+  line-height: 1rem;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+.gm-menu-item {
+  position: relative;
+  display: flex;
+  min-height: 2.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.75rem;
+}
+.gm-menu-item.pr-10 {
+  padding-right: 2.5rem;
+}
+.gm-menu-sep {
+  height: 1px;
+  margin: 0.375rem 0.5rem;
+  background: var(--border-strong);
+}
+
+/* 3. Polls: the poll card as it sits at the top of the chat panel, pinned on the gutters, its
+   options running off the tile's foot. A new poll: the finished card leaves upwards as the new one
+   rises in under it, overlapping. */
+.gm-poll-card {
+  position: absolute;
+  top: 0;
+  left: var(--fg-pad);
+  right: var(--fg-pad);
+  display: flex;
+  flex-direction: column;
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border-radius: 1rem;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px var(--border-strong),
+    0 24px 60px -24px rgb(0 0 0 / 0.8);
+  will-change: transform, opacity;
+}
+.gm-poll-old {
+  z-index: 1;
+  animation: gm-poll-out 260ms var(--ease-exit) both;
+}
+.gm-poll-card[data-in] {
+  animation: gm-poll-in 360ms var(--ease-enter) 120ms both;
+}
+@keyframes gm-poll-out {
+  to {
+    opacity: 0;
+    transform: translateY(-10px) scale(0.98);
+  }
+}
+@keyframes gm-poll-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+}
+.gm-option {
+  box-shadow: inset 0 0 0 1px var(--border);
+  transition: background-color var(--dur-fast);
+}
+.gm-option[data-mine] {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, var(--border));
+}
+.gm-option[data-hover] {
+  background: var(--surface-3);
+}
+.gm-bar {
+  transition: transform var(--dur-slow) var(--ease-move);
+}
+/* The tick's place is kept; before you vote the words sit over it, as the call has them. */
+.gm-mark {
+  display: inline-grid;
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+.gm-mark > * {
+  grid-area: 1 / 1;
+}
+.gm-option[data-target="wed"] .gm-mark ~ span {
+  will-change: transform;
+  transition: transform 220ms var(--ease-move);
+}
+.gm-option[data-target="wed"]:not([data-mine]) .gm-mark ~ span:not(.gm-count) {
+  transform: translateX(-24px);
+}
+.gm-mark-done[data-show="false"] {
+  transform: scale(0.5);
+}
+.gm-foot {
+  display: grid;
+}
+.gm-foot > span {
+  grid-area: 1 / 1;
+}
+
+/* 4. Reactions: a speaker's video tile, camera off, the whole tile; the reaction lane over its
+   lower left, above the name label, oldest at the bottom; a burst of claps rises into its row. */
+.gm-video {
+  position: absolute;
+  inset: 0 -44% 0 0; /* the call tile is wider than ours: its picture centres right of the lane */
+  display: grid;
+  place-items: center;
+  container-type: size;
+  background: radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--c) 18%, var(--surface-2)), var(--surface) 75%);
+}
+.gm-disc {
+  display: grid;
+  width: clamp(2.5rem, 32cqmin, 8.5rem);
+  aspect-ratio: 1;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--c);
+  color: #16161d;
+  font-family: var(--font-display);
+  font-size: clamp(1rem, 13cqmin, 3.5rem);
+  font-weight: 600;
+  /* Speaking: the ring the call draws round a speaker's picture. */
+  box-shadow: 0 0 0 0.4rem color-mix(in srgb, var(--c) 28%, transparent);
+}
+.gm-name {
+  position: absolute;
+  left: var(--fg-pad);
+  bottom: var(--fg-pad);
+  z-index: 2;
+  will-change: transform;
+}
+.gm-name .bars > i {
+  animation: none;
+}
+.gm-name .bars > i:nth-child(1) { transform: scaleY(0.55); }
+.gm-name .bars > i:nth-child(3) { transform: scaleY(0.75); }
+/* The lane starts a little above the name label (Reactions.tsx: 3.25rem over the tile's foot,
+   the label 0.5rem up) and grows upward, a row every 42px. */
+.gm-lane,
+.gm-burst {
+  position: absolute;
+  left: var(--fg-pad);
+  bottom: calc(var(--fg-pad) + 2.75rem);
+  z-index: 2;
+}
+.gm-lane {
+  width: 15rem;
+}
+.gm-lane-row {
+  position: absolute;
+  left: 0;
+  bottom: calc(var(--i) * 42px);
+  height: 2.25rem;
+  gap: 0.5rem;
+  padding: 0 0.75rem 0 0.5rem;
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  box-shadow:
+    0 10px 15px -3px rgb(0 0 0 / 0.1),
+    0 4px 6px -4px rgb(0 0 0 / 0.1);
+  transform-origin: 0 100%;
+  will-change: transform, opacity;
+}
+.gm-lane-row[data-show="false"] {
+  transform: scale(0.96);
+  /* Run out oldest first, a beat apart. */
+  transition-delay: calc(var(--i) * 70ms);
+}
+.gm-swap {
+  display: inline-grid;
+}
+.gm-swap > span {
+  grid-area: 1 / 1;
+}
+.gm-burst {
+  z-index: 3;
+  pointer-events: none;
+}
+.gm-burst span {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  font-size: 22px;
+  line-height: 1;
+  opacity: 0;
+}
+.gm-burst[data-go] span {
+  animation: gm-rise 900ms var(--ease-move) calc(var(--i) * 45ms) both;
+}
+/* Each clap rises from the tile's foot, right of the name label, arcs over the lane and drops into
+   the row's emoji, fading as it arrives. */
+.gm-burst span:nth-child(1) { --sx: 92px; --sy: 96px; }
+.gm-burst span:nth-child(2) { --sx: 168px; --sy: 104px; }
+.gm-burst span:nth-child(3) { --sx: 128px; --sy: 84px; }
+.gm-burst span:nth-child(4) { --sx: 224px; --sy: 100px; }
+.gm-burst span:nth-child(5) { --sx: 70px; --sy: 104px; }
+.gm-burst span:nth-child(6) { --sx: 196px; --sy: 88px; }
+.gm-burst span:nth-child(7) { --sx: 148px; --sy: 108px; }
+.gm-burst span:nth-child(8) { --sx: 252px; --sy: 92px; }
+.gm-burst span:nth-child(9) { --sx: 110px; --sy: 100px; }
+@keyframes gm-rise {
+  0% {
+    opacity: 0;
+    transform: translate(var(--sx), var(--sy)) scale(0.9);
+  }
+  15% {
+    opacity: 1;
+  }
+  55% {
+    opacity: 1;
+    transform: translate(calc(var(--sx) * 0.45), calc(var(--sy) * -0.4)) scale(1.1);
+  }
+  82% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.5);
+  }
+}
+.gm-pop {
+  display: inline-block;
+}
+.gm-pop[data-go] {
+  animation: gm-pop 420ms var(--ease-move) 560ms both;
+}
+@keyframes gm-pop {
+  40% {
+    transform: scale(1.3);
+  }
+}
+
+/* 5. Hands: the People panel, pinned on the gutters and running off the tile's foot; up one by
+   one, each given its place; Lower all clears them, top first. */
+.gm-panel {
+  position: absolute;
+  top: 0;
+  left: var(--fg-pad);
+  right: var(--fg-pad);
+  border-radius: 1.25rem;
+  background: var(--surface);
+  box-shadow:
+    inset 0 0 0 1px var(--border),
+    0 24px 60px -24px rgb(0 0 0 / 0.8);
+}
+.gm-hands-head {
+  transition: opacity var(--dur-base) var(--ease-enter);
+}
+.gm-hands[data-any="false"] .gm-hands-head {
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-exit) 210ms;
+}
+/* PeoplePanel.tsx's button (h-8, rounded-lg, px-2.5). */
+.gm-lower {
+  display: grid;
+  height: 32px;
+  place-items: center;
+  padding: 0 10px;
+  border-radius: 8px;
+  transition: background-color var(--dur-fast);
+}
+.gm-lower[data-hover],
+.gm-lower[data-pressed] {
+  background: var(--surface-2);
+}
+.gm-hand {
+  will-change: transform, opacity;
+}
+/* Everyone else, under the hands: up into the section's place once the hands are lowered (after
+   the rows have gone), down a row's height as each hand goes up (before that row comes in). */
+.gm-everyone {
+  transform: translateY(var(--gm-shift));
+  transition: transform var(--dur-move) var(--ease-move);
+  will-change: transform;
+}
+.gm-hands[data-any="false"] .gm-everyone,
+.gm-hands[data-any="false"] .gm-everyone [data-show="true"] {
+  transition-delay: 260ms;
+}
+.gm-hands[data-any="true"] .gm-hand[data-show="true"] {
+  transition-delay: 120ms;
+}
+.gm-hand[data-show="false"] {
+  transform: translateY(6px);
+  transition-delay: calc(var(--i) * 70ms);
+}
+.gm-place,
+.gm-handbadge {
+  transition:
+    opacity var(--dur-base) var(--ease-enter) 200ms,
+    transform var(--dur-base) var(--ease-enter) 80ms;
+}
+.gm-hand[data-show="false"] .gm-place,
+.gm-hand[data-show="false"] .gm-handbadge {
+  opacity: 0;
+  transition-delay: 0ms;
+}
+.gm-hand[data-show="false"] .gm-handbadge {
+  transform: scale(0.6);
 }
