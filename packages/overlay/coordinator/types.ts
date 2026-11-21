@@ -14,7 +14,7 @@
 import type { Clock, Listenable, Logger, SessionClock } from "../runtime";
 import type { Capabilities, IceServer, MetricsSample, OverlayParams, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
 import type { Signaler } from "../transport/types";
-import type { CoordinatorPort } from "../topology/types";
+import type { CoordinatorPort, JudgeRelay, ParentCost } from "../topology/types";
 
 /* ------------------------------ the core ------------------------------ */
 
@@ -97,6 +97,12 @@ export type CoordinatorCoreOptions = {
   /** Injected, so placement is repeatable in tests. Returns 0..1. */
   random: () => number;
   logger?: Logger;
+  /** How many metrics samples to keep for `metrics()`; the oldest go first. Default 2,000. */
+  metricsKeep?: number;
+  /** Who may relay and what a parent costs. Default: topology's own (`./scoring.ts`). */
+  scoring?: { judgeRelay: JudgeRelay; parentCost: ParentCost };
+  /** False turns off the changes of parent the coordinator asks for (`assign` "move"). Default true. */
+  moves?: boolean;
 };
 
 /**
@@ -133,6 +139,15 @@ export type NodeCoordinatorOptions = {
   /** Makes placement repeatable. */
   seed?: number;
   logger?: Logger;
+  /** Metrics samples kept per session for `GET …/metrics`. Default 100,000. */
+  metricsKeep?: number;
+  /**
+   * Where `persist` effects go, per room: what a Durable Object's storage is in production. Hand
+   * the same one to a second `startNodeCoordinator` and sessions survive the first one's `kill()`
+   * as they survive a Durable Object's eviction (the signing key, so `resume` works). Default: a
+   * new one, so a restart forgets everything.
+   */
+  storage?: Map<string, Map<string, string>>;
 };
 
 export type NodeCoordinator = {
@@ -187,4 +202,10 @@ export type CoordinatorClientOptions = {
   logger?: Logger;
   /** For tests: something that behaves like `WebSocket`. */
   webSocket?: (url: string) => WebSocket;
+  /** How long `connect()` waits for `welcome` before it gives up. Default 5,000 ms. */
+  connectTimeoutMs?: number;
+  /** How long `need()` waits for an answer before it resolves null. Default 5,000 ms. */
+  needTimeoutMs?: number;
+  /** The longest wait between two attempts to reconnect. Default 2,000 ms. */
+  maxBackoffMs?: number;
 };
