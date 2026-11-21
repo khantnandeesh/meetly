@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Other agents' checkouts (each with its own build output) are not this project's source.
     ".claude/**",
+    // Agent skills installed with `npx skills add` (third-party guidance and example code).
+    ".agents/**",
     // Third-party runtime files copied out of node_modules (see scripts/copy-effects.mjs).
     "public/effects/**",
   ]),
