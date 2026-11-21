@@ -181,6 +181,24 @@ and no child got its layers back on a 3 Mbps link.
 The browser run: `NODE_PATH=$(npm root -g) node --experimental-transform-types --import
 ./test/register.mjs packages/overlay/congestion/browser/run.ts`. About 60 s, port 4240.
 
+### Checked with E-transport+topology's real node
+
+Not committed, because a module's code may not import another's implementation (PLAN §2): a
+scratch tree of `origin/overlay-transport` at f7eab18 with this directory in place of theirs,
+their `SimNet` with a 300 ms rate cap added to its wire (its links have none; about 15 lines in
+`SimLink.sendPacket`, with `bufferedAmount` the cap's backlog), their `OverlayNode` unchanged,
+this module's `createLinkEstimator` and `createLayerGate`. The source, three children (`a`, `b`,
+`slow`) and one grandchild under each of `a` and `slow`, 15 ms links, a 1,200 kbps L1T3 stream;
+`slow`'s link capped at 5 s.
+
+| Cap | `layers` to `slow` | `slow` and its child, once settled | `a`, `b`, `a1` |
+| --- | --- | --- | --- |
+| 900 kbps | one: 1, congestion, at +1,067 ms | layers 0 and 1, every frame | every frame of every layer |
+| 1.1 Mbps | one: 1, congestion, at +1,200 ms | layers 0 and 1, every frame | every frame of every layer |
+
+No node errors. Their tests pass on that tree with this module in it; the one failure is
+`skeleton.test.ts`, whose congestion lines their branch still has and this one has removed.
+
 ## Known, and not fixed here
 
 - **A keyframe takes 237 ms to cross a 900 kbps link**, whatever the gate does. PLAN C3's "no
