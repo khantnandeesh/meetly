@@ -2,7 +2,7 @@
 # headless Chromium, sharded across runners, against one coordinator, and one report.
 #
 # Not run on every push: a push runs only what its commit message names, as
-# `[swarm: experiment sizes scenarios sharded gate merge]` (harness/ci/plan.mjs says what each is); a manual
+# `[swarm: experiment sizes scenarios sharded gate merge|integration]` (harness/ci/plan.mjs says what each is); a manual
 # run what its `runs` input says; the nightly run (on the default branch) the gate.
 #
 # How shards on different runners share one coordinator: runners cannot reach each other, so shard
@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: "What to run: any of experiment, sizes, scenarios, sharded, gate, merge"
+        description: "What to run: any of experiment, sizes, scenarios, sharded, gate, and merge or integration"
         default: "gate merge"
         type: string
   schedule:
@@ -56,6 +56,7 @@ jobs:
       single: ${{ steps.plan.outputs.single }}
       has_single: ${{ steps.plan.outputs.has_single }}
       merge: ${{ steps.plan.outputs.merge }}
+      merge_mode: ${{ steps.plan.outputs.merge_mode }}
       any: ${{ steps.plan.outputs.any }}
     steps:
       - uses: actions/checkout@v6
@@ -102,7 +103,7 @@ jobs:
         if: needs.plan.outputs.merge == 'true'
         run: |
           mkdir -p "$OUT"
-          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json"
+          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json" "${{ needs.plan.outputs.merge_mode }}"
       - run: npm ci
       - name: What is real, what is a stub
         run: node packages/overlay/harness/swarm.mjs modules --out "$OUT"
@@ -214,7 +215,7 @@ jobs:
         if: needs.plan.outputs.merge == 'true'
         run: |
           mkdir -p "$OUT"
-          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json"
+          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json" "${{ needs.plan.outputs.merge_mode }}"
       - run: npm ci
       - name: Cache Playwright browsers
         uses: actions/cache@v5
