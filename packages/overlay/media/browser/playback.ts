@@ -15,6 +15,7 @@ import { DependencyTracker } from "../layers";
 import { createLoopback, type Loopback } from "../testing/loopback";
 import { createLocalSessionClock, createWorkerClock } from "../testing/realClock";
 import type { ProgramEncoding } from "../types";
+import { probeDecoders } from "../probe";
 import { encodingFor, lagMonitor, program, quantile, round, sleep } from "./common";
 
 const stats = (values: number[]) => ({ n: values.length, p50: round(quantile(values, 0.5)), p95: round(quantile(values, 0.95)), min: round(quantile(values, 0)), max: round(quantile(values, 1)) });
@@ -127,6 +128,7 @@ export async function m3(options: { seconds?: number; width?: number; height?: n
   clock.close();
   return {
     seconds: round(elapsed),
+    decoders: await probeDecoders(),
     audio: withAudio,
     audioCounters: debug.audio,
     width: encoding.video.width,
@@ -140,6 +142,10 @@ export async function m3(options: { seconds?: number; width?: number; height?: n
     appliedDelayMs: round(debug.appliedDelayMs),
     layerCap: debug.layerCap,
     aboveCap: debug.aboveCap,
+    videoPending: debug.videoPending,
+    videoReady: debug.videoReady,
+    buffers: debug.buffers,
+    playheadMinusNowMs: round((debug.playheadUs - sessionClock.now() * 1000) / 1000),
     capChanges: debug.capChanges,
     decodeErrors: seen.errors.filter((message) => !/audio/.test(message)),
     errors: [...seen.errors, ...sourceErrors],
@@ -258,6 +264,40 @@ async function clapProgram(seconds: number): Promise<{ video: EncodedFrame[]; au
   return { video, audio, videoConfig: { ...videoStreamConfig(encoding, 0, 600), width: CLAP_W, height: CLAP_H }, audioConfig: audioStreamConfig(encoding, 0), opusDelaySamples };
 }
 
+type OutputStamp = { contextTime: number; performanceTime: number };
+
+/**
+ * When each click was heard: the first loud sample of each burst in what the worklet played,
+ * placed in time by the audio context's output timestamp nearest to it. Also the runs of exact
+ * silence in what was played.
+ */
+function heardClicks(taps: { frame: number; pcm: Float32Array }[], stamps: OutputStamp[], sessionClock: SessionClock) {
+  const heardUs: number[] = [];
+  let quietUntil = -Infinity;
+  const pcmRuns: number[] = [];
+  let zeroRun = 0;
+  for (const tap of taps) {
+    for (let i = 0; i < tap.pcm.length; i++) {
+      const sample = tap.pcm[i] as number;
+      const frame = tap.frame + i;
+      if (Math.abs(sample) < 1e-6) zeroRun++;
+      else {
+        if (zeroRun > 0) pcmRuns.push(zeroRun);
+        zeroRun = 0;
+      }
+      if (Math.abs(sample) > 0.4 && frame > quietUntil) {
+        quietUntil = frame + 24000;
+        const contextS = frame / 48000;
+        const stamp = stamps.reduce<OutputStamp | null>((best, s) => (Math.abs(s.contextTime - contextS) < Math.abs((best?.contextTime ?? Infinity) - contextS) ? s : best), null);
+        if (!stamp) continue;
+        const localMs = stamp.performanceTime + (contextS - stamp.contextTime) * 1000;
+        heardUs.push(Math.round(sessionClock.fromLocal(localMs) * 1000));
+      }
+    }
+  }
+  return { heardUs, pcmRuns };
+}
+
 /**
  * The clap test (PLAN M4): flash and click at the same `captureUs`, played through the real
  * player; when the flash was rendered (the `rendered` event) against when the click was heard
@@ -324,31 +364,7 @@ export async function clap(options: { seconds?: number; delayMs?: number; jitter
   const eventLoopLagMs = lag.stop();
   clock.close();
 
-  // When each click was heard: the first loud sample of each burst in what the worklet played,
-  // placed in time by the latest output timestamp before it.
-  const heardUs: number[] = [];
-  let quietUntil = -Infinity;
-  const pcmRuns: number[] = [];
-  let zeroRun = 0;
-  for (const tap of taps) {
-    for (let i = 0; i < tap.pcm.length; i++) {
-      const sample = tap.pcm[i] as number;
-      const frame = tap.frame + i;
-      if (Math.abs(sample) < 1e-6) zeroRun++;
-      else {
-        if (zeroRun > 0) pcmRuns.push(zeroRun);
-        zeroRun = 0;
-      }
-      if (Math.abs(sample) > 0.4 && frame > quietUntil) {
-        quietUntil = frame + 24000;
-        const contextS = frame / 48000;
-        const stamp = stamps.reduce<{ contextTime: number; performanceTime: number } | null>((best, s) => (Math.abs(s.contextTime - contextS) < Math.abs((best?.contextTime ?? Infinity) - contextS) ? s : best), null);
-        if (!stamp) continue;
-        const localMs = stamp.performanceTime + (contextS - stamp.contextTime) * 1000;
-        heardUs.push(Math.round(sessionClock.fromLocal(localMs) * 1000));
-      }
-    }
-  }
+  const { heardUs, pcmRuns } = heardClicks(taps, stamps, sessionClock);
   // The flashes, by capture time: every whole second after the start.
   const flashes = seen.rendered.filter((r) => (r.captureUs - baseUs) % 1_000_000 === 0);
   const pairs = flashes.map((flash) => {
@@ -468,6 +484,186 @@ export async function m5(options: { seconds?: number; width?: number; height?: n
     fullAudio: fullDebug.audio,
     loopback: loopback.stats(),
     errors: [...fullSeen.errors, ...lightSeen.errors, ...sourceErrors],
+    eventLoopLagMs,
+  };
+}
+
+/* ------------------------------------------------------------------------------------------ */
+/* A/V sync from end to end: through the real source                                           */
+/* ------------------------------------------------------------------------------------------ */
+
+/**
+ * The clap test through the real source: the composer flashes the picture white once a second
+ * and a click is scheduled in its Web Audio mix for the same moment. The source stamps both; the
+ * page finds the flash among the source's frames (decoded, by brightness) and the click in its
+ * Opus frames (decoded), so the source's own skew is known; then the player plays both. What is
+ * measured is the click as heard against the flash as rendered, and how much of that the source
+ * put there.
+ */
+export async function av(options: { seconds?: number; width?: number; height?: number; bitrateKbps?: number; delayMs?: number } = {}) {
+  const seconds = options.seconds ?? 10;
+  const encoding = encodingFor({ width: 640, height: 360, bitrateKbps: 600, ...options });
+  const clock = createWorkerClock();
+  const sessionClock = createLocalSessionClock(clock, 5_000_000);
+  const fps = encoding.video.fps;
+  let audioContext: AudioContext | null = null;
+  let input: AudioNode | null = null;
+  const click = (at: number) => {
+    if (!audioContext || !input) return;
+    const buffer = audioContext.createBuffer(1, 96, 48000);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < 96; i++) data[i] = 0.8 * Math.sin((2 * Math.PI * 1500 * i) / 48000);
+    const node = audioContext.createBufferSource();
+    node.buffer = buffer;
+    node.connect(input);
+    node.start(at);
+  };
+  const composed = await program(encoding, clock, {
+    audio: false,
+    overlay: (context, frame) => {
+      // Six frames ahead, the click is put in the mix for when the flash will be drawn.
+      if (frame % fps === fps - 6 && audioContext) click(audioContext.currentTime + 6 / fps);
+      if (frame % fps === 0 && frame > 0) {
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, encoding.video.width, encoding.video.height);
+      }
+    },
+  });
+  audioContext = composed.composer.audioContext;
+  input = composed.composer.audioInput;
+  // A quiet tone under it all, so that the sound never stops.
+  const tone = audioContext.createOscillator();
+  const toneGain = audioContext.createGain();
+  tone.frequency.value = 300;
+  toneGain.gain.value = 0.05;
+  tone.connect(toneGain).connect(input);
+  tone.start();
+
+  const source = createProgramSource({ encoding, sessionClock, clock });
+  const backends = recordingBackends();
+  const player = createPlayerWith({ sessionClock, clock, playoutMinMs: 60, playoutMaxMs: 400 }, backends);
+  const seen = watch(player);
+  const loopback = createLoopback({ clock, delayMs: options.delayMs ?? 10, seed: 11, deliver: (frame) => player.push(frame) });
+  await player.configure(source.streams());
+  const audioBackend = backends.audio_[0];
+  const taps: { frame: number; pcm: Float32Array }[] = [];
+  player.onTap = (frame, pcm) => taps.push({ frame, pcm });
+  player.tap(true);
+  const stamps: OutputStamp[] = [];
+
+  // At the source: which frames are the flash, and where in the sound the clicks are.
+  const flashCaptureUs: number[] = [];
+  const videoDecoder = new VideoDecoder({
+    output: (frame) => {
+      // A corner of the textured band at the top: never white but in the flash.
+      const rect = { x: 16, y: 16, width: 16, height: 16 };
+      const size = frame.allocationSize({ rect });
+      const bytes = new Uint8Array(size);
+      const captureUs = frame.timestamp;
+      void frame
+        .copyTo(bytes, { rect })
+        .then(() => {
+          let sum = 0;
+          for (let i = 0; i < 256; i++) sum += bytes[i] as number;
+          if (sum / 256 > 200) flashCaptureUs.push(captureUs);
+        })
+        .finally(() => frame.close());
+    },
+    error: () => undefined,
+  });
+  videoDecoder.configure({ codec: encoding.video.codec });
+  const clickCaptureUs: number[] = [];
+  const inAudioDecoder: number[] = [];
+  let lastClick = -Infinity;
+  const audioDecoder = new AudioDecoder({
+    output: (data) => {
+      const captureUs = inAudioDecoder.shift() ?? 0;
+      const pcm = new Float32Array(data.numberOfFrames);
+      data.copyTo(pcm, { planeIndex: 0, format: "f32-planar" });
+      data.close();
+      for (let i = 0; i < pcm.length; i++) {
+        const us = captureUs + Math.round((i * 1e6) / 48000);
+        if (Math.abs(pcm[i] as number) > 0.4 && us > lastClick + 500_000) {
+          lastClick = us;
+          clickCaptureUs.push(us);
+        }
+      }
+    },
+    error: () => undefined,
+  });
+  audioDecoder.configure({ codec: "opus", sampleRate: 48000, numberOfChannels: 1 });
+  let lastAudioId = -1;
+  source.on("config", (config) => void player.configure([config]));
+  source.on("frame", (frame) => {
+    loopback.send(frame);
+    const { header } = frame;
+    if (header.streamId === VIDEO_STREAM_ID) {
+      videoDecoder.decode(new EncodedVideoChunk({ type: (header.flags & MediaFlag.Key) !== 0 ? "key" : "delta", timestamp: header.captureUs, data: frame.data }));
+    } else if (header.frameId > lastAudioId) {
+      lastAudioId = header.frameId;
+      inAudioDecoder.push(header.captureUs);
+      audioDecoder.decode(new EncodedAudioChunk({ type: "key", timestamp: header.captureUs, data: frame.data }));
+    }
+  });
+  const sampleStamps = clock.setInterval(() => {
+    const stamp = audioBackend?.outputTimestamp?.();
+    if (stamp && stamp.contextTime > 0) stamps.push(stamp);
+  }, 5);
+  const lag = lagMonitor(clock);
+  await source.start(composed.input);
+  await sleep(seconds * 1000);
+  sampleStamps();
+  const debug = player.debug();
+  player.tap(false);
+  await sleep(150);
+  await source.stop();
+  composed.stop();
+  tone.stop();
+  await player.close();
+  await videoDecoder.flush().catch(() => undefined);
+  videoDecoder.close();
+  await audioDecoder.flush().catch(() => undefined);
+  audioDecoder.close();
+  const eventLoopLagMs = lag.stop();
+  clock.close();
+
+  const { heardUs } = heardClicks(taps, stamps, sessionClock);
+  const flashes = new Set(flashCaptureUs);
+  const pairs = seen.rendered
+    .filter((r) => flashes.has(r.captureUs))
+    .map((flash) => {
+      const atSource = clickCaptureUs.find((us) => Math.abs(us - flash.captureUs) < 400_000) ?? null;
+      const heard = heardUs.find((us) => Math.abs(us - flash.renderedUs) < 400_000) ?? null;
+      return {
+        sourceSkewMs: atSource === null ? null : round((atSource - flash.captureUs) / 1000),
+        clickMinusFlashMs: heard === null ? null : round((heard - flash.renderedUs) / 1000),
+      };
+    });
+  const complete = pairs.filter((p) => p.sourceSkewMs !== null && p.clickMinusFlashMs !== null);
+  return {
+    seconds,
+    flashesAtSource: flashCaptureUs.length,
+    rendered: seen.rendered.length,
+    freezes: seen.freezes.map((f) => f.ms),
+    videoStats: player.stats().video,
+    layerCap: debug.layerCap,
+    capChanges: debug.capChanges,
+    aboveCap: debug.aboveCap,
+    videoPending: debug.videoPending,
+    videoReady: debug.videoReady,
+    buffers: debug.buffers,
+    playheadMinusNowMs: round((debug.playheadUs - sessionClock.now() * 1000) / 1000),
+    nearestRendered: flashCaptureUs.map((us) => Math.min(...seen.rendered.map((r) => Math.abs(r.captureUs - us)))),
+    flashIds: flashCaptureUs.map((us) => seen.rendered.find((r) => Math.abs(r.captureUs - us) < 40_000)?.frameId ?? null),
+    clicksAtSource: clickCaptureUs.length,
+    clicksHeard: heardUs.length,
+    pairs,
+    sourceSkewMs: stats(complete.map((p) => p.sourceSkewMs as number)),
+    endToEndMs: stats(complete.map((p) => p.clickMinusFlashMs as number)),
+    playerMs: stats(complete.map((p) => (p.clickMinusFlashMs as number) - (p.sourceSkewMs as number))),
+    audio: debug.audio,
+    appliedDelayMs: round(debug.appliedDelayMs),
+    errors: seen.errors,
     eventLoopLagMs,
   };
 }

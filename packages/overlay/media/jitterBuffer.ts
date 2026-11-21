@@ -68,6 +68,8 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
   private recentLayers: number[] = [];
 
   private hints = { jitterMs: 0, rttMs: null as number | null, lossPct: 0 };
+  /** Held on top of D: see `setExtraDelayMs`. */
+  private extraMs = 0;
   private delayMs: number;
   private delayAt: number;
   private announcedDelayMs: number;
@@ -135,7 +137,7 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
       this.countLost(id);
       return;
     }
-    const delayUs = Math.round(this.delayMs * 1000);
+    const delayUs = this.effectiveDelayUs();
     const late = this.lastPopUs !== null && header.captureUs + delayUs <= this.lastPopUs;
     if (late) {
       this.late++;
@@ -203,7 +205,7 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
   }
 
   pop(nowUs: number): PlayoutFrame[] {
-    const delayUs = this.updateDelay();
+    const delayUs = this.updateDelay() + Math.round(this.extraMs * 1000);
     this.lastPopUs = nowUs;
     const out: PlayoutFrame[] = [];
     if (this.ids.length === 0) return out;
@@ -341,6 +343,22 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     return Math.round(this.delayMs * 1000);
   }
 
+  /**
+   * Media this stream holds beyond D because of where it is played from, not because of the
+   * link: a player whose clock is another stream's, or whose sound card adds latency, hands
+   * frames out later than `captureUs` + D. Telling the buffer keeps §10.4's catch-up from taking
+   * that for a backlog. Due times do not change: they are asked for at the playhead plus
+   * `effectiveDelayUs`.
+   */
+  setExtraDelayMs(ms: number): void {
+    this.extraMs = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  }
+
+  /** D and the extra, in microseconds: what a frame's capture time is compared with. */
+  effectiveDelayUs(): number {
+    return Math.round((this.delayMs + this.extraMs) * 1000);
+  }
+
   oldestWanted(): number | null {
     if (this.maxSeenId < 0) return null;
     if (this.deadGopKeyId !== null) {
@@ -359,7 +377,7 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     let bufferUs = 0;
     if (this.ids.length > 0 && this.newestCaptureUs !== null) {
       const oldest = (this.entries.get(this.ids[0] as number) as Entry).frame.header.captureUs;
-      const playoutPointUs = this.lastPopUs === null ? oldest : Math.max(oldest - this.frameUs, this.lastPopUs - Math.round(this.delayMs * 1000));
+      const playoutPointUs = this.lastPopUs === null ? oldest : Math.max(oldest - this.frameUs, this.lastPopUs - this.effectiveDelayUs());
       bufferUs = this.newestCaptureUs - playoutPointUs;
     }
     return {

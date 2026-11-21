@@ -136,6 +136,16 @@ describe("player: video against the sound (§10.5)", () => {
     await t.player.close();
   });
 
+  it("video that comes much faster than the sound (an Opus frame is 20 ms of sound before it can be sent) is held for it, not taken for a backlog and skipped", async () => {
+    const t = await setup({ seconds: 5, outputLatency: 0.04, arrival: (frame) => (frame.header.streamId === 0 ? 3 : 45) });
+    t.run(t.startMs + 5000);
+    const shown = t.rendered.filter((r) => r.captureUs / 1000 < t.startMs + 4500).length;
+    assert.ok(shown >= 0.97 * 4.5 * 30, `${shown} of ${4.5 * 30} frames shown`);
+    const offsets = avOffsetsMs(t.rendered.slice(10)).map((ms) => ms - 40);
+    assert.ok(Math.min(...offsets) >= -15 && Math.max(...offsets) <= 45, `offsets ${Math.min(...offsets)}..${Math.max(...offsets)} ms`);
+    await t.player.close();
+  });
+
   it("with no audio stream, video is timed by the session clock with the same delay", async () => {
     const t = await setup({ audio: false, seconds: 4 });
     t.run(t.startMs + 4000);

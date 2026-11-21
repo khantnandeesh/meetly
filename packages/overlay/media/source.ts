@@ -18,8 +18,12 @@ const MAX_ENCODER_FRAMES = 2;
 const KEYFRAME_REQUEST_MIN_MS = 1000;
 /** A change of target smaller than this is not worth reconfiguring the encoder for. */
 const BITRATE_STEP = 0.03;
-/** A gap this long between two blocks of the audio track is a hole in the capture, not jitter. */
-const AUDIO_HOLE_US = 5000;
+/**
+ * A gap between two blocks of the audio track longer than this many blocks is a hole in the
+ * capture, and the timeline moves on with it. Anything less is the track's timestamps jittering
+ * (a Web Audio destination's do, by a few milliseconds), and is left to the steering below.
+ */
+const AUDIO_HOLE_BLOCKS = 1.5;
 /** The audio timeline is steered by at most this much per window of blocks, to follow the sound card's clock. */
 const AUDIO_STEER_US = 1000;
 const AUDIO_STEER_WINDOW = 50;
@@ -412,7 +416,7 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
     if (this.audioInUs === null) {
       this.audioInUs = startedUs;
       this.audioOutUs = startedUs;
-    } else if (holeUs > AUDIO_HOLE_US) {
+    } else if (holeUs > AUDIO_HOLE_BLOCKS * durationUs) {
       this.audioInUs += holeUs;
       if (this.audioOutUs !== null) this.audioOutUs += holeUs;
       this.audioSteer = { count: 0, min: Infinity };

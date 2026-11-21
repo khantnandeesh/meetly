@@ -161,6 +161,9 @@ export type PlayerDebug = {
   layerCap: number;
   aboveCap: number;
   capChanges: number;
+  /** Video frames in the decoder, and decoded and waiting for their time. */
+  videoPending: number;
+  videoReady: number;
   audio: ReturnType<AudioPlayout["counters"]> | null;
   buffers: Record<number, ReturnType<JitterBufferImpl["stats"]>>;
 };
@@ -423,6 +426,15 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     const audio = this.audio;
     if (audio?.playout && !audio.blocked) audio.playout.tick(nowUs, this.targetDelayMs(), this.leastDelayMs());
     const playheadUs = this.playheadUs(nowUs);
+    // Each stream is held for the delay in force less its own path: tell its buffer how much of
+    // that is beyond D, so that it does not take it for a backlog to catch up on (§10.4).
+    const appliedMs = (nowUs - playheadUs) / 1000;
+    const now = this.options.clock.now();
+    for (const stream of [audio, this.video]) {
+      if (!stream) continue;
+      const path = stream.path.floor(now);
+      stream.buffer.setExtraDelayMs(path === null ? 0 : appliedMs - path - stream.buffer.delayUs() / 1000);
+    }
 
     if (audio) {
       // "Due" in a jitter buffer is captureUs + D on the session clock; asked at playhead + D,
@@ -430,15 +442,14 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       // The playhead is what is heard; the worklet renders the output latency ahead of that, and
       // must have each frame by then.
       const lead = this.decoding ? AUDIO_LEAD_US + (audio.playout?.renderAheadUs() ?? 0) + (audio.playout?.wantsDrop() ? (audio.config.frameUs ?? 20_000) : 0) : 0;
-      const frames = audio.buffer.pop(playheadUs + audio.buffer.delayUs() + lead);
+      const frames = audio.buffer.pop(playheadUs + audio.buffer.effectiveDelayUs() + lead);
       if (frames.length > 0) this.playAudio(audio, frames);
     }
     const video = this.video;
     if (video) {
       this.showReady(video, playheadUs, nowUs);
-      const frames = video.buffer.pop(playheadUs + this.videoLeadUs(video) + video.buffer.delayUs());
+      const frames = video.buffer.pop(playheadUs + this.videoLeadUs(video) + video.buffer.effectiveDelayUs());
       for (const frame of frames) this.decodeVideo(video, frame, nowUs);
-      const now = this.options.clock.now();
       if (now - this.lastLayerCheck >= LAYER_CHECK_MS) {
         this.lastLayerCheck = now;
         this.checkLayers(video, now);
@@ -739,6 +750,8 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       playoutDelayMs: this.playoutDelayMs(),
       layerCap: this.video?.cap ?? 0,
       aboveCap: this.video?.aboveCap ?? 0,
+      videoPending: this.video?.pending.size ?? 0,
+      videoReady: this.video?.ready.length ?? 0,
       capChanges: this.video?.capChanges.length ?? 0,
       audio: this.audio?.playout?.counters() ?? null,
       buffers,

@@ -8,7 +8,7 @@ import type { EncodedFrame } from "../../types";
 import { createProgramSource } from "../index";
 import { createLocalSessionClock, createWorkerClock } from "../testing/realClock";
 import { camera, encodingFor, lagMonitor, program, quantile, round, sleep } from "./common";
-import { clap, m3, m5 } from "./playback";
+import { av, clap, m3, m5 } from "./playback";
 
 /* ------------------------------------------------------------------------------------------ */
 /* M1: the source                                                                              */
@@ -160,6 +160,9 @@ export async function m1(options: { seconds?: number; width?: number; height?: n
     audioKbps: round((audioBytes * 8) / (elapsed + 1) / 1000),
     audioFps: round(measuredAudio / elapsed),
     audioStepUs: { min: audioSteps.length ? Math.min(...audioSteps) : null, max: audioSteps.length ? Math.max(...audioSteps) : null },
+    // Steps longer than a frame are where the microphone's own track skipped (its timestamps say so) and the timeline moved on with it; shorter ones would be overlap.
+    audioStepsLong: audioSteps.filter((us) => us > 21000).length,
+    audioStepsShort: audioSteps.filter((us) => us < 19000).length,
     configs,
     errors,
   };
@@ -275,6 +278,6 @@ export async function deps(options: { seconds?: number; width?: number; height?:
   };
 }
 
-const scenarios = { m1, deps, m3, clap, m5 };
+const scenarios = { m1, deps, m3, clap, av, m5 };
 export type Scenarios = typeof scenarios;
 (globalThis as unknown as { mediaTest: typeof scenarios }).mediaTest = scenarios;
