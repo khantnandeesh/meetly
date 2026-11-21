@@ -26,7 +26,8 @@ type Impair = {
   emptyImpairmentCounters: () => unknown;
   PROFILES: Record<string, unknown>;
 };
-const impair = (globalThis as unknown as { __impair?: Impair }).__impair ?? null;
+/** Read when a peer starts, not when this module loads: the driver's entry sets it after its imports have run. */
+const impairShim = (): Impair | null => (globalThis as unknown as { __impair?: Impair }).__impair ?? null;
 
 type Hooked = PlayerImpl & { __flashes: number[] };
 let player: Hooked | null = null;
@@ -85,6 +86,7 @@ function connectOptions(o: Start) {
     return (window as unknown as { __overlayTicket: () => Promise<string> }).__overlayTicket();
   };
   const base = o.coordinatorUrl.replace(/^http/, "ws").replace(/\/$/, "");
+  const impair = impairShim();
   const profile = impair?.PROFILES[o.profile] ?? null;
   if (o.profile !== "clean" && !profile) throw new Error(`no impairment "${o.profile}": the shim was not bundled in`);
   const wrapChannel = impair && profile ? impair.createImpairment(() => profile, o.seed, { clock, self: String(o.index), counters: impair.emptyImpairmentCounters() }) : undefined;
