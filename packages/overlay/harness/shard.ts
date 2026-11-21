@@ -180,7 +180,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   const playwright = loadPlaywright();
   // A padded program wants a stream as big as asked: give the fake camera something no encoder can shrink.
   const fakeVideo = config.program?.pad && config.program.source === "camera" ? [`--use-file-for-fake-video-capture=${busyVideoFile()}`] : [];
-  if (fakeVideo.length) notes.push("the fake camera played a file of moving noise (harness/busyVideo.ts), so that the encoder reaches its bitrate");
+  if (fakeVideo.length) notes.push("the fake camera played a drifting, grainy pattern (harness/busyVideo.ts), so that the encoder reaches its bitrate");
   let server: PageServer | null = null;
   const browsers: PwBrowser[] = [];
   const peers = new Map<number, PeerHandle>();
