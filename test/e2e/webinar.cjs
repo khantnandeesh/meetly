@@ -83,13 +83,17 @@ module.exports = async function webinar(browser) {
   await wes.page.goto(`${H.BASE}/`);
   await wes.page.getByRole("button", { name: "More ways to start a meeting" }).click();
   await wes.page.getByRole("menuitem", { name: "New webinar" }).waitFor();
+  // The illustration's notification ("Pat wants to join"). The still poster draws the computer and
+  // phone designs and shows one; the animated stage, once loaded, lies over the poster for a frame
+  // and then replaces it. Either way, the first one on screen.
+  const heroNotice = () => wes.page.locator("[data-hero-toast]").filter({ visible: true }).first();
   H.ok(
-    "phone home: the decorative message steps aside while the menu is open",
-    await H.until(() => wes.page.locator("[data-hero-bubble]").evaluate((el) => el.hasAttribute("data-quiet") && getComputedStyle(el).opacity === "0"), 3000),
+    "phone home: the illustration's notification steps aside while the menu is open",
+    await H.until(() => heroNotice().evaluate((el) => el.hasAttribute("data-quiet") && getComputedStyle(el).opacity === "0"), 3000),
   );
   await H.shot(wes, "home-menu-phone");
   await wes.page.keyboard.press("Escape");
-  H.ok("…and comes back when it closes", await H.until(() => wes.page.locator("[data-hero-bubble]").evaluate((el) => !el.hasAttribute("data-quiet")), 3000));
+  H.ok("…and comes back when it closes", await H.until(() => heroNotice().evaluate((el) => !el.hasAttribute("data-quiet") && getComputedStyle(el).opacity === "1"), 3000));
 
   await offerWebinars(host);
   await host.page.goto(`${H.BASE}/`);
