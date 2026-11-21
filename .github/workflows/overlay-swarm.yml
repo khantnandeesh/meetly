@@ -57,6 +57,7 @@ jobs:
       has_single: ${{ steps.plan.outputs.has_single }}
       merge: ${{ steps.plan.outputs.merge }}
       merge_mode: ${{ steps.plan.outputs.merge_mode }}
+      integration_sha: ${{ steps.pin.outputs.sha }}
       any: ${{ steps.plan.outputs.any }}
     steps:
       - uses: actions/checkout@v6
@@ -69,6 +70,9 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           RUNS_INPUT: ${{ inputs.runs }}
         run: node packages/overlay/harness/ci/plan.mjs
+      # One commit of overlay-integration for every shard of the run (ci/merge.sh).
+      - id: pin
+        run: echo "sha=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/overlay-integration | cut -f1)" >> "$GITHUB_OUTPUT"
 
   # PLAN H5 (and H6): one shard of a run on its own runner. Shard 0 also runs the coordinator.
   shard:
@@ -103,7 +107,7 @@ jobs:
         if: needs.plan.outputs.merge == 'true'
         run: |
           mkdir -p "$OUT"
-          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json" "${{ needs.plan.outputs.merge_mode }}"
+          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json" "${{ needs.plan.outputs.merge_mode }}" "${{ needs.plan.outputs.integration_sha }}"
       - run: npm ci
       - name: What is real, what is a stub
         run: node packages/overlay/harness/swarm.mjs modules --out "$OUT"
@@ -216,7 +220,7 @@ jobs:
         if: needs.plan.outputs.merge == 'true'
         run: |
           mkdir -p "$OUT"
-          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json" "${{ needs.plan.outputs.merge_mode }}"
+          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json" "${{ needs.plan.outputs.merge_mode }}" "${{ needs.plan.outputs.integration_sha }}"
       - run: npm ci
       - name: Cache Playwright browsers
         uses: actions/cache@v5

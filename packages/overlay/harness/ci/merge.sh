@@ -9,6 +9,9 @@ out="${1:-merged.json}"
 # "integration": the whole engine as the integrator has put it together (overlay-integration),
 # composition root included. Otherwise each engineer's branch on its own.
 mode="${2:-branches}"
+# The commit of overlay-integration the plan job saw, so that every shard of a run merges the
+# same one even if the branch moves while they set up (it did, once, between two shards).
+pinned="${3:-}"
 # The coordinator first: until the composition root exists, the pages run the harness's stand-in
 # peer, so the coordinator is the only module a swarm really exercises. A branch that conflicts
 # with one merged before it is the one left out.
@@ -22,8 +25,10 @@ for branch in "${branches[@]}"; do
     entries+=("{\"branch\":\"$branch\",\"result\":\"missing\"}")
     continue
   fi
-  sha=$(git rev-parse --short FETCH_HEAD)
-  if git merge --quiet --no-edit FETCH_HEAD >/dev/null 2>&1; then
+  target=FETCH_HEAD
+  if [ "$branch" = "overlay-integration" ] && [ -n "$pinned" ] && git cat-file -e "$pinned^{commit}" 2>/dev/null; then target="$pinned"; fi
+  sha=$(git rev-parse --short "$target")
+  if git merge --quiet --no-edit "$target" >/dev/null 2>&1; then
     entries+=("{\"branch\":\"$branch\",\"sha\":\"$sha\",\"result\":\"merged\"}")
     echo "merged $branch at $sha"
   elif [ "$(git diff --name-only --diff-filter=U)" = "packages/overlay/skeleton.test.ts" ]; then
