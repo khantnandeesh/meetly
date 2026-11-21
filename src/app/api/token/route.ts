@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isValidCode } from "@/lib/code";
-import { decideJoin, liveKitPassSecret, mintJoinToken } from "@/lib/host.server";
+import { decideJoin, liveKitPassSecret, meetingAge, mintJoinToken } from "@/lib/host.server";
 import { extendPass, passCookie, readPass } from "@/lib/pass.server";
 import { RTC_PROVIDER } from "@/lib/rtc/config";
 import { issueRealtimeKitJoin, missingRealtimeKitEnv, realtimeKitPassSecret } from "@/lib/rtc/server/realtimekit";
@@ -83,12 +83,15 @@ export async function POST(request: Request) {
     const refused = await webinarGate({ host: !viewer, watching: () => liveKitViewerCount(room) });
     if (refused) return refuse(refused);
   }
+  // How long ago the meeting began, for its timer: told once, here, and never asked for again.
+  const started = await meetingAge(room, !asking);
   return Response.json(
     {
       token: await mintJoinToken(room, identity, name, asking ? "asking" : viewer ? "viewer" : "member"),
       serverUrl: process.env.LIVEKIT_URL!,
       ...(asking ? { lobby: true } : {}),
       ...(webinar ? { mode: "webinar" } : {}),
+      ...(started !== undefined ? { started } : {}),
     },
     { headers: { "Set-Cookie": passCookie(request, extendPass(pass, identity, decision.key), secret) } },
   );

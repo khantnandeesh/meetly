@@ -230,6 +230,29 @@ One policy for every notification in a call, in `src/lib/notices.ts` (tested in
 - Sounds follow the same lines: one knock per burst of requests, presence sounds only up to eight
   people, and above 24 a raised hand is heard only by the host and co-hosts.
 
+## How long the meeting has run
+
+Beside the clock, bottom left ("12:44 PM · 23:15 | code"; in a webinar's audience "● Live · 23:15 ·
+250 watching"), and beside the code in a phone's top bar: minutes and seconds, then hours past the
+first one (`MeetingTimer.tsx`, `src/lib/meetingTime.ts`). On narrow large screens the clock gives way
+first, then the timer; on a crowded phone top bar the timer steps aside whole rather than cut
+anything short. A screen reader hears it as a timer named in whole minutes, never announced.
+
+It counts from when the meeting began, which our server works out once, when /api/token lets
+someone in, and sends as `started` (milliseconds ago, so the browser's clock does not matter).
+Nothing asks again while the meeting runs.
+
+- LiveKit: the room is made at "New meeting" and kept for a day after everyone leaves, so its own
+  creation time is not when the meeting began. Instead whoever is let into the empty room begins
+  it, and that moment is written into the room's record (`startedAt`, `meetingAge` in
+  `src/lib/host.server.ts`).
+- RealtimeKit: the active session's `started_at` (`GET /meetings/{id}/active-session`). A join
+  reads that once and shares it with its other questions (who is host, how many are watching);
+  no session means the meeting begins with this person.
+
+When it can't be known (a meeting that began before the start was recorded, or Cloudflare would
+not answer) the timer counts from when you joined and is named "Time since you joined".
+
 ## Connection quality and using less data
 
 When your own connection has been poor for ten seconds in a row, one chip appears at the top of

@@ -420,16 +420,7 @@ async function narrowBar(browser) {
   for (const width of [768, 800, 850, 899, 1024]) {
     await host.page.setViewportSize({ width, height: 800 });
     await H.sleep(300);
-    const hidden = await host.page.evaluate(() =>
-      [...document.querySelectorAll("footer button")]
-        .filter((button) => button.offsetParent)
-        .filter((button) => {
-          const r = button.getBoundingClientRect();
-          const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-          return !hit || !(hit === button || button.contains(hit));
-        })
-        .map((button) => button.getAttribute("aria-label") || button.textContent.trim()),
-    );
+    const hidden = await H.coveredButtons(host);
     if (hidden.length) covered.push(`${width}: ${hidden.join(", ")}`);
   }
   H.ok("the control bar at 768–1024 px: no button covers another (More ways to leave included)", covered.length === 0, covered.join("; "));

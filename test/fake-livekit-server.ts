@@ -12,7 +12,14 @@ export type FakePermission = {
   canUpdateMetadata?: boolean;
   hidden?: boolean;
 };
-export type FakeLiveKitParticipant = { identity: string; name: string; permission: FakePermission; attributes: Record<string, string> };
+export type FakeLiveKitParticipant = {
+  identity: string;
+  name: string;
+  permission: FakePermission;
+  attributes: Record<string, string>;
+  /** When they connected, in milliseconds (int64, so a string on the wire). */
+  joinedAtMs: string;
+};
 type FakeRoom = { name: string; metadata: string; participants: Map<string, FakeLiveKitParticipant> };
 
 export class FakeLiveKitServer {
@@ -23,8 +30,8 @@ export class FakeLiveKitServer {
   private realFetch: typeof fetch | null = null;
 
   /** Someone connected to `room` with these permissions (as their token granted). */
-  join(room: string, identity: string, permission: FakePermission, name = identity): FakeLiveKitParticipant {
-    const person = { identity, name, permission, attributes: {} };
+  join(room: string, identity: string, permission: FakePermission, name = identity, joinedAtMs = Date.now()): FakeLiveKitParticipant {
+    const person = { identity, name, permission, attributes: {}, joinedAtMs: String(joinedAtMs) };
     this.rooms.get(room)!.participants.set(identity, person);
     return person;
   }

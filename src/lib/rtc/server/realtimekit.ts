@@ -186,15 +186,46 @@ async function listParticipants(c: Config, meetingId: string): Promise<Participa
 /** The presets whose holders are the host: the meeting host's, and the webinar host's where there is one. */
 const hostPresetsOf = (c: Config) => (c.webinarHostPreset ? [c.hostPreset, c.webinarHostPreset] : [c.hostPreset]);
 
-/** Whether anyone is connected right now. No session at all answers 404. */
-async function hasLiveSession(c: Config, meetingId: string): Promise<boolean> {
-  const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
-  if (!result.ok) {
-    if (result.status === 404) return false;
+/** The meeting's active session, as `GET /meetings/{id}/active-session` describes it. */
+type ActiveSession = { status?: string; live_participants?: number; started_at?: string };
+type SessionAnswer = ApiResult<ActiveSession>;
+
+/**
+ * Asks about the meeting's active session. No session at all answers 404. It is one REST call,
+ * and REST is rate-limited: a join asks at most once, and shares the answer (see `issueRealtimeKitJoin`).
+ */
+function activeSession(c: Config, meetingId: string): Promise<SessionAnswer> {
+  return api<ActiveSession>(c, "GET", `/meetings/${meetingId}/active-session`);
+}
+
+/** Whether anyone is connected right now. */
+function isLive(answer: SessionAnswer): boolean {
+  if (!answer.ok) {
+    if (answer.status === 404) return false;
     // Not knowing is treated as "someone is there": the role is never handed on by accident.
     return true;
   }
-  return result.data.status !== "ENDED" && (result.data.live_participants ?? 1) > 0;
+  return answer.data.status !== "ENDED" && (answer.data.live_participants ?? 1) > 0;
+}
+
+/** How many people are connected, from the session's own count, or null if Cloudflare would not say. */
+function countOf(answer: SessionAnswer): number | null {
+  if (!answer.ok) return answer.status === 404 ? 0 : null;
+  if (answer.data.status === "ENDED") return 0;
+  const count = answer.data.live_participants;
+  return typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+}
+
+/**
+ * How many milliseconds before `now` the session under way began, from its `started_at`; "now"
+ * when none is under way, so whoever joins begins it; undefined when Cloudflare would not say.
+ * Exported for tests.
+ */
+export function sessionStarted(answer: SessionAnswer, now: number): number | "now" | undefined {
+  if (!answer.ok) return answer.status === 404 ? "now" : undefined;
+  if (answer.data.status === "ENDED" || answer.data.live_participants === 0) return "now";
+  const began = Date.parse(answer.data.started_at ?? "");
+  return Number.isFinite(began) ? Math.max(0, now - began) : undefined;
 }
 
 /* ---------------------------------------------------------------- the record */
@@ -280,9 +311,9 @@ const coHostIdentities = (record: MeetingRecord) =>
 /* ------------------------------------------------------------------ joining */
 
 /** Decides whether the next person in becomes host, clearing out a lapsed host if so. */
-async function claimHostIfFirst(c: Config, meeting: Meeting, record: MeetingRecord): Promise<boolean> {
+async function claimHostIfFirst(c: Config, meeting: Meeting, record: MeetingRecord, session: () => Promise<SessionAnswer>): Promise<boolean> {
   try {
-    const live = await hasLiveSession(c, meeting.id);
+    const live = isLive(await session());
     if (record.hosts.length === 0) return !live;
     const lastSeen = Math.max(...record.hosts.map((p) => Date.parse(p.updated_at ?? p.created_at)));
     if (live || Date.now() - lastSeen < HOST_KEEP_MS) return false;
@@ -311,6 +342,11 @@ export type RealtimeKitJoin = {
   /** Reactions allowed at the moment of joining. */
   reactions: boolean;
   webinarPresets?: { viewer: string; cohost: string };
+  /**
+   * How many milliseconds ago the meeting began, from its active session's `started_at`, or "now"
+   * when nobody is in it. Absent when that could not be known. For the meeting timer.
+   */
+  started?: number | "now";
 };
 
 export type RealtimeKitJoinOutcome =
@@ -331,6 +367,7 @@ function grant(
   person: { id: string; identity: string; token: string },
   role: "host" | "guest",
   expires: number,
+  started: number | "now" | undefined,
 ): RealtimeKitJoin {
   const webinar = record?.mode === "webinar";
   const session: Session = {
@@ -359,6 +396,7 @@ function grant(
     ...(webinar && c.webinarViewerPreset && c.webinarCohostPreset
       ? { webinarPresets: { viewer: c.webinarViewerPreset, cohost: c.webinarCohostPreset } }
       : {}),
+    ...(started !== undefined ? { started } : {}),
   };
 }
 
@@ -376,52 +414,66 @@ export async function issueRealtimeKitJoin(code: string, name: string, pass: Pas
   if (webinar && missingWebinarEnv().length > 0) {
     throw new Error(`Server is missing ${missingWebinarEnv().join(", ")}, which webinars need.`);
   }
+  // Who becomes host, how many are watching and when the meeting began all come from the active
+  // session. It is asked for once, when first needed, and the answer shared.
+  let asked: Promise<SessionAnswer> | null = null;
+  const session = () => (asked ??= activeSession(c, meeting.id));
+  const watching = () => session().then(countOf);
+  // For the timer only: never a reason to fail a join.
+  const started = () => session().then((answer) => sessionStarted(answer, Date.now()), () => undefined);
 
   // The host coming back: the same participant, with a fresh token and today's name.
   const mine = pass.key ? record.hosts.find((p) => p.id === pass.key) : undefined;
   if (mine) {
     // The host passes the same gate as everyone else, so a rule for webinars is never skipped by a rejoin.
-    const refused = webinar ? await webinarGate({ host: true, watching: () => liveCount(c, meeting.id), limited: record.limit.limited.length > 0 }) : null;
+    const refused = webinar ? await webinarGate({ host: true, watching, limited: record.limit.limited.length > 0 }) : null;
     if (refused) return { refused };
     const base = `/meetings/${meeting.id}/participants/${mine.id}`;
     // Renaming also marks the record as used, which is what keeps the role from lapsing.
     await api(c, "PATCH", base, { name }).catch(() => {});
-    const fresh = await api<{ token: string }>(c, "POST", `${base}/token`);
+    const [fresh, began] = await Promise.all([api<{ token: string }>(c, "POST", `${base}/token`), started()]);
     if (!fresh.ok) throw new Error(`RealtimeKit would not renew the host's token (${fresh.status}).`);
     const identity = mine.custom_participant_id;
-    return { join: grant(c, meeting, record, { id: mine.id, identity, token: fresh.data.token }, "host", expires), identity };
+    return { join: grant(c, meeting, record, { id: mine.id, identity, token: fresh.data.token }, "host", expires, began), identity };
   }
 
-  const host = created || (await claimHostIfFirst(c, meeting, record));
+  const host = created || (await claimHostIfFirst(c, meeting, record, session));
   if (!host) {
     if (pass.ids.some((id) => record.banned.has(id))) return { refused: "removed" };
     if (record.access === "locked") return { refused: "locked" };
   }
   if (webinar) {
-    const refused = await webinarGate({ host, watching: () => liveCount(c, meeting.id), limited: record.limit.limited.length > 0 });
+    const refused = await webinarGate({ host, watching, limited: record.limit.limited.length > 0 });
     if (refused) return { refused };
   }
   const role = host ? "host" : "guest";
   // Identity is always minted server-side so a client can't impersonate another participant.
   const identity = `m-${randomUUID()}`;
+  const knocking = !webinar && !host && record.access === "ask" && c.knockPreset !== null;
   const preset = webinar
     ? host
       ? c.webinarHostPreset!
       : c.webinarViewerPreset!
     : host
       ? c.hostPreset
-      : record.access === "ask" && c.knockPreset
-        ? c.knockPreset
+      : knocking
+        ? c.knockPreset!
         : c.guestPreset;
-  const added = await api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
-    name,
-    preset_name: preset,
-    custom_participant_id: identity,
-    token: { expires_on: new Date(expires).toISOString() },
-  });
+  const [added, began] = await Promise.all([
+    api<AddedParticipant>(c, "POST", `/meetings/${meeting.id}/participants`, {
+      name,
+      preset_name: preset,
+      custom_participant_id: identity,
+      token: { expires_on: new Date(expires).toISOString() },
+    }),
+    // A meeting made by this very join has no session yet: it begins with this person.
+    created ? ("now" as const) : started(),
+  ]);
   if (!added.ok) throw new Error(`RealtimeKit would not add the participant (${added.status}).`);
+  // Someone who has to ask waits outside: an empty meeting does not begin with them.
+  const age = knocking && began === "now" ? undefined : began;
   return {
-    join: grant(c, meeting, record, { id: added.data.id, identity, token: added.data.token }, role, expires),
+    join: grant(c, meeting, record, { id: added.data.id, identity, token: added.data.token }, role, expires, age),
     identity,
     key: host ? added.data.id : undefined,
   };
@@ -463,11 +515,7 @@ export async function createRealtimeKitMeeting(code: string, mode: CallMode = "m
  * not the SDK's `getAllJoinedPeers()`, which is limited to 10 calls a minute per participant.
  */
 async function liveCount(c: Config, meetingId: string): Promise<number | null> {
-  const result = await api<{ status?: string; live_participants?: number }>(c, "GET", `/meetings/${meetingId}/active-session`);
-  if (!result.ok) return result.status === 404 ? 0 : null;
-  if (result.data.status === "ENDED") return 0;
-  const count = result.data.live_participants;
-  return typeof count === "number" && Number.isFinite(count) && count >= 0 ? Math.floor(count) : null;
+  return countOf(await activeSession(c, meetingId));
 }
 
 /**

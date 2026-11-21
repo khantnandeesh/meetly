@@ -1,4 +1,4 @@
-// Runs the browser tests: `node test/e2e/run.cjs` for all, or name some (home host reactions host-tools access effects schedule chat fixes polls quality mini rating notices layout perf webinar people cost-guard).
+// Runs the browser tests: `node test/e2e/run.cjs` for all, or name some (home host reactions host-tools access effects schedule chat fixes polls quality mini rating notices layout perf webinar people cost-guard timer).
 const H = require("./lib.cjs");
 
 const SUITES = {
@@ -21,6 +21,7 @@ const SUITES = {
   webinar: "./webinar.cjs",
   people: "./people.cjs",
   "cost-guard": "./cost-guard.cjs",
+  timer: "./timer.cjs",
 };
 
 (async () => {
