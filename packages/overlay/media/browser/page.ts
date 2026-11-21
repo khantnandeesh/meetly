@@ -8,7 +8,7 @@ import type { EncodedFrame } from "../../types";
 import { createProgramSource } from "../index";
 import { createLocalSessionClock, createWorkerClock } from "../testing/realClock";
 import { camera, encodingFor, lagMonitor, program, quantile, round, sleep } from "./common";
-import { av, clap, m3, m5 } from "./playback";
+import { av, clap, m3, m5, m6 } from "./playback";
 
 /* ------------------------------------------------------------------------------------------ */
 /* M1: the source                                                                              */
@@ -278,6 +278,6 @@ export async function deps(options: { seconds?: number; width?: number; height?:
   };
 }
 
-const scenarios = { m1, deps, m3, clap, av, m5 };
+const scenarios = { m1, deps, m3, clap, av, m5, m6 };
 export type Scenarios = typeof scenarios;
 (globalThis as unknown as { mediaTest: typeof scenarios }).mediaTest = scenarios;
