@@ -642,6 +642,15 @@ repair moves both. They are separate machines because stage 2 gives each stripe 
 `sub-ack` with `full`, `loop` or `leaving`: try the next candidate. No candidates left, or no
 link opened within 5 s: `cold-repair` (§7.5).
 
+**[D37] A parent at its fan-out takes a viewer with nothing to watch** (decided by integrator
+2026-11-21). A `sub` from the latest keyframe (`fromFrame` −1: a joiner, or a peer the
+coordinator found no free slot for) is accepted over the fan-out, up to twice it; only beyond
+that is it refused `full`. While over, the parent sheds the top temporal layer for every child
+(§11.3 rule 8, as for a repair taken in, §7.5) until the coordinator moves someone. A `sub` from a
+frame of the subscriber's own (a switch, a `move`: it is watching elsewhere) is refused `full` at
+the fan-out as before. A lower frame rate at once is better than no picture until a relay is
+promoted, which at a session's start is a probation away.
+
 Budget for the 3 s gate: ticket and socket 200 ms, `welcome` 100 ms, link (ICE and DTLS) 300 ms
 to 2 s, replay and first frame 100 ms. The proof measured 20–45 ms from joining to first frame
 on loopback, where ICE costs nothing; ICE is the whole budget.
@@ -1424,6 +1433,7 @@ Rotating speakers on the overlay. Out of scope.
 | D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
 | D36 | No retransmission of enhancement layers into a backlog over 50 ms of B; base layer and keyframes held until it clears (integrator, 2026-11-21) | 4.6 |
+| D37 | A parent at its fan-out takes a viewer with nothing to watch, up to twice the fan-out, and sheds a layer (integrator, 2026-11-21) | 7.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
