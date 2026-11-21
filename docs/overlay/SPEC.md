@@ -877,7 +877,7 @@ with the same `frameId`. Receivers and relays drop the duplicate by id. At 32 kb
 32 kbps, under 3% of the session, and it turns isolated loss on a hop into nothing, with no
 round trip. Audio is never dropped to make room for video (§11.3).
 
-**[D32] An audio frame's `captureUs` is the time of the sound it decodes to**, not of its first
+**[D35] An audio frame's `captureUs` is the time of the sound it decodes to**, not of its first
 input sample. Opus decodes each frame to sound that starts its look-ahead earlier than the
 frame's first input sample: 312 samples at 48 kHz, 6.5 ms (measured in Chromium: 6.6 ms). The
 source stamps each Opus frame with its first input sample's capture time less 6.5 ms, so that a
@@ -921,7 +921,7 @@ Only this peer's own *D* adds delay: relays forward without buffering. Glass-to-
 therefore roughly `encode (30) + Σ per hop (one-way delay + 0.5) + D + decode and display (30)`,
 in milliseconds. At depth 4 with 30 ms hops and *D* = 100 that is about 280 ms.
 
-**[D30] The delay a frame is played at is the path, then *D*, then the audio pipeline.**
+**[D33] The delay a frame is played at is the path, then *D*, then the audio pipeline.**
 *(Decided by integrator 2026-11-21.)* Read literally, "due at `captureUs + D`" makes every frame
 late at any peer whose path is longer than *D*, which is anyone a few hops down; the formula
 above is the intent. So a frame captured at *t* is played at *t* + *path* + *D* + *pipeline*:
@@ -986,9 +986,9 @@ worklet reports the `captureUs` of the sample it is playing.
 - *D* is changed by at most one audio frame (20 ms) a second: one is dropped, or one repeated,
   at the quietest frame of that second. **[D26]** (Time-stretching without a pitch change is
   better and is deferred.)
-- **[D31] Further off than that adapts to, playout starts again in the right place.**
+- **[D34] Further off than that adapts to, playout starts again in the right place.**
   *(Decided by integrator 2026-11-21.)* When the delay in force leaves less than 25 ms beyond the
-  path and the audio pipeline (§10.2, [D30]), frames are being lost, and creeping up 20 ms a
+  path and the audio pipeline (§10.2, [D33]), frames are being lost, and creeping up 20 ms a
   second would lose them for seconds: playout stops and starts again at the target, one audible
   gap of about the growth. When it is more than 250 ms over the target, the same. A rise in *D*
   alone is still followed a frame a second. Light viewers follow the same rule.
@@ -1354,9 +1354,9 @@ Rotating speakers on the overlay. Out of scope.
 | D27 | The source's bitrate follows its own uplink and the audience as a whole, never one viewer | 11.4 |
 | D28 | What the gate's "loss and churn" are | 12.3 |
 | D29 | Light viewers in the harness, with decoding viewers as a check | 13.2 |
-| D30 | A frame is played at path + D + audio pipeline; the path followed at once when it grows (integrator, 2026-11-21) | 10.2 |
-| D31 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
-| D32 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
+| D33 | A frame is played at path + D + audio pipeline; the path followed at once when it grows (integrator, 2026-11-21) | 10.2 |
+| D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
+| D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
 
 Also decided here, with their numbers, because the report gave only the idea: the layer-drop
 rules (§11.3), the jitter buffer's contract (§10), the standby reservation that makes a repair
