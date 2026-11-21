@@ -325,8 +325,17 @@ fragment count is unknown). At most 64 items.
 
 Rules:
 
-- A fragment is asked for once it is *due*: a later packet has arrived and `reorderMs` (10 ms
-  **[D6]**) has passed. It is asked for at most `nackRetries` (1) more times, an RTT apart.
+- A fragment is asked for once it is *due*: a later packet has arrived and the reordering
+  window has passed. It is asked for at most `nackRetries` (1) more times, an RTT apart.
+- **[D39] The reordering window follows the jitter** (decided by integrator 2026-11-21; it was a
+  fixed 10 ms, **[D6]**). It is max(10 ms, the p95 of the stream's inter-arrival jitter), at most
+  60 ms. Jitter is RFC 3550's |D| with the frame's `captureUs` as the media timestamp, over the
+  last 256 live video packets from the parent, read every 250 ms. That is the stream as it
+  arrives, every hop's reordering in it: a relay forwards in the order packets reached it, so the
+  link's own jitter would miss the hops above. Replays and retransmissions are left out: they are
+  late on purpose. A loss is declared only once the window has passed, and the retries keep
+  their RTT spacing on top of it. With 0–40 ms of jitter (the gate mix's "bad"), a 10 ms window
+  asked for about four packets for each one really lost; this one asks for fewer than two.
 - Nothing is asked for that playout no longer wants (§10): a discardable frame past its time, or
   anything older than the oldest frame the jitter buffer still holds a place for.
 - The parent answers from its GOP cache with the RETRANSMIT hop flag. What is no longer in the
@@ -1402,7 +1411,7 @@ Rotating speakers on the overlay. Out of scope.
 | D3 | Fragment frames ourselves, 1,150-byte packets | 4 |
 | D4 | One session clock, synchronised through the coordinator's socket | 4.1 |
 | D5 | Stage 1 recovers loss by NACK to the parent, answered from the GOP cache | 4.6 |
-| D6 | 10 ms reordering window before a gap is called loss | 4.6 |
+| D6 | 10 ms reordering window before a gap is called loss (superseded by D39) | 4.6 |
 | D7 | Either side may open a link; perfect negotiation; the later `PeerId` gives way | 5.1 |
 | D8 | One I/O-free coordinator core, two entry points, one contract suite | 6 |
 | D9 | Admission by HMAC ticket from Meetly's server: 60 s, single-use | 6.1 |
@@ -1434,6 +1443,7 @@ Rotating speakers on the overlay. Out of scope.
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
 | D36 | No retransmission of enhancement layers into a backlog over 50 ms of B; base layer and keyframes held until it clears (integrator, 2026-11-21) | 4.6 |
 | D37 | A parent at its fan-out takes a viewer with nothing to watch, up to twice the fan-out, and sheds a layer (integrator, 2026-11-21) | 7.1 |
+| D39 | The reordering window is max(10 ms, p95 inter-arrival jitter), at most 60 ms (integrator, 2026-11-21) | 4.6 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
