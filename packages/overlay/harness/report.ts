@@ -13,6 +13,14 @@ import { GATE, type GateCheck, type ImpairmentCounters, type LinkCounts, type Qu
 export const VALIDITY = { minRepairs: 100, lagP99Ms: 50, clockSumP95Ms: 20 } as const;
 
 /**
+ * The harness's own bar for each runner, stricter than SPEC §12.3's 50 ms: a runner whose load
+ * (1 min, once the swarm has filled) reaches 4 on its 4 vCPUs, or whose timers run more than
+ * 20 ms late at p99, makes the run invalid and is named. Lag is read on 10 ms buckets by their
+ * upper edge, so "20" is a p99 between 10 and 20 ms.
+ */
+export const HEALTH = { loadMax: 4, lagP99Ms: 20 } as const;
+
+/**
  * D29: light viewers must agree with decoding ones to within the decode time. PLAN M5 puts that
  * at 15 ms between their p50s; a 10 ms bucket either way is within it.
  */
@@ -84,6 +92,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
 
   const seen = new Set<string>();
   const shardNotes = new Map<string, number[]>();
+  const joinPhases = { welcome: [] as number[], linked: [] as number[], firstPacket: [] as number[], firstFrame: [] as number[] };
   const decoders = new Set<string>();
   let decodersKnown = false;
   for (const shard of shards) {
@@ -106,7 +115,13 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
       mergeHistogram(depth, s.video.glassToGlass);
     }
     for (const event of s.events) {
-      if (event.t === "join") join[latencyBucket(event.firstFrame - event.start)]++;
+      if (event.t === "join") {
+        join[latencyBucket(event.firstFrame - event.start)]++;
+        joinPhases.welcome.push(event.welcome - event.start);
+        joinPhases.linked.push(event.linked - event.welcome);
+        joinPhases.firstPacket.push(event.firstPacket - event.linked);
+        joinPhases.firstFrame.push(event.firstFrame - event.firstPacket);
+      }
       else if (event.t === "repair") {
         repair[latencyBucket(event.freezeMs)]++;
         repairs[event.kind]++;
@@ -155,7 +170,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     if (p99 === null) lagMissing = true;
     else worstLagP99 = worstLagP99 === null ? p99 : Math.max(worstLagP99, p99);
     const joins = shard.samples.reduce((n, s) => n + s.events.filter((e) => e.t === "join").length, 0);
-    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins, nat: !shard.host.nat || shard.host.nat.symmetric === null ? "unknown" : shard.host.nat.symmetric ? "symmetric" : "open" });
+    const settled = shard.host.loadAvg1Settled?.length ? shard.host.loadAvg1Settled : shard.host.loadAvg1;
+    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), loadSettledMax: Math.max(0, ...settled), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins, nat: !shard.host.nat || shard.host.nat.symmetric === null ? "unknown" : shard.host.nat.symmetric ? "symmetric" : "open" });
     for (const note of new Set(shard.notes ?? [])) shardNotes.set(note, [...(shardNotes.get(note) ?? []), shard.shard.index]);
   }
   failed.sort((a, b) => a.shard - b.shard || a.index - b.index);
@@ -187,8 +203,35 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
       ntpBoundMs: own === null || sourceNtp === null ? null : own + sourceNtp,
     });
   }
-  const worstShardClock = clockByShard.filter((c) => c.p95 !== null && c.p95 > VALIDITY.clockSumP95Ms);
-  for (const c of worstShardClock) notes.push(`shard ${c.shard}: clock uncertainty p95 ${Math.round((c.p95 as number) * 10) / 10} ms is over ${VALIDITY.clockSumP95Ms} ms: its viewers' latencies cannot be trusted`);
+  // The clocks measured around SPEC §4.1's bound: each viewer's session clock and the source's,
+  // both read against their machines' chrony-synced wall clocks, plus both wall clocks' own error
+  // bounds. Used only when every shard could be read so; otherwise §4.1's bound judges the run.
+  // With ranges over the run, a viewer counts at its worst moment against the source's.
+  const sourceRange = shards.find((shard) => shard.clock?.sourceVsWallRangeMs)?.clock?.sourceVsWallRangeMs ?? (sourceVsWall === null ? null : ([sourceVsWall, sourceVsWall] as [number, number]));
+  const measuredSums: number[] = [];
+  let measurable = sourceRange !== null && sourceNtp !== null && shards.length > 0;
+  for (const shard of shards) {
+    const own = shard.host.ntp?.boundMs ?? null;
+    const ranges = shard.clock?.viewersVsWallRangeMs ?? shard.clock?.viewersVsWallMs?.map((v) => [v, v] as [number, number]);
+    if (own === null || !ranges || ranges.length < (shard.clock?.viewers.length ?? 0)) measurable = false;
+    else if (measurable && sourceRange)
+      for (const [lo, hi] of ranges) measuredSums.push(Math.max(Math.abs(hi - sourceRange[0]), Math.abs(lo - sourceRange[1])) + own + (sourceNtp as number));
+  }
+  const measuredClockMs = measurable ? exactQuantiles(measuredSums) : null;
+  const clockCheck =
+    measuredClockMs !== null
+      ? below("clock disagreement, measured against chrony-synced wall clocks plus their bounds, p95 (ms)", measuredClockMs.p95, VALIDITY.clockSumP95Ms)
+      : below("clock uncertainty, viewer plus source, p95 (ms)", clockMissing ? null : clockUncertaintyMs.p95, VALIDITY.clockSumP95Ms);
+  if (measuredClockMs !== null && clockUncertaintyMs.p95 !== null)
+    notes.push(
+      `clocks judged as measured (p95 ${Math.round((measuredClockMs.p95 ?? 0) * 10) / 10} ms), not by SPEC §4.1's bound (p95 ${Math.round(clockUncertaintyMs.p95 * 10) / 10} ms): a harness rule for the architect to ratify`,
+    );
+  else for (const c of clockByShard.filter((c) => c.p95 !== null && c.p95 > VALIDITY.clockSumP95Ms)) notes.push(`shard ${c.shard}: clock uncertainty p95 ${Math.round((c.p95 as number) * 10) / 10} ms is over ${VALIDITY.clockSumP95Ms} ms: its viewers' latencies cannot be trusted`);
+  if (measuredClockMs !== null) for (const c of clockByShard) if (c.measuredP95 !== null && c.measuredP95 !== undefined && c.measuredP95 + (c.ntpBoundMs ?? 0) > VALIDITY.clockSumP95Ms) notes.push(`shard ${c.shard}: its viewers' clocks were measured ${c.measuredP95} ms from the source's at p95: its latencies cannot be trusted`);
+
+  // The health bar, runner by runner.
+  const unhealthy = hosts.filter((h) => (h.loadSettledMax ?? h.loadAvg1Max) >= HEALTH.loadMax || h.lagP99Ms === null || h.lagP99Ms > HEALTH.lagP99Ms);
+  for (const h of unhealthy) notes.push(`shard ${h.shard}: over the health bar (load ${Math.round((h.loadSettledMax ?? h.loadAvg1Max) * 100) / 100} against ${HEALTH.loadMax}, timer lag p99 ${h.lagP99Ms ?? "unmeasured"} ms against ${HEALTH.lagP99Ms}): this runner was not keeping up`);
 
   const joinMs = histogramQuantiles(join);
   const repairMs = histogramQuantiles(repair);
@@ -205,7 +248,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     atLeast("repair events, at least", repairMs.n, wantRepairs),
     below("peers that failed to start", failed.length, 0),
     below("event-loop lag p99 on the worst shard (ms)", lagMissing ? null : worstLagP99, VALIDITY.lagP99Ms),
-    below("clock uncertainty, viewer plus source, p95 (ms)", clockMissing ? null : clockUncertaintyMs.p95, VALIDITY.clockSumP95Ms),
+    clockCheck,
+    below(`runners over the health bar (load ${HEALTH.loadMax}, lag p99 ${HEALTH.lagP99Ms} ms)`, results.length ? unhealthy.length : null, 0),
   ];
   const decodingQ = histogramQuantiles(glassDecoding);
   const lightQ = histogramQuantiles(glassLight);
@@ -235,6 +279,13 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     glassToGlassLight: lightQ,
     honesty,
     clockByShard,
+    measuredClockMs,
+    joinPhasesMs: {
+      welcome: exactQuantiles(joinPhases.welcome),
+      linked: exactQuantiles(joinPhases.linked),
+      firstPacket: exactQuantiles(joinPhases.firstPacket),
+      firstFrame: exactQuantiles(joinPhases.firstFrame),
+    },
     glassToGlassByDepth: Object.fromEntries([...byDepth.entries()].sort((a, b) => a[0] - b[0]).map(([depth, counts]) => [depth, histogramQuantiles(counts)])),
     repairs,
     freezes,
@@ -282,6 +333,12 @@ export function renderReport(report: SwarmReport): string {
   for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) if (q.n > 0) lines.push(row(`Latency at depth ${depth === "255" ? "unknown" : depth}`, q, ""));
   if (report.glassToGlassDecoding.n) lines.push(row("Latency, decoding viewers (D29)", report.glassToGlassDecoding, ""));
   if (report.glassToGlassLight.n) lines.push(row("Latency, light viewers (D29)", report.glassToGlassLight, ""));
+  const jp = report.joinPhasesMs;
+  if (jp.welcome.n) {
+    lines.push("", "Where a join's time goes (exact, over every join):", "", "| Phase (ms) | p50 | p95 | max |", "| --- | ---: | ---: | ---: |");
+    const phase = (name: string, q: Quantiles): string => `| ${name} | ${ms(q.p50)} | ${ms(q.p95)} | ${ms(q.max)} |`;
+    lines.push(phase("connect() to welcome", jp.welcome), phase("welcome to a parent linked", jp.linked), phase("linked to its first packet", jp.firstPacket), phase("first packet to first frame", jp.firstFrame));
+  }
   lines.push("", "Histogram quantiles are bucket upper edges: up to 10 ms over below 500 ms, never under.", "");
   lines.push("| Gate check | Limit | Measured | |", "| --- | ---: | ---: | --- |");
   for (const check of gate.checks) lines.push(`| ${check.name} | ${check.limit} | ${ms(check.value)} | ${tick(check.pass)} |`);
@@ -307,13 +364,13 @@ export function renderReport(report: SwarmReport): string {
   lines.push(`Clock uncertainty (viewer + source): p50 ${ms(report.clockUncertaintyMs.p50)}, p95 ${ms(report.clockUncertaintyMs.p95)}, max ${ms(report.clockUncertaintyMs.max)} ms over ${report.clockUncertaintyMs.n} viewers.`);
   lines.push(
     "",
-    "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames | NAT |",
-    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames | NAT | Load once filled, max |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
   );
   for (const host of report.hosts) {
     const clock = report.clockByShard.find((c) => c.shard === host.shard);
     lines.push(
-      `| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} | ${host.nat ?? "unknown"} |`,
+      `| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} | ${host.nat ?? "unknown"} | ${Math.round((host.loadSettledMax ?? host.loadAvg1Max) * 100) / 100} |`,
     );
   }
   lines.push("", "\"Clock\" is SPEC §4.1's bound, half the best probe's round trip: the validity check. \"Clocks apart\" reads each viewer's session clock and the source's against their machines' wall clocks; it is the real disagreement give or take the last column.");

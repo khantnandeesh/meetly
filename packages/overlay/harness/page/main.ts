@@ -35,15 +35,21 @@ let uncertaintyMax = 0;
 /** How many times the viewer called `connect()`: more than one, and the coordinator was unreachable at first. */
 let connectAttempts = 0;
 
-/* The page's own event-loop lag: how late a 20 ms timer fires. */
+/*
+ * The page's own event-loop lag: how late a 20 ms timer fires, each one against the moment it
+ * was set for. (Measured against a fixed schedule, a repeating timer's own drift built up into a
+ * sawtooth of up to 20 ms, which read as lag on an idle machine.)
+ */
 const LAG_EVERY_MS = 20;
 let lag = emptyHistogram();
-let lagDue = clock.now() + LAG_EVERY_MS;
-clock.setInterval(() => {
-  const now = clock.now();
-  lag[latencyBucket(Math.max(0, now - lagDue))]++;
-  lagDue = Math.max(lagDue + LAG_EVERY_MS, now);
-}, LAG_EVERY_MS);
+const lagTick = (due: number): void => {
+  clock.setTimeout(() => {
+    const now = clock.now();
+    lag[latencyBucket(Math.max(0, now - due))]++;
+    lagTick(now + LAG_EVERY_MS);
+  }, LAG_EVERY_MS);
+};
+lagTick(clock.now() + LAG_EVERY_MS);
 
 async function start(options: PageStartOptions): Promise<void> {
   profile = options.profile;

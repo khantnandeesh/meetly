@@ -20,7 +20,7 @@ import type { NodeCoordinator } from "../coordinator/types";
 import { seededRandom } from "./clock";
 import { bundlePage, servePage, type PageServer } from "./page/build";
 import { addLinks } from "./report";
-import { churnSteps, joinAtS, profileOf, shardOf, PROFILES, type ChurnStep } from "./scenarios";
+import { churnSteps, fillS, joinAtS, profileOf, shardOf, PROFILES, type ChurnStep } from "./scenarios";
 import { startStandinCoordinator, type StandinCoordinator } from "./standin/coordinator";
 import { probeStubs } from "./stubs";
 import type { ImpairmentCounters, ImpairmentProfile, LinkCounts, PageStartOptions, PageState, PeerPick, ShardResult, SwarmConfig } from "./types";
@@ -77,6 +77,7 @@ type PeerHandle = {
   clockMax: number;
   /** Session clock minus wall clock, at the last poll. */
   vsWall: number | null;
+  vsWallRange: [number, number] | null;
   /** Decodes for real (D29); the rest are light. */
   decode: boolean;
 };
@@ -184,6 +185,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   const churnLog: NonNullable<ShardResult["churnLog"]> = [];
   const impaired = new Set<number>();
   const loads: number[] = [];
+  const settledLoads: number[] = [];
   const pageLag = emptyHistogram();
   const driverLag = emptyHistogram();
   let badSamples = 0;
@@ -195,12 +197,16 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   // The driver's own event loop: if it is late, everything it times is late.
   const loopDelay = monitorEventLoopDelay({ resolution: 10 });
   loopDelay.enable();
-  let lagDue = performance.now() + 20;
-  const lagTimer = setInterval(() => {
-    const now = performance.now();
-    driverLag[latencyBucket(Math.max(0, now - lagDue))]++;
-    lagDue = Math.max(lagDue + 20, now);
-  }, 20);
+  // Each 20 ms timer against the moment it was set for (see page/main.ts).
+  let lagTimer: ReturnType<typeof setTimeout> | undefined;
+  const lagTick = (due: number): void => {
+    lagTimer = setTimeout(() => {
+      const now = performance.now();
+      driverLag[latencyBucket(Math.max(0, now - due))]++;
+      lagTick(now + 20);
+    }, 20);
+  };
+  lagTick(performance.now() + 20);
 
   const ticket = (index: number, role: "source" | "viewer"): Promise<string> =>
     signTicket(
@@ -225,7 +231,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     try {
       const page = await newPage();
       const decode = role === "viewer" && config.decodeEvery > 0 && (index - 1) % config.decodeEvery === 0;
-      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1, vsWall: null, decode };
+      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1, vsWall: null, vsWallRange: null, decode };
       page.on("crash", () => {
         if (!handle.alive) return;
         handle.alive = false;
@@ -261,6 +267,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   /** Takes every live page's samples and state. A page that does not answer is left for the next round. */
   async function poll(): Promise<void> {
     loads.push(loadavg()[0]);
+    // Once the swarm has filled: launching the browsers is not the run.
+    if (atS() >= fillS(config)) settledLoads.push(loadavg()[0]);
     await Promise.all(
       [...peers.values()]
         .filter((p) => p.alive)
@@ -271,7 +279,12 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
             p.links = got.links;
             engine = got.state.engine;
             if (got.state.clockUncertaintyMs >= 0) p.clockMax = Math.max(p.clockMax, got.state.clockUncertaintyMs);
-            if (typeof got.state.sessionMinusWallMs === "number") p.vsWall = got.state.sessionMinusWallMs;
+            if (typeof got.state.sessionMinusWallMs === "number") {
+              const v = got.state.sessionMinusWallMs;
+              p.vsWall = v;
+              // Not in the first seconds, while the clock is still settling on its first probes.
+              if (Date.now() - p.startedAt > 5000) p.vsWallRange = p.vsWallRange ? [Math.min(p.vsWallRange[0], v), Math.max(p.vsWallRange[1], v)] : [v, v];
+            }
             mergeHistogram(pageLag, got.state.lag);
             for (const sample of got.samples) {
               try {
@@ -388,7 +401,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     await Promise.race([Promise.all(running), sleep(5000)]);
     await poll();
   } finally {
-    clearInterval(lagTimer);
+    clearTimeout(lagTimer);
     loopDelay.disable();
     await Promise.all(browsers.map((browser) => browser.close().catch(() => undefined)));
     await server?.close().catch(() => undefined);
@@ -451,7 +464,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     peersStarted: peers.size,
     peersFailed: failed.sort((a, b) => a.index - b.index),
     samples,
-    host: { cores: availableParallelism(), loadAvg1: loads, maxEventLoopLagMs: loopDelay.max / 1e6, driverLag, pageLag, ntp: readNtp() },
+    host: { cores: availableParallelism(), loadAvg1: loads, loadAvg1Settled: settledLoads, maxEventLoopLagMs: loopDelay.max / 1e6, driverLag, pageLag, ntp: readNtp() },
     peers: config.peers,
     durationS: config.durationS,
     scenario: config.scenario,
@@ -465,6 +478,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       viewers: viewers.map((p) => p.clockMax),
       sourceVsWallMs: source?.vsWall ?? null,
       viewersVsWallMs: viewers.filter((p) => p.vsWall !== null).map((p) => p.vsWall as number),
+      sourceVsWallRangeMs: source?.vsWallRange ?? null,
+      viewersVsWallRangeMs: viewers.filter((p) => p.vsWallRange !== null).map((p) => p.vsWallRange as [number, number]),
     },
     links,
     tree: [...peers.values()].filter((p) => p.state?.peer).map((p) => ({ peer: p.state!.peer as PeerId, parent: p.state!.parent, index: p.index })),

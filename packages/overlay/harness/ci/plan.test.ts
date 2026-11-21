@@ -31,10 +31,10 @@ describe("overlay-swarm plan", () => {
     assert.equal(out.merge, "true");
   });
 
-  it("runs the gate, 8 shards of 25 on the merged engine, nightly", () => {
+  it("runs the gate, 19 shards of about 10 on the merged engine, nightly", () => {
     const out = plan({ EVENT: "schedule" });
     const shards = JSON.parse(out.shards).include as { run: string; peers: number }[];
-    assert.deepEqual([shards.length, shards[0].run, shards[0].peers, out.merge], [8, "gate", 200, "true"]);
+    assert.deepEqual([shards.length, shards[0].run, shards[0].peers, out.merge], [19, "gate", 200, "true"]);
   });
 
   it("runs the small named scenarios, each alone", () => {

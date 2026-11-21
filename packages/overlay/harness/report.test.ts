@@ -151,10 +151,10 @@ describe("harness report", () => {
     // A machine was starved: event-loop lag over 50 ms at p99, on one shard only.
     const starved = goodRun();
     starved[1].host.pageLag = hist([...Array.from({ length: 97 }, () => 5), 80, 80, 80]);
-    assert.deepEqual(failing(starved), ["event-loop lag p99 on the worst shard (ms)"]);
+    assert.deepEqual(failing(starved), ["event-loop lag p99 on the worst shard (ms)", "runners over the health bar (load 4, lag p99 20 ms)"]);
     const unmeasured = goodRun();
     unmeasured[0].host = { cores: 4, loadAvg1: [], maxEventLoopLagMs: 0 };
-    assert.deepEqual(failing(unmeasured), ["event-loop lag p99 on the worst shard (ms)"]);
+    assert.deepEqual(failing(unmeasured), ["event-loop lag p99 on the worst shard (ms)", "runners over the health bar (load 4, lag p99 20 ms)"]);
 
     // Clocks: the sum of uncertainties at p95 is not under 20 ms; or nobody measured them.
     const loose = goodRun();
@@ -244,6 +244,59 @@ describe("harness report", () => {
     assert.match(renderReport(report), /Clocks apart, measured p95/);
   });
 
+  it("holds every runner to the health bar, naming the one that fails it", () => {
+    const busy = goodRun();
+    busy[1].host.loadAvg1Settled = [3.2, 4.4];
+    let report = buildReport(busy);
+    assert.deepEqual(report.gate.validity.filter((v) => !v.pass).map((v) => [v.name, v.value]), [["runners over the health bar (load 4, lag p99 20 ms)", 1]]);
+    assert.ok(report.gate.notes.some((note) => /^shard 1: over the health bar \(load 4\.4 against 4/.test(note)));
+    // Launching the browsers is not the run: a load seen only before the swarm filled is not held against it.
+    const launching = goodRun();
+    launching[0].host.loadAvg1 = [9, 3];
+    launching[0].host.loadAvg1Settled = [3];
+    assert.equal(buildReport(launching).gate.valid, true);
+    const late = goodRun();
+    late[0].host.pageLag = hist([...Array.from({ length: 98 }, () => 5), 25, 25]);
+    report = buildReport(late);
+    assert.deepEqual(report.gate.validity.filter((v) => !v.pass).map((v) => v.name), ["runners over the health bar (load 4, lag p99 20 ms)"]);
+  });
+
+  it("judges the clocks as measured against wall clocks when every shard can be read so", () => {
+    const results = goodRun();
+    // SPEC §4.1's bound says 27 ms on shard 1; the clocks were really 1–4 ms apart, wall clocks within 0.5 ms.
+    results[0].clock = { source: 2, viewers: [3, 4, 5], sourceVsWallMs: -1000, viewersVsWallMs: [-1001, -999, -1000] };
+    results[1].clock = { source: null, viewers: [24, 25, 25], viewersVsWallMs: [-1004, -996, -1003] };
+    results[0].host.ntp = { boundMs: 0.25, text: "" };
+    results[1].host.ntp = { boundMs: 0.25, text: "" };
+    let report = buildReport(results);
+    assert.equal(report.measuredClockMs?.p95, 4.5);
+    assert.deepEqual(report.gate.validity.find((v) => v.name.startsWith("clock"))?.name, "clock disagreement, measured against chrony-synced wall clocks plus their bounds, p95 (ms)");
+    assert.equal(report.gate.valid, true);
+    assert.ok(report.gate.notes.some((note) => /not by SPEC §4\.1's bound \(p95 27 ms\)/.test(note)));
+    // One shard without chrony: back to the bound, and invalid.
+    results[1].host.ntp = undefined;
+    report = buildReport(results);
+    assert.equal(report.measuredClockMs, null);
+    assert.equal(report.gate.valid, false);
+  });
+
+  it("counts each viewer's clock at its worst moment of the run against the source's", () => {
+    const results = goodRun();
+    results[0].clock = { source: 2, viewers: [3], sourceVsWallMs: -1000, viewersVsWallMs: [-1000], sourceVsWallRangeMs: [-1002, -999], viewersVsWallRangeMs: [[-1001, -1000]] };
+    results[1].clock = { source: null, viewers: [20], viewersVsWallMs: [-1000], viewersVsWallRangeMs: [[-1000, -985]] };
+    results[0].host.ntp = { boundMs: 0, text: "" };
+    results[1].host.ntp = { boundMs: 0, text: "" };
+    // Shard 1's viewer at its highest (-985) against the source at its lowest (-1002): 17 ms apart.
+    assert.equal(buildReport(results).measuredClockMs?.max, 17);
+  });
+
+  it("says where joins' time went", () => {
+    const report = buildReport(goodRun());
+    // join(): start 100, welcome 110, linked 120, firstPacket 130, firstFrame 100 + ms.
+    assert.deepEqual([report.joinPhasesMs.welcome.p50, report.joinPhasesMs.linked.p50, report.joinPhasesMs.firstPacket.p50, report.joinPhasesMs.firstFrame.max], [10, 10, 10, 870]);
+    assert.match(renderReport(report), /\| welcome to a parent linked \| 10 \| 10 \| 10 \|/);
+  });
+
   it("reads chrony's own error bound", () => {
     const text = "Reference ID    : A9FEA97B (169.254.169.123)\nSystem time     : 0.000012345 seconds fast of NTP time\nRoot delay      : 0.000400000 seconds\nRoot dispersion : 0.000150000 seconds\n";
     assert.ok(Math.abs((ntpBoundMs(text) as number) - 0.362345) < 1e-9);
@@ -259,7 +312,7 @@ describe("harness report", () => {
       sizes.runs.map((r) => [r.peers, r.valid, r.lagP99Ms]),
       [[30, true, 10], [45, true, 20], [60, false, 90]],
     );
-    assert.deepEqual(sizes.runs[2].why, ["event-loop lag p99 on the worst shard (ms)"]);
+    assert.deepEqual(sizes.runs[2].why, ["event-loop lag p99 on the worst shard (ms)", "runners over the health bar (load 4, lag p99 20 ms)"]);
     assert.match(renderSizes(sizes), /Largest valid run: 45 peers/);
     assert.equal(largestValid([buildReport(at(60, 90))]).peers, null);
   });

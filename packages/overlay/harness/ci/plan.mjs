@@ -12,7 +12,11 @@
 //               largest valid one is reported.
 //   scenarios   proof-tree, chain-kill and slow-child (PLAN T3, T4, C3), each alone on a runner.
 //   sharded     PLAN H5: gate-small at 100 peers, 4 shards of 25 on 4 runners, one report.
-//   gate        PLAN H6, SPEC §12.3: 200 peers, 8 shards of 25, ten minutes of churn.
+//   gate        PLAN H6, SPEC §12.3: 200 peers, 19 shards of 10 or 11, ten minutes of churn. 25 real
+//               peers put a 4-vCPU runner at load 22; about 10 is what one carries. 19, not 20: a
+//               free account runs 20 jobs at once, and the push's own CI wants 5 of them, so 4
+//               shards wait the 2–3 minutes CI's quick jobs take, inside the rendezvous's lead.
+//               A twentieth would wait for CI's browser tests, 18 minutes.
 //   integration before any of these, merge overlay-integration (the whole engine, composition root
 //               and all, as the integrator has assembled it) instead of the separate branches.
 //   merge       before any of these, merge the engineers' overlay-* branches into the checkout,
@@ -36,7 +40,7 @@ const want = new Set(words.map((w) => w.trim().toLowerCase()).filter(Boolean));
 const RUNS = {
   experiment: { scenario: "two-runner", shards: 2, peers: 16, churnS: 0 },
   sharded: { scenario: "gate-small", shards: 4, peers: 100, churnS: 120 },
-  gate: { scenario: "gate", shards: 8, peers: 200, churnS: 600 },
+  gate: { scenario: "gate", shards: 19, peers: 200, churnS: 600 },
 };
 
 const shards = [];

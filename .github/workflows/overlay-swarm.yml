@@ -127,8 +127,9 @@ jobs:
           mkdir -p "$OUT" rendezvous
           secret=$(openssl rand -hex 24)
           echo "::add-mask::$secret"
-          # Two and a half minutes for the tunnel to come up and the other runners to find it.
-          start_at=$(( $(date +%s%3N) + 150000 ))
+          # Two and a half minutes for the tunnel to come up and the other runners to find it; five
+          # for a wide run, some of whose shards wait for a free runner first (ci/plan.mjs).
+          start_at=$(( $(date +%s%3N) + (SHARDS > 8 ? 300000 : 150000) ))
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
           nohup node packages/overlay/harness/swarm.mjs coordinator --scenario "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" \
             --port "$PORT" --host 127.0.0.1 --start-at "$start_at" --secret "$secret" --stun "$STUN" > "$OUT/coordinator.log" 2>&1 &
