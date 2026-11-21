@@ -227,6 +227,14 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       existing.config = config;
       return;
     }
+    // Only the picture's size changed (the source holding its bitrate on a busy picture): a VP8
+    // keyframe carries its own size, and the source starts the new size with one, so the decoder
+    // goes on as it is. Resetting it here would throw away the new keyframe whenever it arrived
+    // before the `config` message that announced it.
+    if (existing && existing.config.id === config.id && existing.config.codec === config.codec && existing.config.description === config.description && existing.config.scalability === config.scalability) {
+      existing.config = config;
+      return;
+    }
     const top = temporalLayerCount(config.scalability) - 1;
     const state: VideoState = existing
       ? { ...existing, config, needKey: true, topLayer: top, cap: Math.min(existing.cap, top) }

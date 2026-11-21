@@ -31,6 +31,18 @@ slower stream (followed at once when the last 200 ms say it grew), *D* is §10.2
 sound's way out is the worklet's 15 ms lead plus the sound card's output latency (a light viewer
 assumes 40 ms). Glass-to-glass is then §10.2's encode + hops + *D* + playout. See `player.ts`.
 
+## The bitrate, held
+
+Chromium's VP8 encoder overshoots its target on busy pictures (1,200 kbps asked at 1280×720: a
+grainy drifting pattern 1.6–2.2 Mbps, fine detail 5.5–8.2 Mbps under L1T3, noise 63 Mbps in every
+mode; WebCodecs has no VP8 quantiser to set). `rateControl.ts` holds the stream to its bitrate:
+it asks the encoder for less (to a quarter), does not encode a frame that would not fit two
+seconds of the bitrate +15% (checked at every frame, so every window is bounded), keeps room for
+a keyframe due soon, and, when that still skips a quarter of the frames or a keyframe passes
+250 ms of the bitrate, makes the picture smaller (to 320×180), trying it bigger again later. A
+new size is a new configId; the player does not reset its decoder for it (a VP8 keyframe carries
+its size). The first frame of a new input cannot be predicted, so the first window may be over.
+
 ## Running it
 
 - Unit tests (fake clock, fake decoders, the real sequencer): `npm run test:overlay`.

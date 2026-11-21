@@ -5,7 +5,8 @@
 import { MediaFlag, PacketType, type StreamConfig } from "../protocol";
 import type { EncodedFrame } from "../types";
 import { Emitter } from "./emitter";
-import { DependencyTracker, temporalLayerCount } from "./layers";
+import { DependencyTracker, expectedTemporalLayer, temporalLayerCount } from "./layers";
+import { SCALE_LEVELS, VideoRateController } from "./rateControl";
 import { readTrack, type EncodedVideoMetadata } from "./platform";
 import type { ProgramInput, ProgramSource, ProgramSourceEvents, ProgramSourceOptions, ProgramSourceStats } from "./types";
 
@@ -34,7 +35,13 @@ const AUDIO_STEER_WINDOW = 50;
  */
 export const OPUS_DELAY_US = 6500;
 
-export function videoStreamConfig(encoding: ProgramSourceOptions["encoding"], configId: number, bitrateKbps: number): StreamConfig {
+/** The program's size at a share of it: even numbers, as VP8 wants. */
+export function scaledSize(encoding: ProgramSourceOptions["encoding"], share: number): { width: number; height: number } {
+  const even = (value: number) => Math.max(2, Math.round((value * share) / 2) * 2);
+  return { width: even(encoding.video.width), height: even(encoding.video.height) };
+}
+
+export function videoStreamConfig(encoding: ProgramSourceOptions["encoding"], configId: number, bitrateKbps: number, size?: { width: number; height: number }): StreamConfig {
   const { video } = encoding;
   const layers = temporalLayerCount(video.scalability);
   return {
@@ -43,8 +50,8 @@ export function videoStreamConfig(encoding: ProgramSourceOptions["encoding"], co
     configId,
     codec: video.codec,
     bitrateKbps,
-    width: video.width,
-    height: video.height,
+    width: size?.width ?? video.width,
+    height: size?.height ?? video.height,
     fps: video.fps,
     scalability: video.scalability,
     keyIntervalFrames: video.keyIntervalFrames,
@@ -84,8 +91,13 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
   private videoConfigId = 0;
   private nextVideoId = 0;
   private tracker: DependencyTracker;
-  /** Frames handed to the encoder and not yet out of it: their timestamp, and when they were captured. */
-  private readonly inEncoder = new Map<number, number>();
+  /** Frames handed to the encoder and not yet out of it, by timestamp: when they were captured, and under which configuration. */
+  private readonly inEncoder = new Map<number, { captureUs: number; configId: number }>();
+  /** Holds the stream to its bitrate (./rateControl.ts): what the encoder is asked for, which frames it gets, the picture's size. */
+  private rate: VideoRateController;
+  private encoderFactor = 1;
+  private scaleLevel = 0;
+  private lastKeyAt = -Infinity;
   private sinceKey = Infinity;
   private forceKey = false;
   private lastKeyRequestAt = -Infinity;
@@ -104,7 +116,7 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
   private audioTrackUs: number | null = null;
   private previousAudio: EncodedFrame | null = null;
 
-  private counters: ProgramSourceStats = { videoFrames: 0, keyframes: 0, videoBytes: 0, skippedBusy: 0, skippedPacing: 0, maxEncoderFrames: 0, audioFrames: 0, audioBytes: 0 };
+  private counters: ProgramSourceStats = { videoFrames: 0, keyframes: 0, videoBytes: 0, skippedBusy: 0, skippedPacing: 0, skippedRate: 0, maxEncoderFrames: 0, audioFrames: 0, audioBytes: 0 };
 
   constructor(options: ProgramSourceOptions) {
     super();
@@ -112,15 +124,26 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
     this.layers = temporalLayerCount(options.encoding.video.scalability);
     this.tracker = new DependencyTracker(this.layers);
     this.videoBitrateKbps = options.encoding.video.bitrateKbps;
+    this.rate = new VideoRateController(this.videoBitrateKbps, this.layers, options.encoding.video.fps);
     this.audioCopies = Math.max(1, Math.min(4, options.audioCopies ?? 2));
   }
 
   streams(): StreamConfig[] {
-    return [videoStreamConfig(this.options.encoding, this.videoConfigId, this.videoBitrateKbps), audioStreamConfig(this.options.encoding, 0)];
+    return [this.videoConfig(), audioStreamConfig(this.options.encoding, 0)];
   }
 
   stats(): ProgramSourceStats {
-    return { ...this.counters };
+    const { width, height } = this.size();
+    return { ...this.counters, encoderKbps: Math.round(this.videoBitrateKbps * this.encoderFactor), width, height };
+  }
+
+  private size(): { width: number; height: number } {
+    return scaledSize(this.options.encoding, SCALE_LEVELS[this.scaleLevel] as number);
+  }
+
+  /** The video stream as it is: the bitrate it is held to (not the encoder's own target), the size it is encoded at. */
+  private videoConfig(): StreamConfig {
+    return videoStreamConfig(this.options.encoding, this.videoConfigId, this.videoBitrateKbps, this.size());
   }
 
   private nowUs(): number {
@@ -139,6 +162,11 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
     await this.stopInput();
     this.running = true;
     const generation = ++this.generation;
+    // A new input is a new picture: what was learnt of the old one's cost says nothing.
+    this.rate = new VideoRateController(this.videoBitrateKbps, this.layers, this.options.encoding.video.fps);
+    this.encoderFactor = 1;
+    this.scaleLevel = 0;
+    this.lastKeyAt = -Infinity;
 
     const [video, audio] = this.streams() as [StreamConfig, StreamConfig];
     const support = await VideoEncoder.isConfigSupported(this.videoEncoderConfig());
@@ -189,11 +217,12 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
 
   private videoEncoderConfig(): VideoEncoderConfig {
     const { video } = this.options.encoding;
+    const { width, height } = this.size();
     return {
       codec: video.codec,
-      width: video.width,
-      height: video.height,
-      bitrate: Math.round(this.videoBitrateKbps * 1000),
+      width,
+      height,
+      bitrate: Math.round(this.videoBitrateKbps * this.encoderFactor * 1000),
       framerate: video.fps,
       latencyMode: "realtime",
       scalabilityMode: video.scalability,
@@ -214,13 +243,46 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
     const wanted = Math.max(50, Math.min(this.options.encoding.video.bitrateKbps, kbps));
     if (Math.abs(wanted - this.videoBitrateKbps) < BITRATE_STEP * this.videoBitrateKbps) return;
     this.videoBitrateKbps = wanted;
+    this.rate.setTarget(wanted);
     if (!this.running || !this.videoEncoder || this.videoEncoder.state !== "configured") return;
     try {
       // Only the rate changes: nothing a decoder is configured with, so the configId stays.
       this.videoEncoder.configure(this.videoEncoderConfig());
-      this.emit("config", videoStreamConfig(this.options.encoding, this.videoConfigId, this.videoBitrateKbps));
+      this.emit("config", this.videoConfig());
     } catch (error) {
       this.fail("video bitrate", error);
+    }
+  }
+
+  /**
+   * Steps 1 and 3 of ./rateControl.ts: the encoder's own target, and the picture's size. A new
+   * size is a new configuration (§4.3): a new configId, announced before its first frame, which
+   * is a keyframe.
+   */
+  private steer(nowMs: number): void {
+    const encoder = this.videoEncoder;
+    if (!encoder || encoder.state !== "configured") return;
+    const { factor, level } = this.rate.tick(nowMs);
+    if (level !== this.scaleLevel) {
+      this.scaleLevel = level;
+      this.encoderFactor = factor;
+      this.videoConfigId = (this.videoConfigId + 1) % 256;
+      this.forceKey = true;
+      try {
+        encoder.configure(this.videoEncoderConfig());
+        this.emit("config", this.videoConfig());
+      } catch (error) {
+        this.fail("video size", error);
+      }
+      return;
+    }
+    if (Math.abs(factor - this.encoderFactor) >= BITRATE_STEP * this.encoderFactor) {
+      this.encoderFactor = factor;
+      try {
+        encoder.configure(this.videoEncoderConfig());
+      } catch (error) {
+        this.fail("video bitrate", error);
+      }
     }
   }
 
@@ -279,18 +341,35 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
       return;
     }
     this.lastVideoCaptureUs = captureUs;
-    const keyFrame = this.forceKey || this.sinceKey >= this.options.encoding.video.keyIntervalFrames;
+    const nowMs = this.options.clock.now();
+    this.steer(nowMs);
+    // A keyframe every keyIntervalFrames frames, and at least as often in time when frames are
+    // not encoded for want of room (§9.3: a joiner waits for one at most that long).
+    const { keyIntervalFrames } = this.options.encoding.video;
+    const keyFrame = this.forceKey || this.sinceKey >= keyIntervalFrames || nowMs - this.lastKeyAt >= (keyIntervalFrames * frameUs) / 1000;
+    const temporal = keyFrame ? 0 : (expectedTemporalLayer(this.options.encoding.video.scalability, this.sinceKey) ?? 0);
+    // Step 2: a frame that would not fit in the stream's bitrate is not encoded.
+    const untilKeyMs = Math.min((keyIntervalFrames - this.sinceKey) * (frameUs / 1000), this.lastKeyAt + (keyIntervalFrames * frameUs) / 1000 - nowMs);
+    if (this.rate.offer(nowMs, keyFrame, temporal, untilKeyMs) === "skip") {
+      this.counters.skippedRate++;
+      return;
+    }
     if (keyFrame) {
       this.forceKey = false;
       this.sinceKey = 0;
+      this.lastKeyAt = nowMs;
     }
     this.sinceKey++;
-    const { width, height } = this.options.encoding.video;
+    const { width, height } = this.size();
     const fitted = frame.displayWidth === width && frame.displayHeight === height ? null : this.scale(frame, width, height);
-    this.inEncoder.set(frame.timestamp, captureUs);
+    this.inEncoder.set(frame.timestamp, { captureUs, configId: this.videoConfigId });
     this.counters.maxEncoderFrames = Math.max(this.counters.maxEncoderFrames, this.inEncoder.size);
     try {
       encoder.encode(fitted ?? frame, { keyFrame });
+    } catch (error) {
+      this.inEncoder.delete(frame.timestamp);
+      this.rate.dropped();
+      throw error;
     } finally {
       fitted?.close();
     }
@@ -315,10 +394,15 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
   }
 
   private onVideoChunk(chunk: EncodedVideoChunk, metadata: EncodedVideoMetadata | undefined): void {
-    let captureUs = this.inEncoder.get(chunk.timestamp);
+    const entry = this.inEncoder.get(chunk.timestamp);
     // Whatever went in before this frame is out, or was dropped by the encoder.
-    for (const timestamp of this.inEncoder.keys()) if (timestamp <= chunk.timestamp) this.inEncoder.delete(timestamp);
-    if (captureUs === undefined) captureUs = this.nowUs();
+    for (const timestamp of this.inEncoder.keys()) {
+      if (timestamp > chunk.timestamp) continue;
+      this.inEncoder.delete(timestamp);
+      if (timestamp !== chunk.timestamp) this.rate.dropped();
+    }
+    const captureUs = entry?.captureUs ?? this.nowUs();
+    const configId = entry?.configId ?? this.videoConfigId;
 
     const key = chunk.type === "key";
     const frameId = this.nextVideoId++;
@@ -328,6 +412,7 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
     this.counters.videoFrames++;
     this.counters.videoBytes += data.byteLength;
     if (key) this.counters.keyframes++;
+    this.rate.encoded(this.options.clock.now(), data.byteLength, key, place.temporal);
     this.emit("frame", {
       header: {
         type: PacketType.Media,
@@ -340,7 +425,7 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
         keyDelta: place.keyDelta,
         frameId,
         captureUs,
-        configId: this.videoConfigId,
+        configId,
       },
       data,
     });

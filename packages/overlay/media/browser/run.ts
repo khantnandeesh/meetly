@@ -35,6 +35,7 @@ const loadavg = () => readFileSync("/proc/loadavg", "utf8").split(" ").slice(0, 
 
 /** A measurement that was not made fails every comparison. */
 const n = (value: number | null | undefined): number => value ?? Number.NaN;
+const round = (value: number | null): number | null => (value === null ? null : Math.round(value));
 
 export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
   m1: {
@@ -98,6 +99,20 @@ export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
       ["a decoder slower than the frame interval asks for a lower layer within 2 s", r.downAfterMs !== null && r.downAfterMs <= 2000, `after ${r.downAfterMs} ms (${r.slowMs} ms a frame from ${r.slowFromS} s); caps ${r.caps.map((c) => `${c.atS}s:${c.cap}`).join(" ")}`],
       ["and is then left with a rate it can decode", r.lowestCap >= 1 && n(r.fpsSlow) >= 12, `lowest cap ${r.lowestCap}; ${r.fpsBefore} fps before, ${r.fpsSlow} while slow`],
       ["it recovers once the decoder keeps up again", r.backUpAfterMs !== null && n(r.fpsAfter) >= 25, `back to the top layer ${r.backUpAfterMs} ms after; ${r.fpsAfter} fps`],
+      ["no errors", r.errors.length === 0, r.errors.join("; ")],
+    ],
+  },
+  rate: {
+    options: { content: "busy", seconds: 30 },
+    check: (r) => [
+      [`${r.content}: every two-second window within +15% of ${r.targetKbps} kbps`, n(r.worstWindowPct) <= 115, `worst ${r.worstWindowPct}% (at ${r.worstWindowAtS} s); mean ${r.meanKbps} kbps; encoder asked ${r.encoderKbps} kbps; ${r.skippedRate} frames not encoded; sizes ${r.sizes || "unchanged"}`],
+      ["a keyframe at least every 2 s (a frame's slack)", n(r.keyGapMaxMs) <= 2250, `longest gap ${round(r.keyGapMaxMs)} ms`],
+      [
+        "keyframes within 250 ms of the bitrate, once the picture is learnt (but a try at a bigger size)",
+        r.keyMsOfB.max === null || r.keyMsOfB.max <= 250,
+        `up to ${r.keyMsOfB.max} ms of the bitrate after 5 s (the first ${r.keyMsOfB.first}, the last ${r.keyMsOfB.last}); ${r.probeKeys.count} tries at a bigger size, their keyframes up to ${r.probeKeys.maxMsOfB} ms`,
+      ],
+      ["frames keep coming", n(r.fpsLast5s) >= 5, `${r.fpsLast5s} fps over the last 5 s, at ${r.widthLast} wide`],
       ["no errors", r.errors.length === 0, r.errors.join("; ")],
     ],
   },
