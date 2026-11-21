@@ -20,6 +20,13 @@ import type { Reassembler, ReassemblerOptions } from "./types";
 const WINDOW_FRAMES = 1024;
 /** A hole of more frames than this is not asked for: a NACK is for isolated loss. */
 const MAX_WHOLE_FRAME_GAP = 16;
+/**
+ * A sender heard again after this long is a new spell (a backup become the parent, a parent
+ * tried again): its first packet since is where "nothing of it is missing" is counted from. A
+ * parent sends something every `heartbeatMs` (50), so this much silence means it was not being
+ * listened to.
+ */
+const NEW_SPELL_MS = 500;
 /** A hole in `linkSeq` longer than this is not examined: it is not one shed layer. */
 const MAX_EXPLAINED_SPAN = 4096;
 
@@ -71,7 +78,7 @@ type StreamState = {
  * bit per number. Each arrival clears the number half the space ahead, so a bit is never stale
  * by a whole wrap.
  */
-type SenderState = { seen: Uint8Array };
+type SenderState = { seen: Uint8Array; first: number; lastAt: number };
 
 export function createReassembler(options: ReassemblerOptions): Reassembler {
   const reorderMs = options.reorderMs;
@@ -123,9 +130,15 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
   };
 
   const noteArrival = (from: PeerId, linkSeq: number) => {
-    let sender = senders.get(from);
-    if (!sender) senders.set(from, (sender = { seen: new Uint8Array(8192) }));
+    const now = options.clock.now();
     const seq = linkSeq & 0xffff;
+    let sender = senders.get(from);
+    if (!sender) senders.set(from, (sender = { seen: new Uint8Array(8192), first: seq, lastAt: now }));
+    else if (now - sender.lastAt > NEW_SPELL_MS) {
+      sender.seen.fill(0);
+      sender.first = seq;
+    }
+    sender.lastAt = now;
     sender.seen[seq >> 3] |= 1 << (seq & 7);
     const stale = (seq + 32768) & 0xffff;
     sender.seen[stale >> 3] &= ~(1 << (stale & 7));
@@ -145,7 +158,18 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
    */
   const neverSent = (prev: FrameRecord, next: FrameRecord): boolean => {
     if (next.gapExplained) return true;
-    if (prev.from !== next.from || prev.seq0 < 0 || next.seq0 < 0) return false;
+    if (next.seq0 < 0) return false;
+    if (prev.from !== next.from) {
+      // A change of sender (a repair, a switch): the old one sent nothing more, and if nothing
+      // the new one sent before `next` is missing either, the frames in between were none of its
+      // (a replay that leaves out a layer it is shedding, SPEC §11.5).
+      const sender = senders.get(next.from);
+      if (!sender || seq16Diff(next.seq0, sender.first) > MAX_EXPLAINED_SPAN || seq16Diff(next.seq0, sender.first) < 0) return false;
+      if (!allArrivedBetween(next.from, (sender.first - 1) & 0xffff, next.seq0)) return false;
+      next.gapExplained = true;
+      return true;
+    }
+    if (prev.seq0 < 0) return false;
     const prevEnd = (prev.seq0 + prev.fragCount - 1) & 0xffff;
     const between = seq16Diff(next.seq0, prevEnd) - 1;
     if (between < 0 || between > MAX_EXPLAINED_SPAN) return false;

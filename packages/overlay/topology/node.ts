@@ -98,6 +98,8 @@ export const LEAVE_FLUSH_MS = 50;
 const REJOIN_BACKOFF_MS = [1000, 2000, 4000, 8000, 16_000, 30_000];
 const DEPTH_UNKNOWN = 255;
 const SEEN_WINDOW = 1024;
+/** A missing frame not known to be shed after this many newer frames is lost. */
+const GIVE_UP_FRAMES = 120;
 const ALL_LAYERS: LayerCap = { maxSpatial: 15, maxTemporal: 15 };
 
 /* ------------------------------ small pieces ------------------------------ */
@@ -145,6 +147,33 @@ class DecodeTracker {
   /** The newest decodable base-layer frame (for audio, the newest frame), or -1. */
   lastBase = -1;
   newest = -1;
+  /** Frame ids that never became decodable but were never sent to this node either (a shed layer). */
+  readonly shed = new Set<number>();
+  /** Missing ids not yet known to be shed or lost, and the newest id looked at. */
+  private unclassified: number[] = [];
+  private classifiedUpTo = -1;
+
+  /**
+   * Asks, while the reassembler still remembers the frames on each side, whether each frame that
+   * did not arrive was ever sent (SPEC §7.5 step 2: a backup over its fan-out sheds a layer). A
+   * frame not settled within `GIVE_UP_FRAMES` counts as lost.
+   */
+  classify(neverSent: (frameId: number) => boolean): void {
+    if (this.newest < 0) return;
+    if (this.classifiedUpTo < 0) this.classifiedUpTo = this.newest;
+    for (let id = this.classifiedUpTo + 1; id < this.newest; id++) if (!this.decodable.has(id)) this.unclassified.push(id);
+    if (this.newest - 1 > this.classifiedUpTo) this.classifiedUpTo = this.newest - 1;
+    if (this.unclassified.length === 0) return;
+    this.unclassified = this.unclassified.filter((id) => {
+      if (this.decodable.has(id)) return false;
+      if (neverSent(id)) {
+        this.shed.add(id);
+        return false;
+      }
+      return id > this.newest - GIVE_UP_FRAMES;
+    });
+    if (this.shed.size > 2 * SEEN_WINDOW) for (const id of this.shed) if (id < this.newest - SEEN_WINDOW) this.shed.delete(id);
+  }
   /** When, on the local clock, frames became decodable: the times a player could have shown them. */
   readonly shown: { at: number; id: number }[] = [];
 
@@ -1628,7 +1657,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     while (finishing.length > 0 && finishing[0].at <= now) {
       const { record } = finishing.shift()!;
       const stream = primary();
-      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => reassembler.neverSent(stream.config.id, frameId)) : { freezeMs: 0, lost: 0 };
+      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId)) : { freezeMs: 0, lost: 0 };
       metric({
         t: "repair",
         stream: stream?.config.id ?? 0,
@@ -1771,6 +1800,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     runProbe(now);
     repeatAudio(now);
     for (const child of peers.values()) if (child.subs.size > 0) pumpReplay(child, now);
+    for (const stream of streams.values()) if (!stream.audio) stream.tracker.classify((frameId) => reassembler.neverSent(stream.config.id, frameId));
     finishRepairs(now);
 
     if (now - uplinkAt >= 1000) {
