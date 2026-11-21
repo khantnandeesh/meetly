@@ -89,8 +89,7 @@ describe("harness slow-child", () => {
   it("is E-congestion's tree, capped and then lifted on the same peer", () => {
     const config = scenario("slow-child");
     assert.equal(config.peers, 8);
-    // The tree is the fan-outs; the short probation (probationMs) only lets it fill under the real coordinator.
-    assert.deepEqual({ sourceFanout: config.params?.sourceFanout, maxFanout: config.params?.maxFanout }, { sourceFanout: 3, maxFanout: 2 });
+    assert.deepEqual(config.params, { sourceFanout: 3, maxFanout: 2 });
     assert.deepEqual(
       config.churn.map((e) => (e.action === "impair" ? [e.pick, e.profile] : null)),
       [["shallowest-relay", "cap-900"], ["impaired", "cap-3000"]],

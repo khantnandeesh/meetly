@@ -131,6 +131,16 @@ async function main(): Promise<number> {
     const config = configFrom(rest[0] ?? "", flags);
     config.log = log;
     const result = await runShard(config);
+    const nat = flags.get("nat");
+    if (nat) {
+      try {
+        const found = JSON.parse(readFileSync(nat, "utf8")) as { symmetric: boolean | null; mapped: { server: string; mapped: { ip: string; port: number } | null }[] };
+        result.host.nat = { symmetric: found.symmetric, mapped: found.mapped.map((m) => `${m.server} sees ${m.mapped ? `${m.mapped.ip}:${m.mapped.port}` : "nothing"}`) };
+        if (found.symmetric) (result.notes ??= []).push("this machine is behind a symmetric NAT: its peers cannot hole-punch to another machine, and without TURN every such link fails");
+      } catch {
+        (result.notes ??= []).push("the NAT check left nothing readable");
+      }
+    }
     const merged = flags.get("merged");
     if (merged) {
       // What merge.sh brought in before this run (PLAN H6): the report names it beside the stubs.

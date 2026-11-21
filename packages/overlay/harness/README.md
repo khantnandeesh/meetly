@@ -77,9 +77,21 @@ two GitHub-hosted runners, 8 peers each, the harness's stand-in peer and coordin
   is documented to carry at most 200 requests in flight, and a 200-peer gate with 175 remote
   WebSockets sits just under that. The deployed Worker (K4) would replace the tunnel; it does
   not exist yet.
-- **Peers on different runners link directly: yes, no TURN was needed.** 13 links between the
-  runners, every one `srflx-srflx` (hole-punched through both runners' NAT), 0 through TURN, 0
-  failed. There was no TURN server to fall back on in any case: the repository has no TURN key.
+- **Peers on different runners link directly, but only between Azure-hosted runners.** In this
+  run, 13 links between the runners, every one `srflx-srflx` (hole-punched through both NATs), 0
+  through TURN, 0 failed; the same held over 2,585 link ends in an 8-runner run. Then a gate run
+  ([44947800151](https://github.com/khantnandeesh/meetly/actions/runs/44947800151)) got three
+  runners hosted on AWS (us-west-2) beside five on Azure. **Not one link of the AWS runners'
+  opened** (934 link ends failed, 480 of them counted at the AWS end, and all 120 of those
+  runners' peers "never found a parent"), while the
+  Azure runners linked among themselves as before. Every earlier run had been Azure only. An AWS
+  NAT gateway maps each destination to a different port (a symmetric NAT), which hole punching
+  cannot get through. So on GitHub's mixed fleet **a share of runners needs TURN for every link:
+  3 of 8 in that run**, and there is no TURN server to give them: the repository has no TURN key.
+  Each shard now runs `ci/natcheck.mjs` (two STUN servers, one socket) before it starts, and the
+  report says which shards are behind a symmetric NAT. Until there is a TURN key (Cloudflare's,
+  through the coordinator's `welcome.ice`, SPEC §6.7), a run that draws an AWS runner is not a
+  test of the overlay.
 - **But the session clock across the tunnel is too loose for the gate.** A viewer on the other
   runner reaches the coordinator in a round trip of about 50 ms, so its uncertainty (half of
   that) was 24–30 ms. With the source's added, the p95 of the sum was 30.8 ms, against the 20 ms
@@ -106,3 +118,28 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 40-peer runs were valid and failed the gate on join time. At 30–60 peers, the six viewers who
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
+
+## Sharded runs so far (H5, H6)
+
+None of these is a measurement of the overlay: the composition root (`createOverlayViewer`,
+`createOverlaySource`) is still a stub, so every page ran the harness's stand-in peer, whatever
+else was merged. They show that the sharded harness works, and what it will say.
+
+| Run | Shards × peers | Coordinator | Verdict | Why |
+| --- | --- | --- | --- | --- |
+| [44945057879](https://github.com/khantnandeesh/meetly/actions/runs/44945057879) `sharded` | 4 × 25 | the package's (315d92a) | invalid | clock bound 24.3 ms at p95; join p95 over 10 s |
+| [44946383526](https://github.com/khantnandeesh/meetly/actions/runs/44946383526) `gate` | 8 × 25 | stand-in (overlay-coordinator did not merge) | invalid | clock bound 43.8 ms; one late joiner never rendered |
+| [44947800151](https://github.com/khantnandeesh/meetly/actions/runs/44947800151) `gate` | 8 × 25 | the package's (f7aba98) | invalid | 3 AWS runners could link to nobody (137 peers failed); clock bound 61.7 ms; join p95 over 10 s; repair p95 1,600 ms |
+
+- **Links between runners need no TURN.** In the 8-shard gate run 2,585 link ends crossed
+  between runners, all `srflx-srflx`; 2 never opened; 0 went through TURN.
+- **The clocks agree far better than the bound says.** In the stand-in gate run, shards 1–7 had bounds of
+  23.6–47 ms (p95, viewer plus source), but read against their wall clocks (chrony: within
+  0.1–0.4 ms) their viewers' session clocks were 1.2–7.3 ms from the source's at p95. By SPEC
+  §12.3 as written, every run through the tunnel stays invalid.
+- **On the package's coordinator, joins wait for probation.** The coordinator places nobody under
+  a peer in its first 20 s (D18), so while the swarm fills, every viewer past the source's three
+  slots waits for a promotion: join p50 over 10 s in the 4 × 25 run. In an 8-peer run on one
+  machine, the first three joins took about 100 ms and the next four 16–22 s.
+- At 200 peers the stand-in itself falls over (repair p95 over 10 s, 560 `wait` repairs): it has
+  no congestion control and no rebalancing. That is the stand-in, not the overlay.

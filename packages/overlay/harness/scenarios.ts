@@ -70,6 +70,19 @@ export const joinAtS = (config: Pick<SwarmConfig, "joinPerS">, index: number): n
 /** How long the swarm takes to fill. Churn scripts start after it. */
 export const fillS = (config: Pick<SwarmConfig, "joinPerS" | "peers" | "fillS">): number => config.fillS ?? Math.ceil(joinAtS(config, config.peers - 1) + 8);
 
+/**
+ * D18: the package's coordinator lets nobody relay until they have been in the session 20 s, so
+ * a tree deeper than the source's own slots does not exist before then.
+ */
+export const PROBATION_S = 20;
+
+/**
+ * When a small scenario's tree is built and its churn may begin: after the swarm has filled and,
+ * whichever coordinator runs, after its first viewers could have been made relays and the rest
+ * placed under them.
+ */
+export const settledS = (config: Pick<SwarmConfig, "joinPerS" | "peers" | "fillS">): number => Math.max(fillS(config) + 3, joinAtS(config, 1) + PROBATION_S + 13);
+
 /** One step of a churn script, as one shard is to carry it out. */
 export type ChurnStep = {
   atS: number;
@@ -201,30 +214,26 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     coordinator: options.coordinatorUrl ? "external" : "auto",
   };
   // The proof's tree: a fan-out of two everywhere, so seven peers fill two levels.
-  // Probation (D18) cut to 3 s in the scenarios that are about repair, not joining: under the
-  // package's coordinator nobody below the source could relay before it, and these kill a relay a
-  // few seconds after the tree fills. The gate scenarios keep the 20 s of production.
-  const short = { probationMs: 3000 };
-  const proofTree = { sourceFanout: 2, maxFanout: 2, ...short };
+  const proofTree = { sourceFanout: 2, maxFanout: 2 };
   switch (name) {
     case "smoke":
     case "proof-tree": {
       const config = { ...base, peers: 7, params: proofTree, decodeEvery: name === "smoke" ? 1 : 3, program: CAMERA };
-      const at = fillS(config) + 3;
+      const at = settledS(config);
       return { ...config, churn: [{ atS: at, action: "kill", pick: "relay", count: 1 }], durationS: at + 6, expect: { peers: 7, minRepairs: 2 } };
     }
     case "chain-kill": {
       // A fan-out of one makes a chain; the last relay takes the leaves that are left.
-      const config = { ...base, peers: 5, params: { sourceFanout: 1, maxFanout: 1, ...short } };
-      const at = fillS(config) + 3;
+      const config = { ...base, peers: 5, params: { sourceFanout: 1, maxFanout: 1 } };
+      const at = settledS(config);
       return { ...config, churn: [{ atS: at, action: "kill", pick: "shallowest-relay", count: 1 }], durationS: at + 6, expect: { peers: 5, minRepairs: 1 } };
     }
     case "slow-child": {
       // E-congestion's tree (congestion/browser/run.ts): the source's three children, and four
       // grandchildren under them. One child of the source is capped at 900 kbps under the 1,200
       // kbps stream; 15 s later it has 3 Mbps, room for every layer again.
-      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: SYNTHETIC };
-      const at = fillS(config) + 5;
+      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2 }, program: SYNTHETIC };
+      const at = settledS(config);
       return {
         ...config,
         churn: [
