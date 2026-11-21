@@ -119,7 +119,53 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
 
-## The whole engine (H6): run 44951357064, on overlay-integration
+## The whole engine (H6): the latest gate, 19 runners
+
+[44956480109](https://github.com/khantnandeesh/meetly/actions/runs/44956480109), `gate
+integration`: overlay-integration at d9eb663, 13 of 13 factories real; the package's Node
+coordinator (`startNodeCoordinator`, with a store that outlives its 30 s death) on shard 0's
+runner, reached by the other runners through a Cloudflare quick tunnel; 19 runners of 10 or 11
+peers; the D28 mix and churn for ten minutes; the fake camera playing `busyVideo.ts`, so the stream
+was 1,634 kbps at p50 as depth-1 viewers received it (1,200 asked; see below).
+
+**Invalid**, for three reasons, each named in the report:
+
+- 5 of the 19 runners were AWS-hosted, behind a symmetric NAT: all 85 of their peers failed to
+  link anywhere. With no TURN server they cannot.
+- 8 runners were over the health bar: load (1 min, once filled) of 4.07–9.41 on 4 vCPUs. Timer
+  lag was 10 ms at p99 everywhere. Shard 0, which also encodes the program and runs the
+  coordinator and the tunnel, reached 9.41.
+- 103 peers failed to start in all: the 85, and 18 who joined late and never rendered.
+
+The clocks passed, as measured: 17.9 ms at p95 at each viewer's worst moment against the
+source's (SPEC §4.1's bound: 70.6 ms). Light viewers' latency was 30 ms off the decoding ones'.
+
+| Measure (ms) | p50 | p95 | p99 | Gate |
+| --- | ---: | ---: | ---: | ---: |
+| Join | 5,500 | over 10,000 | over 10,000 | 3,000 |
+| Repair (4,225: 487 warm, 131 cold, 3,607 wait) | 1,450 | 9,000 | over 10,000 | 500 |
+| Glass-to-glass latency | 370 | 650 | 800 | 500 |
+| Freezes (9,827) | 1,600 | 7,500 | over 10,000 | |
+
+Where joins went: connect() to welcome p50 284 ms, p95 14.5 s (viewers waiting out the outage);
+welcome to a parent linked p50 601 ms, p95 19.7 s; first packet to first frame p50 1.9 s,
+p95 10.6 s.
+
+**slow-child** in the same run (one runner, 8 peers), with the source's link to the child capped
+at 900 kbps and then lifted to 3 Mbps, next to E-congestion's own run: first layer dropped 863 ms
+after the cap (theirs ~700), settled on layer 0 at 2.9 s (~1.23 s), siblings lost 0 frames and
+their latency p95 did not move (160 → 160 ms; theirs under 5 ms), the slow child concealed 20 ms
+of audio (theirs 0), middle layer back 4.8 s after the lift (~6 s), top layer 9.9 s (~11 s).
+proof-tree: 2 warm repairs of 220 ms, 0 frames lost. chain-kill: 1 cold and 2 wait repairs of
+240 ms, 0 frames lost.
+
+**The encoder and the busy video.** Chromium's fake camera encodes to 566–800 kbps whatever is
+asked, so "slow" at 900 kbps was not slow. Moving noise drove the package's encoder to 14,817 kbps
+(asked 1,200) and was dropped; measured locally, a fine pattern gives 3,600–4,000 kbps (with
+`bitrateMode: "constant"` too) and the drifting, grainy pattern now used about 1,500. Past some
+level of detail the encoder overshoots its target: one for E-media.
+
+## The first whole-engine gate: run 44951357064, 8 runners
 
 [44951357064](https://github.com/khantnandeesh/meetly/actions/runs/44951357064), `integration`:
 overlay-integration (6921832) merged in, 13 of 13 factories real, the pages running the
