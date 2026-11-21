@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { Act } from "../hero/kit/act";
-import { clock } from "../hero/kit/clock";
-import { Count } from "../hero/kit/Count";
+import { useEffect, useState } from "react";
+import { Stopped, type Act } from "../hero/kit/act";
+// The hero's animation loads the same kit modules (Stage and Count); asking for the same set lets
+// the bundler share one engine chunk between the two instead of shipping it twice.
+import "../hero/kit/Count";
 import { Stage } from "../hero/kit/stage";
 import {
   HANDS_POSTER,
@@ -11,12 +12,14 @@ import {
   NOISE_POSTER,
   NoiseScene,
   POLL_POSTER,
+  POLL_STEPS,
   PollScene,
   REACT_POSTER,
   ReactionsScene,
   SHARE_POSTER,
   ShareScene,
   type HandsState,
+  type LaneRow,
   type Num,
   type NoiseState,
   type PollState,
@@ -28,141 +31,225 @@ import {
 /*
  * The grid's animations, loaded only once the grid is near the screen and the page is idle, and
  * never under reduced motion (FeatureGrid.tsx). Each tile is its own Stage (the hero's engine,
- * shared), drawn at its slot's own size, which plays only while that tile is on screen and stops
- * when it is not.
+ * shared), drawn at its slot's own size, which runs only while that tile is on screen.
  *
- * The five loops share one ten-second cycle, each with its own two-second slot, so their busy
- * moments take turns around the grid instead of all firing at once: share, then noise, poll,
- * reactions and hands. Each holds its payoff (its poster) for the rest of the cycle. Each loop
- * starts and ends on that payoff, and gets back to it by doing what the product does next, never
- * by rewinding: sharing stops and starts again, the switch goes off and on, a new poll arrives,
- * reactions run out and new ones come in, the host lowers all hands and new ones go up.
+ * One tile moves at a time. A conductor hands out turns round the grid in reading order (share,
+ * noise, poll, reactions, hands), skipping tiles that are off screen; each tile plays one short
+ * beat of its story, settles, and hands on after a pause. Each story only goes forward: the chart
+ * takes in a new week, a noise comes and is kept out, votes arrive (and a poll ends and the next
+ * begins), reactions arrive and expire, hands go up in a new order and are lowered. Nothing is
+ * played back, so no tile ever undoes itself in view. Off screen, a stage is reset to its poster
+ * out of sight and its story starts again from there.
  */
 
-const CYCLE = 10_000;
-const SLOTS: Record<TileId, number> = { share: 0, noise: 2000, polls: 4000, reactions: 6000, hands: 8000 };
-// The first slot comes 600ms after this module arrives, not a cycle later.
-const EPOCH = clock.now() - CYCLE + 600;
+const ORDER: TileId[] = ["share", "noise", "polls", "reactions", "hands"];
+/** The still moment between one tile's beat and the next. */
+const PAUSE = 900;
+/** After a beat's last change, the time its transitions take to settle before the turn passes. */
+const SETTLE = 450;
 
-/** Waits for this tile's turn in the cycle. */
-function turn<S>(a: Act<S>, tile: TileId) {
-  const now = (clock.now() - EPOCH) % CYCLE;
-  return a.wait((SLOTS[tile] - now + CYCLE) % CYCLE);
+function makeConductor() {
+  const waiting = new Map<TileId, () => void>();
+  let playing: TileId | null = null;
+  let last = -1;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const pick = () => {
+    if (playing || timer) return;
+    for (let step = 1; step <= ORDER.length; step++) {
+      const tile = ORDER[(last + step) % ORDER.length];
+      const go = waiting.get(tile);
+      if (!go) continue;
+      waiting.delete(tile);
+      playing = tile;
+      last = ORDER.indexOf(tile);
+      go();
+      return;
+    }
+  };
+  // The first turn comes a pause after the first tile is ready, so the stills are seen first.
+  const rest = () => {
+    timer = setTimeout(() => {
+      timer = null;
+      pick();
+    }, PAUSE);
+  };
+  return {
+    /** Resolves when it is this tile's turn; rejects (Stopped) if its stage stops first. */
+    turn(tile: TileId, signal: AbortSignal) {
+      return new Promise<void>((resolve, reject) => {
+        if (signal.aborted) return reject(new Stopped());
+        const abort = () => {
+          waiting.delete(tile);
+          reject(new Stopped());
+        };
+        signal.addEventListener("abort", abort, { once: true });
+        waiting.set(tile, () => {
+          signal.removeEventListener("abort", abort);
+          resolve();
+        });
+        if (last === -1 && !timer && !playing) rest();
+        else pick();
+      });
+    },
+    done(tile: TileId) {
+      if (playing !== tile) return;
+      playing = null;
+      rest();
+    },
+  };
+}
+const conductor = makeConductor();
+
+/** What a beat changes: `go` paints a change (and waits for it), `jump` makes one without motion. */
+type Beat<S> = { a: Act<S>; s: () => S; go: (patch: Partial<S>) => Promise<void>; jump: (patch: Partial<S>) => Promise<void>; n: number };
+
+/**
+ * A tile's story: wait for its turn, play the next beat, settle, hand on; for as long as it runs.
+ * The story keeps its own copy of the scene's state, from the poster on, since each beat follows
+ * from the last.
+ */
+function story<S extends { beat: boolean }>(tile: TileId, poster: S, beat: (b: Beat<S>) => Promise<void>) {
+  return async (a: Act<S>) => {
+    let state = poster;
+    const s = () => state;
+    const go = (patch: Partial<S>) => {
+      state = { ...state, ...patch };
+      return a.set(patch);
+    };
+    const jump = (patch: Partial<S>) => {
+      state = { ...state, ...patch };
+      return a.snap(patch);
+    };
+    for (let n = 1; ; n++) {
+      await conductor.turn(tile, a.signal);
+      try {
+        a.mark(`${tile} ${n}`);
+        await go({ beat: true } as Partial<S>);
+        await beat({ a, s, go, jump, n });
+        await a.wait(SETTLE);
+        await go({ beat: false } as Partial<S>);
+      } finally {
+        conductor.done(tile);
+      }
+    }
+  };
 }
 
-const roll: Num = (value, format) => <Count value={value} format={format} duration={480} />;
-
-type Size = { width: number; height: number };
-// Where each tile's pointer waits: off its picture's lower right, so it walks in to act and out after.
-const restOf = ({ width, height }: Size) => ({ x: width + 28, y: height - 24 });
-
-/* -------------------------------------------------------------- the scripts */
-
-const share = (size: Size) => async (a: Act<ShareState>) => {
-  await turn(a, "share");
-  await a.move({ at: "stop", x: 0.72, y: 0.62 });
-  await a.wait(150);
-  await a.click();
-  a.mark("stopped");
-  await a.set({ banner: false });
-  await a.wait(160);
-  await a.set({ live: false });
-  void a.move(restOf(size));
-  await a.wait(1200);
-  a.mark("live");
-  await a.set({ live: true });
-  await a.wait(500);
-  await a.set({ banner: true });
-};
-
-const noise = (size: Size) => async (a: Act<NoiseState>) => {
-  await turn(a, "noise");
-  await a.move({ at: "switch", x: 0.62, y: 0.55 });
-  await a.wait(150);
-  await a.click();
-  a.mark("off");
-  await a.set({ on: false });
-  // Aside while the noise comes through, just off the switch, then back to turn it on.
-  await a.move({ at: "switch", x: -0.6, y: -1.1 });
-  await a.wait(1300);
-  await a.move({ at: "switch", x: 0.62, y: 0.55 });
-  await a.wait(120);
-  await a.click();
-  a.mark("on");
-  await a.set({ on: true });
-  await a.move(restOf(size));
-};
-
-const polls = (size: Size) => async (a: Act<PollState>) => {
-  await turn(a, "polls");
-  // The poll on screen gives way to a new one, and you vote in it.
-  await a.set({ swap: true, vote: "none", tally: 0 });
-  await a.wait(700);
-  await a.set({ swap: false });
-  await a.move({ at: "wed", x: 0.58, y: 0.62 });
-  await a.wait(150);
-  await a.click();
-  a.mark("voted");
-  await a.set({ vote: "pending" });
-  await a.wait(380);
-  await a.set({ vote: "yes" });
-  void a.move(restOf(size));
-  await a.wait(1100);
-  a.mark("counted");
-  await a.set({ tally: 1 });
-};
-
-async function reactions(a: Act<ReactState>) {
-  await turn(a, "reactions");
-  // The reactions on screen run out, and new ones come in.
-  await a.set({ rows: 0 });
-  await a.wait(250);
-  await a.snap({ claps: 1 });
-  await a.set({ rows: 1 });
-  await a.wait(500);
-  a.mark("burst");
-  await a.set((s) => ({ burst: s.burst + 1, claps: 2 }));
-  await a.wait(320);
-  await a.set({ claps: 12 });
-  await a.wait(760);
-  await a.set({ rows: 2 });
-  await a.wait(420);
-  await a.set({ rows: 3 });
-  await a.wait(380);
-  await a.set({ rows: 4 });
-  // The burst key returns to rest out of sight: the particles have long faded.
-  await a.wait(900);
-  await a.snap({ burst: 0 });
-}
-
-const hands = (size: Size) => async (a: Act<HandsState>) => {
-  await turn(a, "hands");
-  await a.move({ at: "lower", x: 0.6, y: 0.6 });
-  await a.wait(150);
-  await a.click();
-  a.mark("lowered");
-  await a.set({ count: 0 });
-  void a.move(restOf(size));
-  await a.wait(650);
-  a.mark("raised");
-  for (const count of [1, 2, 3]) {
-    await a.set({ count });
-    await a.wait(480);
+/**
+ * A number that ticks to its next value, the new figure rising into place, as a counter in the call
+ * changes (the kit's rolling Count re-centres its digit strips after each roll, which reads as a hop
+ * on a tile that otherwise holds still). One box holds the whole text, sign and unit included, so
+ * nothing sits against it. The first value it shows does not move.
+ */
+function Tick({ value, format = String }: { value: number; format?: (n: number) => string }) {
+  const text = format(value);
+  // Every change after the first value ticks, even back to a figure it has shown before; the
+  // figure it leaves rises out as the new one rises in.
+  const [shown, setShown] = useState(text);
+  const [left, setLeft] = useState<string | null>(null);
+  if (shown !== text) {
+    setLeft(shown);
+    setShown(text);
   }
-};
+  return (
+    <span className="gm-tick" aria-label={text}>
+      {left !== null && left !== text && (
+        <span key={`out-${left}`} data-out aria-hidden="true">
+          {left}
+        </span>
+      )}
+      <span key={text} data-go={left !== null || undefined}>
+        {text}
+      </span>
+    </span>
+  );
+}
+const roll: Num = (value, format) => <Tick value={value} format={format} />;
+
+/* -------------------------------------------------------------- the beats */
+
+/** The presenter's chart takes in a new week: the bars move along, the new one grows. */
+const share = story<ShareState>("share", SHARE_POSTER, async ({ a, s, go }) => {
+  await go({ week: s().week + 1, grown: false });
+  await a.wait(620);
+  await go({ grown: true });
+  await a.wait(600);
+});
+
+/** A noise reaches the microphone and is kept out: it shows in grey, named, and goes; the voice carries on. */
+const noise = story<NoiseState>("noise", NOISE_POSTER, async ({ a, s, go }) => {
+  await go({ event: s().event + 1, noisy: true });
+  await a.wait(1400);
+  await go({ noisy: false });
+  await a.wait(400);
+});
+
+/** New votes arrive; after a few, the host ends the poll and the next one comes, and you vote in it. */
+const polls = story<PollState>("polls", POLL_POSTER, async ({ a, s, go }) => {
+  if (s().step < POLL_STEPS - 1) {
+    await go({ step: s().step + 1 });
+    await a.wait(700);
+    return;
+  }
+  await go({ ended: true });
+  await a.wait(1100);
+  await go({ poll: s().poll + 1, step: 0, vote: "none", ended: false, swap: true });
+  await a.wait(700);
+  await go({ swap: false, vote: "pending" });
+  await a.wait(420);
+  await go({ vote: "yes" });
+  await a.wait(500);
+});
+
+// The six reactions a call offers (Reactions.tsx), and who sends the ones that arrive alone.
+const EMOJI = ["👍", "❤️", "😂", "😮", "👏", "🎉"];
+const SENDERS = ["Yuki", "Omar", "Bea", "Lena"];
+/** Every other beat a row's count climbs; in between, a reaction arrives on top and the oldest expires. */
+const reactions = story<ReactState>("reactions", REACT_POSTER, async ({ a, s, go, n }) => {
+  const rows = s().rows.filter((row) => !row.leaving).map((row) => ({ ...row, bumped: false }));
+  if (n % 2 === 1) {
+    // Several more people send one already in the lane: its count climbs.
+    const counted = rows.filter((row) => !row.name);
+    const target = counted[n % counted.length] ?? rows[0];
+    await go({ rows: rows.map((row) => (row.id === target.id ? { ...row, count: row.count + 1 + (n % 3), bumped: true } : row)) });
+    await a.wait(900);
+    return;
+  }
+  // A new one arrives on top; the oldest, at the bottom, has run its time and goes.
+  const used = new Set(rows.map((row) => row.emoji));
+  const free = EMOJI.filter((emoji) => !used.has(emoji));
+  const fresh = free[(n / 2) % free.length];
+  const alone = n % 4 === 0;
+  const arriving: LaneRow = { id: s().next, emoji: fresh, count: alone ? 1 : 2 + (n % 5), name: alone ? SENDERS[(n / 4) % SENDERS.length] : undefined };
+  const [oldest, ...rest] = rows;
+  await go({ rows: [{ ...oldest, leaving: true }, ...rest] });
+  await a.wait(220);
+  await go({ rows: [{ ...oldest, leaving: true }, ...rest, arriving], next: s().next + 1 });
+  await a.wait(800);
+  await go({ rows: [...rest, arriving] });
+});
+
+/** Hands go up one by one in a new order; with three up, the host lowers them all. */
+const hands = story<HandsState>("hands", HANDS_POSTER, async ({ a, s, go, jump }) => {
+  const { count } = s();
+  if (count === 3) {
+    await go({ pressed: true });
+    await a.wait(220);
+    await go({ pressed: false, count: 0 });
+    await a.wait(1000);
+    return;
+  }
+  // The next round's people take the empty rows out of sight, then the first of them puts a hand up.
+  if (count === 0) await jump({ round: s().round + 1 });
+  await go({ count: count + 1 });
+  await a.wait(700);
+});
 
 /* --------------------------------------------------------------- the stages */
 
+type Size = { width: number; height: number };
+
 export default function GridStage({ tile, width, height, onReady }: { tile: TileId; onReady?: () => void } & Size) {
-  // A fingertip on a phone, a mouse pointer on a computer.
-  const [touch, setTouch] = useState(false);
-  useEffect(() => {
-    const query = window.matchMedia("(width < 48rem)");
-    const update = () => setTouch(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
   useEffect(() => {
     let second = 0;
     const first = requestAnimationFrame(() => {
@@ -173,39 +260,25 @@ export default function GridStage({ tile, width, height, onReady }: { tile: Tile
       cancelAnimationFrame(second);
     };
   }, [onReady]);
-  // A new size is a new design: its scripts are rebuilt for it (and the scene starts afresh).
-  const scripts = useMemo(() => {
-    const size = { width, height };
-    return { share: share(size), noise: noise(size), polls: polls(size), hands: hands(size), rest: restOf(size) };
-  }, [width, height]);
 
-  const style = touch ? "touch" : "real";
   const common = { width, height, theme: "dark" as const, fidelity: "realistic" as const, className: "gm-stage" };
-  const cursor = { at: scripts.rest, style } as const;
   switch (tile) {
     case "share":
       return (
-        <Stage<ShareState>
-          {...common}
-          // The same size either way: below 520px the computer's screen is drawn smaller (scenes.tsx).
-          compact={{ below: 520, width, height }}
-          initial={SHARE_POSTER}
-          poster={SHARE_POSTER}
-          script={scripts.share}
-          cursor={{ at: { wide: scripts.rest, compact: scripts.rest }, style }}
-        >
+        // The same size either way: below 520px the computer's screen is drawn smaller (scenes.tsx).
+        <Stage<ShareState> {...common} compact={{ below: 520, width, height }} initial={SHARE_POSTER} poster={SHARE_POSTER} script={share}>
           {(s, _rect, layout) => <ShareScene s={s} layout={layout} />}
         </Stage>
       );
     case "noise":
       return (
-        <Stage<NoiseState> {...common} initial={NOISE_POSTER} poster={NOISE_POSTER} script={scripts.noise} cursor={cursor}>
+        <Stage<NoiseState> {...common} initial={NOISE_POSTER} poster={NOISE_POSTER} script={noise}>
           {(s) => <NoiseScene s={s} />}
         </Stage>
       );
     case "polls":
       return (
-        <Stage<PollState> {...common} initial={POLL_POSTER} poster={POLL_POSTER} script={scripts.polls} cursor={cursor}>
+        <Stage<PollState> {...common} initial={POLL_POSTER} poster={POLL_POSTER} script={polls}>
           {(s) => <PollScene s={s} num={roll} />}
         </Stage>
       );
@@ -217,7 +290,7 @@ export default function GridStage({ tile, width, height, onReady }: { tile: Tile
       );
     case "hands":
       return (
-        <Stage<HandsState> {...common} initial={HANDS_POSTER} poster={HANDS_POSTER} script={scripts.hands} cursor={cursor}>
+        <Stage<HandsState> {...common} initial={HANDS_POSTER} poster={HANDS_POSTER} script={hands}>
           {(s) => <HandsScene s={s} num={roll} />}
         </Stage>
       );

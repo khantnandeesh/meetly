@@ -19,7 +19,7 @@ import "./feature-grid.css";
 
 /*
  * The home page's feature grid, under the hero: five tiles, each a short title over one real moment
- * of a Meetly call. Built to the stageshow skill's bento rules: one picture per tile at 1:1, copy as
+ * of a Meetly call. Built to the stageshow skill's bento rules: one picture per tile at 1:1, a title as
  * page text beside it, one wide tile, every picture cropped by its tile's own edge.
  *
  * Each picture is painted first as its still poster (scenes.tsx), laid out with CSS alone. Once the
@@ -38,8 +38,8 @@ export function FeatureGrid() {
       </h2>
       <LiveContext.Provider value={live}>
         <ul className="fg-grid">
-          <Tile id="share" wide title="Share your screen" line="From a computer" />
-          <Tile id="noise" title="Noise suppression" line="On by default" />
+          <Tile id="share" wide title="Share your screen" />
+          <Tile id="noise" title="Noise suppression" />
           <Tile id="polls" title="Quick polls" />
           <Tile id="reactions" title="Group reactions" />
           <Tile id="hands" title="Hands, in order" />
@@ -49,11 +49,10 @@ export function FeatureGrid() {
   );
 }
 
-function Tile({ id, title, line, wide = false }: { id: TileId; title: string; line?: string; wide?: boolean }) {
+function Tile({ id, title, wide = false }: { id: TileId; title: string; wide?: boolean }) {
   return (
     <li className={`fg-tile ${wide ? "fg-wide" : ""}`} data-feature={id}>
       <h3 className="fg-title">{title}</h3>
-      {line && <p className="fg-line">{line}</p>}
       <TilePicture id={id} />
     </li>
   );

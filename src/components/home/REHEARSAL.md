@@ -1,72 +1,92 @@
-# Rehearsal: home feature grid ("Inside a meeting"), v2
+# Rehearsal: home feature grid ("Inside a meeting"), v3
 
 The stageshow skill's hand-over note for the feature grid (`src/components/home/`). The hero's note is
 `src/components/hero/REHEARSAL.md`.
 
-v1 gave the grid motion and short copy. The founder turned it down ("looking awful"), with the
-reaction tile as the example. The review of v1's posters found these faults, fixed here:
+## History
 
-- **Reactions:** four chips on black in a mostly empty tile (void, wireframe).
-- **Hands:** a gap under the title and an empty band under the list.
-- **Polls and noise:** a bordered card inside the tile card (boxed).
-- **Share:** black bands either side of the slide.
-- **The grid:** tiles framed differently from one another.
+- **v1:** motion and short copy. The founder turned it down ("looking awful").
+- **v2:** every tile became a filled, real call moment, framed alike. The independent review passed
+  the stills, nearly, and failed the motion:
+  - five loops competed, four of them with cursors;
+  - the share tile went black;
+  - three tiles rewound their own data in view;
+  - claps flew over the speaker's label.
+
+  Its smaller findings:
+  - the speaker's avatar outweighed the lane;
+  - the phone's slide fell under 10px;
+  - two copy patterns sat in one grid;
+  - a hairline landed on the noise crop;
+  - gate polish, and lime everywhere.
+- **v3:** the founder still wants "more animation and jazz", so the tiles stay alive. They are
+  calm, truthful, and only one moves at a time.
 
 ## Gold
 
-- `bento` (Kite): pictures pinned to the tile's foot, measured to the tile's width, at 1:1, a card
-  inset on the gutters and run off the bottom (Approvals).
-- `dark-bento`: depth on dark from a lighter raised surface on a darker ground.
-- `hero-grid`: real UI large enough to read, every tile filled to its edges.
-
-The difference from the gold that remains: every tile here is product UI (the PM's five call
-moments), where the gold mixes in stat and object tiles. The variety comes instead from the grounds:
-a light shared screen, a full-bleed signal, a video tile in the speaker's colour, and two panels.
+`bento` (pictures pinned to the tile's foot at 1:1, a card on the gutters running off),
+`dark-bento` (raised surfaces on a dark ground), `hero-grid` (UI large enough to read). Kept from
+v2, which the review accepted, the bordered poll card and People panel included.
 
 ## Plan
 
-- **One frame.** Same radius, ground and gutter (24px on a phone, 28px from 48rem) in every tile.
-  The copy sits top left in every tile. The ground is the call's own page (`--bg`), so the product's
-  surfaces sit raised on it, as in a meeting.
-- **Pictures.** Each picture fills the tile under its copy, out to the tile's sides and bottom,
-  measured and drawn at 1:1 at the tile's own width (no scaling, except the phone's screen share,
-  a computer screen drawn at 0.8). The product surface starts on the copy's gutter right under the
-  copy, and the tile's foot crops it.
-- **One height.** 351px from 48rem, 347 on a phone (the copy sits 4px higher there), so a one-line
-  tile's picture is 280px everywhere. Every crop is composed for that height: it falls on a list
-  running on (the menu's next group, a poll's fifth option as a wordless row, the panel's next
-  section), a full gutter clear of the last thing that matters. Alone in its row (two columns), the
-  share tile keeps 2:1. Three columns from 72rem, where a tile is about 350 wide (at 64rem hand
-  names truncated and the noise hint wrapped under the crop).
-- **The five:**
-  - Share: the presenter's screen-share tile, the shared slide filling it edge to edge (no
-    letterbox), the "You're sharing your screen / Stop sharing" banner at its top.
-  - Noise: the microphone's signal across the tile, edge to edge, in syllables, over the real
-    Audio settings menu (Microphone, its device, the Noise suppression switch, then the Speaker
-    group off the crop).
-  - Polls: the poll card as it sits atop the chat panel, five options, the fifth running off.
-  - Reactions: a speaker's video tile (camera off: the call's gradient, avatar and speaking ring,
-    name label with bars) filling the whole tile, copy on it. The lane sits where Reactions.tsx puts
-    it, above the name label, four rows: 👏 ×12, 🎉 ×5, ❤️ Lena, 😂 ×3.
-  - Hands: the People panel (header, Raised hands with Lower all, 1st/2nd/3rd, then In this
-    meeting) running off the foot.
-- **Motion** (one 10s cycle, a 2s slot each, so the busy moments go round the grid):
-  - Share: Stop sharing pressed, the banner goes, "Starting your screen share…", live again, the
-    banner drops in.
-  - Noise: the switch off, keyboard clacks and a bark rise in the gaps between syllables (tagged),
-    then back on and the signal calms bar by bar.
-  - Polls: a new poll replaces the old one (overlapping), the vote, a spinner, the ✓, the counts
-    roll from 7 to 12 votes.
-  - Reactions: the lane runs out, "👏 Sam" arrives, nine claps rise from the tile's foot, arc over
-    the lane and drop into the row, which pops as it rolls to ×12, then the other rows push in.
-  - Hands: Lower all, the rows clear in a cascade, the list below glides up into their place
-    (the panel's own behaviour), and each hand that goes up pushes it back down a row. Rows of the
-    list show only while they fit whole above the crop.
-- **Calm and weight** as v1:
-  - Stages play only in view; only transform and opacity animate; reduced motion keeps the posters.
-  - First load is +1.6 KB JS and +1.6 KB CSS gzip against main (242,456 → 244,085 JS;
-    16,947 → 18,507 CSS).
-  - The grid's motion is a 1.3 KB deferred chunk on the hero's engine.
+- **One frame.** Same radius, ground (the call's page), gutter and title, a title alone on every
+  tile ("From a computer" and "On by default" are gone).
+  - Each picture fills the tile under its title, to its sides and foot, at 1:1 at the tile's own
+    width.
+  - Every tile is 351px tall from 48rem (347 on a phone), so every picture is 280px. Each crop is
+    composed for that.
+  - Three columns from 72rem; below that two, with the share tile at 2:1.
+- **One tile moves at a time.**
+  - A conductor (GridStages.tsx) hands out turns in reading order, skipping tiles that are off
+    screen.
+  - Each turn is one beat of about 1.5 to 2.5s; it settles (450ms), and the next comes after a
+    900ms pause.
+  - A full round is about 17s. No cursors anywhere.
+- **Stories only go forward.** Each script runs for as long as its stage is on screen and keeps its
+  own state, so nothing resets in view; off screen the kit resets the stage to its poster, unseen.
+  - Share: the presenter's chart takes in a new week; the bars move along one place, the new one
+    grows, the oldest fades out at the left. The banner stays. Never black.
+  - Noise, on, as by default: each beat is the next few words (the voice bars change), and a
+    noise reaches the microphone (Keyboard, Dog, Coffee machine in turn). It shows in grey behind
+    the voice, named, and goes; the voice carries on. The switch never flips.
+  - Polls: new votes arrive and the counts tick up; your ✓ stays. On the third turn the poll ends
+    ("Ended · 18 votes", the product's own words). The next one rises in as the old one leaves,
+    and your vote lands in it (spinner, then ✓).
+    - The polls cycle: offsite day, lunch, venue. Askers Sam, Noor, Theo.
+  - Reactions: every other beat a row's count ticks up and its emoji nudges once. In between, a
+    reaction arrives on top (named if alone, a count if several), and the oldest at the bottom
+    expires: it slides out and the rest glide down.
+    - The lane's order is the product's: oldest at the bottom, newest on top (Reactions.tsx).
+    - Nothing flies.
+  - Hands: a hand goes up per beat and gets its ordinal; with three up, Lower all is pressed (its
+    fill, no cursor) and the rows go.
+    - The list below glides up into their place, then is pushed down a row per new hand.
+    - Each round is new people in a new order. The heading keeps its count as it fades, so there
+      is no "Raised hands 1" over no rows, and no ghost row.
+- **The review's other items:**
+  - Avatar: 96px from 48rem, 64px on a phone, centred in the tile, ringed, clear of the lane.
+  - Phone share: the screen runs off the right and the bottom, drawn at 0.85 (every word 10px or
+    more). The banner is whole, 24px down and a gutter from the right.
+    - At 1:1 the banner is 350px, which a 358px tile cannot hold with a gutter.
+  - Noise crop: the menu runs on (`data-crop`); the crop cuts through the Speaker list's device
+    row, not along a rule.
+  - Poll: the question sits on the options' left edge; the counts are separate spans with a gap.
+  - Numbers: the grid's counters are a small tick (the new figure rises in, the old rises out).
+    The kit's Count re-centred its digit strip after each roll, which film read as a 120 to 140px
+    snap.
+  - Hand badges: they fade with their row and change scale only while invisible, so there is no
+    snap.
+  - Lime only on each tile's payoff: the share banner's icon (the product's), the noise switch,
+    your vote (✓ and your bar; everyone else's bars grey), "1st".
+    - Calmed: the waveform (light), the device check (muted), the speaking bars (light), the hand
+      badges (the hand-raised tint), Lower all (text colour).
+- **Weight.**
+  - First load: +2.1 KB JS and +1.6 KB CSS gzip against main (242,456 → 244,545 JS;
+    16,947 → 18,503 CSS).
+  - The grid's motion is a 1.8 KB deferred chunk, on the hero's 10.2 KB engine chunk, shared.
+  - GridStages imports the kit's Count only so the bundler keeps one engine chunk for both.
+    Without it the engine shipped twice.
 
 ## Gate
 
@@ -76,40 +96,28 @@ Every tile, at 1440 and 390, on the production build:
 rehearsal passed (necessary, not sufficient: references/verify.md and the fresh eye in review.md still stand)
 ```
 
-## Film lines → fix
+The home e2e suite also samples the grid every 100ms for 21s. It checks that:
 
-- `real words … are cut by the crop` and `runs only 19/23px past the bottom edge` (polls): the
-  crop went through "Friday". The fifth option is now a wordless row running 24px+ past.
-- `tight inset: div.gm-menu-label` (noise): the labels' words now sit in their own box in the
-  label's padding.
-- `half-pixel glyph` (noise tags): even widths.
-- `emoji icon` (reactions burst): the burst and lane are marked `data-emoji`; they are reactions.
-- `framing: div.flex ends 10px short of the top edge` (share, 390): the phone design puts the
-  banner 24px down (19px once drawn at 0.8) and the slide under it.
-- `real words … "Amara Osei" / "DB" cut by the crop` (hands): the list now shows only the rows
-  that fit whole above the crop at each count.
-- `lands on a transform` (share page) and `steps in its box` (name label): lasting layers.
+- at most one tile is mid-beat at any time;
+- all five take a turn;
+- every tile at rest still shows its payoff.
+
+## Film lines → fix (v3)
+
+- `framing: span runs only 19px past the right edge` (phone share chart): the presenter's slide
+  is cut on purpose, so the chart carries `data-crop`.
+- `hard edge` (the oldest chart bar sliding out): it fades in 90ms, before the screen's edge.
+- `hard edge` on the counters (a clipped tick): no clip; the figure fades in from below.
+- `jump` on lane rows: the lane's glide was overridden by the scenes' generic transition; it is
+  now 420ms on a standard curve.
+- `half-pixel glyph` (noise tags): even widths with even padding.
 - Still printed, judged intended:
-  - `near aligned` and `lopsided` on the poll card and lane chips: Polls.tsx's and Reactions.tsx's
-    own insets;
-  - `jump` and `settle snap` on Count's digit strips;
-  - `appears with no entrance` on a Count or the old poll card (an identical copy taking over);
-  - `near-empty frames` at each loop's reset (sharing stopped, the lane run out, hands lowered),
-    which are the product's real states.
-
-## Review
-
-Fresh-eye pass on the frames (review.md), by the builder, not an independent reviewer:
-
-- The reaction speaker's yellow repeated the hero's yellow "AC". Now pink, a pastel from
-  Avatar.tsx that the page uses nowhere else.
-- The lane's top half of the tile was empty. A fourth row lifts the lane level with the avatar.
-- The hands list sat empty for half a second after Lower all. Now the list glides up.
-- At 1024 the share tile cropped the screen by 55% and three columns truncated names. Fixed by the
-  2:1 share tile and the 72rem breakpoint.
+  - `lopsided` lane chips: Reactions.tsx's own `pl-2 pr-3`;
+  - `jump` on a poll count's left edge when it gains a digit: the product's own reflow;
+  - `vanishes with no exit` on a poll figure: an outgoing tick already faded.
 
 ## Not checked
 
 - Safari and Firefox, and real devices.
-- An independent reviewer: a separate designer reviews before the founder.
-- Widths between those filmed (390, 768, 1024, 1152, 1440) only by posters.
+- An independent review of v3 (the reviewer reviews it before the founder).
+- Widths between those filmed (390, 768, 1024, 1440) only by posters.
