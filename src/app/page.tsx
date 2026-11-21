@@ -144,7 +144,7 @@ export default function Home() {
             </div>
           </section>
 
-          <div className="anim-rise px-3 [animation-delay:120ms] sm:px-8 lg:px-0 lg:pl-6">
+          <div className="anim-rise -mx-1 [animation-delay:120ms] sm:mx-0 sm:px-8 lg:px-0 lg:pl-6">
             <HeroArt quiet={menuOpen} />
           </div>
         </div>
