@@ -13,6 +13,8 @@
 //   scenarios   proof-tree, chain-kill and slow-child (PLAN T3, T4, C3), each alone on a runner.
 //   sharded     PLAN H5: gate-small at 100 peers, 4 shards of 25 on 4 runners, one report.
 //   gate        PLAN H6, SPEC §12.3: 200 peers, 8 shards of 25, ten minutes of churn.
+//   integration before any of these, merge overlay-integration (the whole engine, composition root
+//               and all, as the integrator has assembled it) instead of the separate branches.
 //   merge       before any of these, merge the engineers' overlay-* branches into the checkout,
 //               so the run uses whatever of the engine is real (H6). Stubs are named in the report.
 //
@@ -53,7 +55,8 @@ const out = {
   has_shards: String(shards.length > 0),
   single: JSON.stringify({ include: single.length ? single : [{ dir: "none", scenario: "none", peers: 0 }] }),
   has_single: String(single.length > 0),
-  merge: String(want.has("merge")),
+  merge: String(want.has("merge") || want.has("integration")),
+  merge_mode: want.has("integration") ? "integration" : "branches",
   any: String(shards.length > 0 || single.length > 0),
   runs: [...want].join(" "),
 };

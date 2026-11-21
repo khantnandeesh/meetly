@@ -45,6 +45,12 @@ describe("overlay-swarm plan", () => {
     );
   });
 
+  it("merges the integrator's branch instead of the separate ones when asked", () => {
+    const out = plan({ EVENT: "push", COMMIT_MESSAGE: "[swarm: gate integration]" });
+    assert.deepEqual([out.merge, out.merge_mode], ["true", "integration"]);
+    assert.equal(plan({ EVENT: "push", COMMIT_MESSAGE: "[swarm: gate merge]" }).merge_mode, "branches");
+  });
+
   it("runs a manual run's input", () => {
     const out = plan({ EVENT: "workflow_dispatch", RUNS_INPUT: "experiment" });
     const shards = JSON.parse(out.shards).include as { run: string; scenario: string }[];
