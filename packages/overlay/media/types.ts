@@ -179,5 +179,10 @@ export type PlayerOptions = {
    * time, without decoding. Lets one machine hold many more peers (SPEC §13.2).
    */
   decode?: boolean;
+  /**
+   * A light viewer has no sound card. It takes the output latency one would have had to be this,
+   * so that its latency is a decoding viewer's (40 unless said).
+   */
+  lightOutputLatencyMs?: number;
   logger?: Logger;
 };

@@ -50,6 +50,35 @@ export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
       ["no errors", r.errors.length === 0, r.errors.join("; ")],
     ],
   },
+  m3: {
+    options: { seconds: 20 },
+    check: (r) => [
+      [`glass-to-glass p95 ≤ 130 ms at D = ${r.playoutMinMs}`, n(r.glassToGlassMs.p95) <= 130, `p50 ${r.glassToGlassMs.p50}, p95 ${r.glassToGlassMs.p95}, max ${r.glassToGlassMs.max} ms; path ${r.pathMs}, delay ${r.appliedDelayMs}`],
+      ["0 decode errors with 5% of layer 1 and 10% of layer 2 removed", r.decodeErrors.length === 0, `${r.decodeErrors.length} errors; ${r.loopback.framesRemoved} of ${r.loopback.framesSent} frames removed; ${r.player.video?.lost} lost, ${r.player.video?.dropped} dropped`],
+      ["a <video> element shows the track", r.element !== null && r.element.width > 0 && n(r.elementFps) >= 15, `${r.element?.width}×${r.element?.height}, ${r.elementFps} fps presented, ${r.renderedFps} rendered, ${r.encodedFps} encoded`],
+      ["no errors", r.errors.length === 0, r.errors.join("; ")],
+    ],
+  },
+  clap: {
+    options: { seconds: 12, lostAudioEvery: 37 },
+    check: (r) => [
+      ["every flash rendered and every click heard", r.flashes >= r.seconds - 1 && r.clicks >= r.seconds - 1, `${r.flashes} flashes, ${r.clicks} clicks`],
+      ["click against flash within ±45 ms", r.pairs.filter((p) => p.clickMinusFlashMs !== null).length >= r.seconds - 1 && r.pairs.every((p) => p.clickMinusFlashMs === null || Math.abs(p.clickMinusFlashMs) <= 45), `${r.skewMs.min}..${r.skewMs.max} ms, p50 ${r.skewMs.p50}; opus adds ${r.opusDelayMs} ms; output latency ${r.outputLatencyMs} ms`],
+      ["a lost audio frame is concealed and counted", Math.abs(n(r.concealedMs) - 20 * r.lostAudioFrames) <= 40, `${r.concealedMs} ms concealed for ${r.lostAudioFrames} frames lost`],
+      ["never a gap of raw silence under 40 ms", r.rawSilencesUnder40Ms === 0, `${r.rawSilencesUnder40Ms}`],
+      ["with every frame sent twice, nothing played twice", r.audio !== null && r.audio.late === 0 && r.audio.repeats === 0 && r.audio.drops === 0, JSON.stringify(r.audio)],
+      ["no errors", r.errors.length === 0, r.errors.join("; ")],
+    ],
+  },
+  m5: {
+    options: { seconds: 12 },
+    check: (r) => [
+      ["light and decoding viewers within 15 ms at p50", Math.abs(n(r.light.p50Ms) - n(r.decoding.p50Ms)) <= 15, `light ${r.light.p50Ms}, decoding ${r.decoding.p50Ms} ms`],
+      ["decoding: latency normal again within 300 ms of the parent's death", n(r.decoding.normalAfterKillMs) <= 300, `${r.decoding.normalAfterKillMs} ms; freeze ${r.decoding.freezeMs} ms; ${r.decoding.lateFramesAfterKill} late frames`],
+      ["light: latency normal again within 300 ms of the parent's death", n(r.light.normalAfterKillMs) <= 300, `${r.light.normalAfterKillMs} ms; freeze ${r.light.freezeMs} ms; ${r.light.lateFramesAfterKill} late frames`],
+      ["no errors", r.errors.length === 0, r.errors.join("; ")],
+    ],
+  },
   deps: {
     options: { seconds: 6 },
     check: (r) => [

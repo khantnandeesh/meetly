@@ -23,6 +23,12 @@ const AUDIO_HOLE_US = 5000;
 /** The audio timeline is steered by at most this much per window of blocks, to follow the sound card's clock. */
 const AUDIO_STEER_US = 1000;
 const AUDIO_STEER_WINDOW = 50;
+/**
+ * Opus's look-ahead: what a decoder makes of a frame starts this long before the frame's first
+ * input sample (312 samples at 48 kHz; measured in the browser by the clap test, 6.6 ms). The
+ * frame is stamped with the time of the sound it decodes to, so that sound and picture line up.
+ */
+export const OPUS_DELAY_US = 6500;
 
 export function videoStreamConfig(encoding: ProgramSourceOptions["encoding"], configId: number, bitrateKbps: number): StreamConfig {
   const { video } = encoding;
@@ -454,8 +460,9 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
   private onAudioChunk(chunk: EncodedAudioChunk): void {
     const { audio } = this.options.encoding;
     // The encoder numbers its output from its first input; so do we, on the session clock.
-    const captureUs = Math.round(this.audioOutUs ?? this.nowUs());
-    this.audioOutUs = (this.audioOutUs ?? captureUs) + (chunk.duration ?? audio.frameUs);
+    const firstSampleUs = Math.round(this.audioOutUs ?? this.nowUs());
+    this.audioOutUs = (this.audioOutUs ?? firstSampleUs) + (chunk.duration ?? audio.frameUs);
+    const captureUs = firstSampleUs - (audio.codec === "opus" ? OPUS_DELAY_US : 0);
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
     const frame: EncodedFrame = {

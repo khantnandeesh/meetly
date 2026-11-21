@@ -14,6 +14,13 @@
  * down) would find every frame late. §10.2's own account of glass-to-glass (encode + the hops +
  * *D* + decode) is the intent, and is what this does.
  *
+ * With sound, the delay also holds the sound's own way out: a frame must reach the worklet a
+ * little before it renders it (`AUDIO_LEAD_US`), and the worklet renders the sound card's output
+ * latency ahead of what is heard. Were that taken out of *D*, a sound card with 40 ms of latency
+ * would leave the network almost nothing of D = 60, and the second copy of an audio frame
+ * (§9.4, 20 ms behind the first) would always come too late to be of use. So *D* is the
+ * network's, all of it, and the audio pipeline comes on top.
+ *
  * With `decode: false` (the harness's light viewers, §13.2) nothing is decoded: a frame is
  * "rendered" when the jitter buffer hands it out, which is when a decoder would have got it.
  */
@@ -36,11 +43,15 @@ export const TICK_MS = 5;
  */
 export const AUDIO_LEAD_US = 15_000;
 /**
- * A video frame is decoded when the sound reaches its capture time, and shown when it comes out
- * of the decoder, a few milliseconds late. This much more keeps it inside the window of §10.5
- * when a delay change moves the sound back a frame at once.
+ * A video frame goes to the decoder about as long before its time as decoding takes (this much
+ * more than the decoder's median), and waits, decoded, until the sound reaches it: shown no more
+ * than `SHOW_EARLY_US` early.
  */
-export const VIDEO_BEHIND_US = 5_000;
+export const VIDEO_LEAD_SPARE_US = 2_000;
+export const VIDEO_LEAD_MAX_US = 25_000;
+export const SHOW_EARLY_US = 2_000;
+/** A light viewer has no sound card; it takes this to be the output latency one would have had, to stay honest about latency (§13.2). */
+export const LIGHT_OUTPUT_LATENCY_MS = 40;
 /**
  * The path's floor is taken over this long, so that a burst of delay is ridden out by D rather
  * than followed; but when even the floor of a shorter window says frames come too late to be
@@ -98,6 +109,10 @@ type VideoState = {
   needKey: boolean;
   rendered: number;
   dropped: number;
+  /** Not decoded because they are above the layers this viewer asked for. */
+  aboveCap: number;
+  /** When the cap last changed, and to what: for a test, or a look at a run. */
+  capChanges: { at: number; cap: number }[];
   lastRenderedUs: number | null;
   first: boolean;
   width: number;
@@ -105,6 +120,8 @@ type VideoState = {
   /** The decoder's time per frame, recent ones (from going in, or from the frame before coming out, to coming out): the statistics and the layer rule. */
   decodeMs: number[];
   lastOutputAt: number;
+  /** Decoded and waiting for the sound to reach them, in capture order. */
+  ready: { decoded: DecodedVideo; pending: PendingDecode }[];
   path: PathFloor;
   pathRecent: PathFloor;
   sinceCheck: number[];
@@ -142,6 +159,8 @@ export type PlayerDebug = {
   /** The jitter buffer's D. */
   playoutDelayMs: number;
   layerCap: number;
+  aboveCap: number;
+  capChanges: number;
   audio: ReturnType<AudioPlayout["counters"]> | null;
   buffers: Record<number, ReturnType<JitterBufferImpl["stats"]>>;
 };
@@ -216,12 +235,15 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
           needKey: true,
           rendered: 0,
           dropped: 0,
+          aboveCap: 0,
+          capChanges: [],
           lastRenderedUs: null,
           first: true,
           width: config.width ?? 0,
           height: config.height ?? 0,
           decodeMs: [],
           lastOutputAt: -Infinity,
+          ready: [],
           path: new PathFloor(PATH_WINDOW_MS),
           pathRecent: new PathFloor(PATH_GREW_WINDOW_MS),
           sinceCheck: [],
@@ -329,7 +351,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     const recent = slower((stream) => stream.pathRecent.floor(now));
     // Everything lately has come too late to be played: the path is longer now, and what came
     // before by the shorter one is no guide to it.
-    if (path !== null && recent !== null && this.appliedMs !== null && recent > path && recent + RESYNC_SLACK_MS > this.appliedMs) {
+    if (path !== null && recent !== null && this.appliedMs !== null && recent > path && recent + RESYNC_SLACK_MS + this.pipelineMs() > this.appliedMs) {
       this.video?.path.forgetBefore(now - PATH_GREW_WINDOW_MS);
       this.audio?.path.forgetBefore(now - PATH_GREW_WINDOW_MS);
       return slower((stream) => stream.path.floor(now));
@@ -337,14 +359,22 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     return path;
   }
 
-  /** The shortest delay that does not lose frames that come by the path. */
-  private leastDelayMs(): number {
-    return Math.max(0, this.pathMs() ?? 0) + RESYNC_SLACK_MS;
+  /** The sound's way out, beyond the network's D: the lead the worklet needs, and the sound card's latency. Nothing without sound. */
+  private pipelineMs(): number {
+    const audio = this.audio;
+    if (!audio) return 0;
+    const outputMs = this.decoding ? (audio.playout?.renderAheadUs() ?? 0) / 1000 : (this.options.lightOutputLatencyMs ?? LIGHT_OUTPUT_LATENCY_MS);
+    return AUDIO_LEAD_US / 1000 + outputMs;
   }
 
-  /** The delay wanted between capture and playout: the path, then D. */
+  /** The shortest delay that does not lose frames that come by the path. */
+  private leastDelayMs(): number {
+    return Math.max(0, this.pathMs() ?? 0) + RESYNC_SLACK_MS + this.pipelineMs();
+  }
+
+  /** The delay wanted between capture and playout: the path, then D, then the sound's way out. */
   private targetDelayMs(): number {
-    return Math.max(0, this.pathMs() ?? 0) + this.playoutDelayMs();
+    return Math.max(0, this.pathMs() ?? 0) + this.playoutDelayMs() + this.pipelineMs();
   }
 
   /**
@@ -397,14 +427,16 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     if (audio) {
       // "Due" in a jitter buffer is captureUs + D on the session clock; asked at playhead + D,
       // that is the playhead reaching captureUs, whatever delay playout is really at.
-      const lead = this.decoding ? AUDIO_LEAD_US + (audio.playout?.wantsDrop() ? (audio.config.frameUs ?? 20_000) : 0) : 0;
+      // The playhead is what is heard; the worklet renders the output latency ahead of that, and
+      // must have each frame by then.
+      const lead = this.decoding ? AUDIO_LEAD_US + (audio.playout?.renderAheadUs() ?? 0) + (audio.playout?.wantsDrop() ? (audio.config.frameUs ?? 20_000) : 0) : 0;
       const frames = audio.buffer.pop(playheadUs + audio.buffer.delayUs() + lead);
       if (frames.length > 0) this.playAudio(audio, frames);
     }
     const video = this.video;
     if (video) {
-      const behind = this.decoding && this.audioIsClock ? VIDEO_BEHIND_US : 0;
-      const frames = video.buffer.pop(playheadUs - behind + video.buffer.delayUs());
+      this.showReady(video, playheadUs, nowUs);
+      const frames = video.buffer.pop(playheadUs + this.videoLeadUs(video) + video.buffer.delayUs());
       for (const frame of frames) this.decodeVideo(video, frame, nowUs);
       const now = this.options.clock.now();
       if (now - this.lastLayerCheck >= LAYER_CHECK_MS) {
@@ -489,7 +521,10 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     }
     // Above what this viewer asked for (a parent may not have caught up yet): only frames of the
     // same layer or above build on it, so it is not decoded, and nothing that needed it is.
-    if (header.temporal > video.cap) return;
+    if (header.temporal > video.cap) {
+      video.aboveCap++;
+      return;
+    }
     // A decoder that is behind is spared what nothing depends on.
     if (discardable && backend.queueSize() >= DECODER_BEHIND_FRAMES) {
       video.dropped++;
@@ -530,10 +565,38 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       decoded.close();
       return;
     }
-    // Shown when the playhead reaches its capture time. It was handed to the decoder then, so
-    // by now it is late by the time decoding took; past 45 ms a frame nothing needs is dropped.
+    // Shown when the playhead reaches its capture time: now if it has, or when it does.
     const nowUs = this.nowUs();
-    const lateUs = this.playheadUs(nowUs) - decoded.captureUs;
+    const playheadUs = this.playheadUs(nowUs);
+    if (decoded.captureUs - playheadUs > SHOW_EARLY_US || video.ready.length > 0) {
+      video.ready.push({ decoded, pending });
+      this.showReady(video, playheadUs, nowUs);
+      return;
+    }
+    this.show(video, decoded, pending, playheadUs, nowUs);
+  }
+
+  /** How long before its time a frame goes to the decoder: about as long as decoding takes. */
+  private videoLeadUs(video: VideoState): number {
+    if (!this.decoding || video.decodeMs.length === 0) return 0;
+    const sorted = [...video.decodeMs].sort((a, b) => a - b);
+    const median = sorted[sorted.length >> 1] as number;
+    return Math.min(VIDEO_LEAD_MAX_US, median * 1000 + VIDEO_LEAD_SPARE_US);
+  }
+
+  /** Shows what was decoded early, once the playhead has come to it. */
+  private showReady(video: VideoState, playheadUs: number, nowUs: number): void {
+    while (video.ready.length > 0) {
+      const first = video.ready[0] as { decoded: DecodedVideo; pending: PendingDecode };
+      if (first.decoded.captureUs - playheadUs > SHOW_EARLY_US) return;
+      video.ready.shift();
+      this.show(video, first.decoded, first.pending, playheadUs, nowUs);
+    }
+  }
+
+  private show(video: VideoState, decoded: DecodedVideo, pending: PendingDecode, playheadUs: number, nowUs: number): void {
+    // Past 45 ms a frame nothing needs is dropped rather than shown (§10.5).
+    const lateUs = playheadUs - decoded.captureUs;
     if (lateUs > SHOW_LATE_US && pending.discardable) {
       video.dropped++;
       decoded.close();
@@ -550,11 +613,17 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     this.rendered(video, pending.frameId, decoded.captureUs, nowUs);
   }
 
+  private dropReady(video: VideoState): void {
+    for (const { decoded } of video.ready) decoded.close();
+    video.ready = [];
+  }
+
   private onVideoError(error: Error): void {
     this.fail("video decoder", error);
     const video = this.video;
     if (!video?.backend) return;
     video.pending.clear();
+    this.dropReady(video);
     video.needKey = true;
     try {
       video.backend.reset();
@@ -577,15 +646,17 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
   }
 
   /**
-   * What this viewer's decoder can keep up with (PLAN M6). A frame that spends longer in the
-   * decoder than the interval between frames means frames are piling up: ask for one temporal
-   * layer less. With plenty to spare for long enough, ask for it back.
+   * What this viewer's decoder can keep up with (PLAN M6). When the decoder's time per frame
+   * (the median over half a second: one late callback on a busy main thread is not a slow
+   * decoder) is longer than the interval between frames, frames are piling up: ask for one
+   * temporal layer less. With plenty to spare for long enough, ask for it back.
    */
   private checkLayers(video: VideoState, now: number): void {
     const times = video.sinceCheck;
     video.sinceCheck = [];
     if (!this.decoding || times.length === 0) return;
-    const mean = times.reduce((sum, ms) => sum + ms, 0) / times.length;
+    const sorted = [...times].sort((a, b) => a - b);
+    const mean = sorted[sorted.length >> 1] as number;
     const interval = (cap: number) => (1000 / (video.config.fps ?? 30)) * 2 ** (video.topLayer - cap);
     if (mean > interval(video.cap)) {
       video.spareSince = null;
@@ -594,6 +665,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
         // Giving back a layer soon after asking for it: wait twice as long before asking again.
         video.upAfterMs = now - video.raisedAt < LAYER_UP_FAILED_MS ? Math.min(LAYER_UP_MAX_MS, video.upAfterMs * 2) : LAYER_UP_AFTER_MS;
         video.cap--;
+        video.capChanges.push({ at: now, cap: video.cap });
         video.slowSince = null;
       }
       return;
@@ -603,6 +675,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       video.spareSince ??= now;
       if (now - video.spareSince >= video.upAfterMs) {
         video.cap++;
+        video.capChanges.push({ at: now, cap: video.cap });
         video.raisedAt = now;
         video.spareSince = null;
       }
@@ -665,6 +738,8 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       pathMs: this.pathMs(),
       playoutDelayMs: this.playoutDelayMs(),
       layerCap: this.video?.cap ?? 0,
+      aboveCap: this.video?.aboveCap ?? 0,
+      capChanges: this.video?.capChanges.length ?? 0,
       audio: this.audio?.playout?.counters() ?? null,
       buffers,
     };
@@ -680,6 +755,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     this.closed = true;
     this.cancelTick?.();
     this.cancelTick = null;
+    if (this.video) this.dropReady(this.video);
     this.video?.backend?.close();
     await this.audio?.backend?.close();
   }

@@ -141,6 +141,11 @@ export class AudioPlayout {
     return this.started;
   }
 
+  /** How far ahead of what is heard the worklet renders: the sound card's output latency, in microseconds. */
+  renderAheadUs(): number {
+    return Math.max(0, this.backend.outputLatency()) * 1e6;
+  }
+
   /** A frame is to be dropped: the sequencer needs the one after it in good time. */
   wantsDrop(): boolean {
     return this.started && this.wantDrop;

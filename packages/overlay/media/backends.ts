@@ -35,6 +35,8 @@ export interface AudioBackend {
   contextTime(): number;
   /** From a rendered sample to the loudspeaker, in seconds. */
   outputLatency(): number;
+  /** Which context time is at the loudspeaker at which `performance.now()`: for a test to know when a sample was heard. */
+  outputTimestamp?(): { contextTime: number; performanceTime: number } | null;
   configure(config: StreamConfig): void;
   /** Decode one frame. `play` false: decode to keep the decoder's state, and throw the sound away. */
   decode(frame: { captureUs: number; data: Uint8Array; play: boolean }): void;
@@ -186,6 +188,11 @@ class BrowserAudio implements AudioBackend {
   outputLatency(): number {
     const latency = (this.context.outputLatency || 0) + (this.context.baseLatency || 0);
     return Number.isFinite(latency) ? latency : 0;
+  }
+
+  outputTimestamp(): { contextTime: number; performanceTime: number } | null {
+    const stamp = typeof this.context.getOutputTimestamp === "function" ? this.context.getOutputTimestamp() : null;
+    return stamp && stamp.contextTime !== undefined && stamp.performanceTime !== undefined ? { contextTime: stamp.contextTime, performanceTime: stamp.performanceTime } : null;
   }
 
   configure(config: StreamConfig): void {

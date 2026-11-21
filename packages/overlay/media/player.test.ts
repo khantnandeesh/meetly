@@ -9,7 +9,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReceivedFrame } from "@meetly/overlay/types";
-import { createPlayerWith, FREEZE_US, PATH_GREW_WINDOW_MS, type PlayerImpl } from "@meetly/overlay/media/player";
+import { AUDIO_LEAD_US, createPlayerWith, FREEZE_US, PATH_GREW_WINDOW_MS, type PlayerImpl } from "@meetly/overlay/media/player";
 import { createFakeBackends, SAMPLE_RATE, type FakeBackends } from "@meetly/overlay/media/testing/fakeBackends";
 import { AUDIO_CONFIG, VIDEO_CONFIG, audioFrames, createFakeClock, createFakeSessionClock, seeded, videoFrames, type FakeClock } from "@meetly/overlay/media/testing/fakes";
 import type { SessionClock } from "@meetly/overlay/runtime";
@@ -17,6 +17,8 @@ import type { SessionClock } from "@meetly/overlay/runtime";
 const D = 60;
 /** How long after capture a frame arrives, unless a test says otherwise: the path. */
 const PATH = 15;
+/** The sound's way out, on top of D: the worklet's lead (the fake sound card has no output latency, and light viewers here are told so). */
+const PIPE = AUDIO_LEAD_US / 1000;
 /** The session clock is not the local one: the player must not mix them up. */
 const SESSION_OFFSET_MS = 7_000;
 /** The fake clock starts at 1 s; the source's first frame is captured 20 ms after that, in session time. */
@@ -26,6 +28,8 @@ type Rendered = { frameId: number; captureUs: number; renderedUs: number; latenc
 
 type Setup = {
   decode?: boolean;
+  /** The sound card's output latency, in seconds. */
+  outputLatency?: number;
   audio?: boolean;
   audioBlocked?: boolean;
   seconds?: number;
@@ -41,7 +45,7 @@ async function setup(options: Setup = {}) {
   const clock: FakeClock = createFakeClock(1000);
   const session: SessionClock = createFakeSessionClock(clock, SESSION_OFFSET_MS);
   const backends: FakeBackends = createFakeBackends(clock, { audioBlocked: options.audioBlocked ?? false });
-  const player: PlayerImpl = createPlayerWith({ sessionClock: session, clock, playoutMinMs: D, playoutMaxMs: 400, decode: options.decode ?? true }, backends);
+  const player: PlayerImpl = createPlayerWith({ sessionClock: session, clock, playoutMinMs: D, playoutMaxMs: 400, decode: options.decode ?? true, lightOutputLatencyMs: options.outputLatency === undefined ? 0 : options.outputLatency * 1000 }, backends);
   const withAudio = options.audio ?? true;
   const rendered: Rendered[] = [];
   const events: string[] = [];
@@ -54,6 +58,7 @@ async function setup(options: Setup = {}) {
   player.on("audioBlocked", (blocked) => events.push(`audioBlocked ${blocked}`));
   player.on("error", (error) => events.push(`error ${error.message}`));
   await player.configure(withAudio ? [VIDEO_CONFIG, AUDIO_CONFIG] : [VIDEO_CONFIG]);
+  if (options.outputLatency !== undefined) for (const audio of backends.audios) audio.latency = options.outputLatency;
   const seconds = options.seconds ?? 6;
   const startUs = Math.round(session.now() * 1000) + 20_000;
   const frames = [...videoFrames(Math.round(seconds * 30), { startUs }), ...(withAudio ? audioFrames(seconds * 50, { startUs }) : [])];
@@ -108,12 +113,24 @@ describe("player: video against the sound (§10.5)", () => {
     await t.player.close();
   });
 
-  it("glass to glass is the path, then D, then the decode (§10.2): about path + D + 10 ms", async () => {
+  it("a sound card with 40 ms of output latency: frames reach the worklet in time, and video is timed by what is heard", async () => {
+    const t = await setup({ seconds: 6, outputLatency: 0.04 });
+    t.run(t.startMs + 6000);
+    const audio = t.player.debug().audio!;
+    assert.equal(audio.concealedMs, 0);
+    assert.equal(audio.late, 0);
+    // What is heard is what the worklet rendered 40 ms ago.
+    const offsets = avOffsetsMs(t.rendered.slice(10)).map((ms) => ms - 40);
+    assert.ok(Math.min(...offsets) >= -15 && Math.max(...offsets) <= 45, `offsets ${Math.min(...offsets)}..${Math.max(...offsets)} ms`);
+    await t.player.close();
+  });
+
+  it("glass to glass is the path, then D, then the sound's way out (§10.2): about path + D + 15 ms", async () => {
     const t = await setup({ seconds: 5 });
     t.run(t.startMs + 5000);
     const latency = t.rendered.slice(10).map((r) => r.latencyMs);
     assert.ok(Math.abs((t.player.debug().pathMs as number) - PATH) <= 1, `path ${t.player.debug().pathMs}`);
-    assert.ok(quantile(latency, 0.5) >= PATH + D && quantile(latency, 0.95) <= PATH + D + 15, `p50 ${quantile(latency, 0.5)}, p95 ${quantile(latency, 0.95)}`);
+    assert.ok(quantile(latency, 0.5) >= PATH + D + PIPE - 3 && quantile(latency, 0.95) <= PATH + D + PIPE + 10, `p50 ${quantile(latency, 0.5)}, p95 ${quantile(latency, 0.95)}`);
     assert.equal(t.player.stats().video?.dropped, 0);
     assert.equal(t.player.stats().video?.lost, 0);
     await t.player.close();
@@ -171,7 +188,7 @@ describe("player: the delay adapts without a glitch ([D26])", () => {
     assert.equal(counters.concealedMs, 0, "nothing concealed");
     assert.equal(counters.late, 0);
     const applied = t.player.debug().appliedDelayMs;
-    assert.ok(Math.abs(applied - (PATH + 110)) <= 12, `delay now ${applied} ms`);
+    assert.ok(Math.abs(applied - (PATH + 110 + PIPE)) <= 12, `delay now ${applied} ms`);
     for (let i = 4; i < delays.length; i++) assert.ok((delays[i] as number) - (delays[i - 4] as number) <= 21, `rose ${(delays[i] as number) - (delays[i - 4] as number)} ms in a second`);
     assert.ok(maxStep(audio.output, fromSample) <= MAX_STEP, `a step of ${maxStep(audio.output, fromSample)}`);
     const offsets = avOffsetsMs(t.rendered.filter((r) => r.captureUs / 1000 > t.startMs + 2000));
@@ -184,7 +201,7 @@ describe("player: the delay adapts without a glitch ([D26])", () => {
     const t = await setup({ seconds: 14 });
     t.player.setLinkHints({ jitterMs: 20, rttMs: 30, lossPct: 0 });
     t.run(t.startMs + 5000);
-    assert.ok(Math.abs(t.player.debug().appliedDelayMs - (PATH + 110)) <= 12, `delay ${t.player.debug().appliedDelayMs}`);
+    assert.ok(Math.abs(t.player.debug().appliedDelayMs - (PATH + 110 + PIPE)) <= 12, `delay ${t.player.debug().appliedDelayMs}`);
     const audio = t.backends.audios[0]!;
     const fromSample = audio.output.length;
     const repeatsBefore = t.player.debug().audio!.repeats;
@@ -199,7 +216,7 @@ describe("player: the delay adapts without a glitch ([D26])", () => {
     assert.ok(counters.drops >= 2, `${counters.drops} drops`);
     assert.equal(counters.repeats, repeatsBefore);
     assert.equal(counters.concealedMs, 0);
-    assert.ok(t.player.debug().appliedDelayMs <= PATH + D + 20, `delay now ${t.player.debug().appliedDelayMs}`);
+    assert.ok(t.player.debug().appliedDelayMs <= PATH + D + PIPE + 20, `delay now ${t.player.debug().appliedDelayMs}`);
     assert.ok(maxStep(audio.output, fromSample) <= MAX_STEP, `a step of ${maxStep(audio.output, fromSample)}`);
     await t.player.close();
   });
@@ -211,7 +228,7 @@ describe("player: the delay adapts without a glitch ([D26])", () => {
     assert.equal(audio.resyncs, 0);
     assert.equal(audio.concealedMs, 0);
     assert.ok(audio.repeats >= 1 && audio.repeats <= 2, `${audio.repeats} repeats`);
-    assert.ok(Math.abs(t.player.debug().appliedDelayMs - (PATH + 30 + D)) <= 12, `delay ${t.player.debug().appliedDelayMs}`);
+    assert.ok(Math.abs(t.player.debug().appliedDelayMs - (PATH + 30 + D + PIPE)) <= 12, `delay ${t.player.debug().appliedDelayMs}`);
     assert.ok(!t.events.some((event) => event.startsWith("freeze")), t.events.join(", "));
     await t.player.close();
   });
@@ -223,7 +240,7 @@ describe("player: the delay adapts without a glitch ([D26])", () => {
     assert.equal(audio.resyncs, 1);
     // The sound stops for about as long as the path grew, and no longer.
     assert.ok(audio.concealedMs >= 80 && audio.concealedMs <= 100 + PATH_GREW_WINDOW_MS + 100, `concealed ${audio.concealedMs} ms`);
-    assert.ok(Math.abs(t.player.debug().appliedDelayMs - (PATH + 100 + D)) <= 21, `delay ${t.player.debug().appliedDelayMs}`);
+    assert.ok(Math.abs(t.player.debug().appliedDelayMs - (PATH + 100 + D + PIPE)) <= 21, `delay ${t.player.debug().appliedDelayMs}`);
     const after = t.rendered.filter((r) => r.renderedUs / 1000 > t.startMs + 3500);
     const offsets = avOffsetsMs(after);
     assert.ok(Math.min(...offsets) >= -15 && Math.max(...offsets) <= 45, `offsets ${Math.min(...offsets)}..${Math.max(...offsets)} ms`);
@@ -240,7 +257,7 @@ describe("player: the delay adapts without a glitch ([D26])", () => {
       if (Math.round(t.now()) % 1000 === 0) delays.push(t.player.debug().appliedDelayMs);
     });
     for (let i = 1; i < delays.length; i++) assert.ok((delays[i] as number) - (delays[i - 1] as number) <= 20.5, delays.join(" "));
-    assert.ok(Math.abs((delays[delays.length - 1] as number) - (PATH + 110)) <= 12, delays.join(" "));
+    assert.ok(Math.abs((delays[delays.length - 1] as number) - (PATH + 110 + PIPE)) <= 12, delays.join(" "));
     await t.player.close();
   });
 });
@@ -253,7 +270,7 @@ describe("player: light viewers (§13.2, [D29]; PLAN M5)", () => {
     assert.equal(t.backends.audios.length, 0, "no sound card");
     assert.ok(t.rendered.length >= 110, `${t.rendered.length} rendered`);
     const latency = t.rendered.map((r) => r.latencyMs);
-    assert.ok(Math.min(...latency) >= PATH + D && Math.max(...latency) <= PATH + D + 6, `${Math.min(...latency)}..${Math.max(...latency)} ms`);
+    assert.ok(Math.min(...latency) >= PATH + D + PIPE && Math.max(...latency) <= PATH + D + PIPE + 6, `${Math.min(...latency)}..${Math.max(...latency)} ms`);
     const stats = t.player.stats();
     assert.ok(stats.audio && stats.audio.playedMs >= 3800, `played ${stats.audio?.playedMs} ms`);
     assert.deepEqual(t.events, ["firstFrame"]);
@@ -300,15 +317,15 @@ describe("player: repair and catch-up (§10.3, §10.4; PLAN M5)", () => {
       const afterResume = t.rendered.filter((r) => r.renderedUs / 1000 >= t.startMs + resumeMs);
       // The first frame shown after the gap is a current one.
       const first = afterResume[0]!;
-      assert.ok(first.latencyMs <= PATH + D + 45, `first frame after the gap is ${first.latencyMs} ms old`);
+      assert.ok(first.latencyMs <= PATH + D + PIPE + 45, `first frame after the gap is ${first.latencyMs} ms old`);
       // And latency is normal again within 300 ms of the parent's death (proof: 173–245 ms after the kill).
-      const late = afterResume.filter((r) => r.latencyMs > PATH + D + 30);
+      const late = afterResume.filter((r) => r.latencyMs > PATH + D + PIPE + 30);
       assert.deepEqual(late.map((r) => `${r.frameId}: ${r.latencyMs} ms`), [], "frames shown late after the repair");
       const freezes = t.events.filter((event) => event.startsWith("freeze"));
       assert.equal(freezes.length, 1, t.events.join(", "));
       const ms = Number(freezes[0]!.split(" ")[1]);
       // What was captured in the last D of the gap arrives in time to be shown: the freeze is the gap less that, give or take a frame.
-      assert.ok(ms >= 400 - D - PATH && ms <= 400 + 2 * 34, `freeze of ${ms} ms`);
+      assert.ok(ms >= 400 - D - PATH - PIPE && ms <= 400 + 2 * 34, `freeze of ${ms} ms`);
       // Frames are never shown out of order.
       for (let i = 1; i < t.rendered.length; i++) assert.ok((t.rendered[i] as Rendered).frameId > (t.rendered[i - 1] as Rendered).frameId);
       if (decode) {

@@ -29,6 +29,11 @@ export type Loopback = {
   send(frame: EncodedFrame): void;
   /** Nothing passes while blocked: a parent that died. */
   setBlocked(blocked: boolean): void;
+  /**
+   * A parent that died and a backup that replays from its GOP cache: while held nothing passes;
+   * on release everything sent meanwhile arrives at once, marked recovered, then live resumes.
+   */
+  hold(held: boolean): void;
   /** Change the impairment while running. */
   set(options: Partial<Pick<LoopbackOptions, "delayMs" | "jitterMs" | "loss" | "dropLayer">>): void;
   stats(): { framesSent: number; framesRemoved: number; packetsSent: number; packetsLost: number; framesDelivered: number };
@@ -48,6 +53,8 @@ export function createLoopback(options: LoopbackOptions): Loopback {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
   let blocked = false;
+  let held: EncodedFrame[] | null = null;
+  let replaying = false;
   const counters = { framesSent: 0, framesRemoved: 0, packetsSent: 0, packetsLost: 0, framesDelivered: 0 };
   /** Per stream: frames being put together, and the ids already delivered (to drop duplicates). */
   const partial = new Map<string, Partial_>();
@@ -78,13 +85,26 @@ export function createLoopback(options: LoopbackOptions): Loopback {
     }
     const { fragIndex: _i, fragCount: _c, hopFlags: _f, hops: _h, linkSeq: _s, sendMs: _m, ...frameHeader } = header;
     counters.framesDelivered++;
-    options.deliver({ header: frameHeader, data, firstPacketAt: entry.firstAt, completeAt: clock.now(), from: "p-loopback", recovered: false });
+    options.deliver({ header: frameHeader, data, firstPacketAt: entry.firstAt, completeAt: clock.now(), from: "p-loopback", recovered: replaying });
+  };
+
+  const replay = (frames: EncodedFrame[]) => {
+    replaying = true;
+    try {
+      for (const frame of frames) for (const packet of packetizeFrame(frame.header, frame.data)) receive(packet);
+    } finally {
+      replaying = false;
+    }
   };
 
   return {
     send(frame) {
       counters.framesSent++;
       if (blocked) return;
+      if (held) {
+        held.push(frame);
+        return;
+      }
       const removeChance = frame.header.streamId === 0 ? (settings.dropLayer[frame.header.temporal] ?? 0) : 0;
       if (removeChance > 0 && (frame.header.flags & 1) === 0 && random() < removeChance) {
         counters.framesRemoved++;
@@ -103,6 +123,15 @@ export function createLoopback(options: LoopbackOptions): Loopback {
     },
     setBlocked(value) {
       blocked = value;
+    },
+    hold(value) {
+      if (value) {
+        held ??= [];
+        return;
+      }
+      const frames = held ?? [];
+      held = null;
+      replay(frames);
     },
     set(changes) {
       Object.assign(settings, changes);
