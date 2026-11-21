@@ -38,6 +38,42 @@ const eslintConfig = defineConfig([
     files: ["test/e2e/**/*.cjs", "scripts/join-bots.cjs"],
     rules: { "@typescript-eslint/no-require-imports": "off" },
   },
+  {
+    // The overlay engine (packages/overlay, docs/overlay/SPEC.md) is not part of the app yet. It
+    // joins the bundle at its integration step, through one adapter; until then nothing under
+    // src/ may import it, so `next build` cannot pick it up by accident.
+    files: ["src/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@meetly/overlay", "@meetly/overlay/*", "**/packages/overlay", "**/packages/overlay/**"],
+              message: "The overlay package is not wired into the app yet. See docs/overlay/PLAN.md, \"Integration\".",
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
+    // The overlay engine is framework-agnostic: no React, no Next.js, nothing of the app's, and
+    // neither media provider's SDK. An unused parameter may be kept, for its name, behind "_".
+    files: ["packages/overlay/**"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: ["react", "react-dom", "next", "livekit-client", "livekit-server-sdk", "@cloudflare/realtimekit"],
+          patterns: [
+            { group: ["react/*", "react-dom/*", "next/*", "@/*"], message: "packages/overlay does not depend on the app or its framework." },
+          ],
+        },
+      ],
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+    },
+  },
 ]);
 
 export default eslintConfig;

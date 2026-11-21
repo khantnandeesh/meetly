@@ -1,5 +1,5 @@
-# Checks every change: types, lint, unit tests, a production build for each media provider, and
-# the browser tests against a local LiveKit dev server.
+# Checks every change: types, lint, unit tests, the overlay engine's own checks, a production
+# build for each media provider, and the browser tests against a local LiveKit dev server.
 #
 # Runs on pull requests and on pushes to every branch except cloudflare-deploy. Pushes to
 # cloudflare-deploy run these same jobs through deploy.yml (workflow_call), and deploy only if
@@ -53,6 +53,35 @@ jobs:
         run: npm run lint
       - name: Unit tests
         run: npm test
+
+  # The overlay engine (packages/overlay, docs/overlay/SPEC.md), checked on its own: it is not
+  # part of the app's bundle, so none of this needs a build of the app. `checks` above also covers
+  # its files (the root type check, lint and `npm test` all include them); this job adds the
+  # package's own stricter type check and the swarm smoke test.
+  overlay:
+    name: Overlay engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Type check (the package's own tsconfig)
+        run: npm run overlay:check
+      - name: Lint (the package, and that the app does not import it)
+        run: npx eslint packages/overlay src
+      - name: Unit tests
+        run: npm run test:overlay
+      # A few headless Chromium peers and one killed relay. A placeholder that passes with a
+      # notice until the harness exists (packages/overlay/harness/smoke.ts); when it does, this
+      # job also installs Playwright, as `e2e` below does.
+      - name: Swarm smoke test
+        run: npm run overlay:smoke
 
   build:
     name: Build (${{ matrix.provider }})

@@ -1,0 +1,25 @@
+{
+  // The overlay package, checked on its own and more strictly than the app: `npm run overlay:check`.
+  // The root tsconfig.json also includes these files, so `npx tsc --noEmit` at the root covers
+  // them too, under the app's settings; both must pass.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "allowJs": false,
+    "incremental": false,
+    "plugins": [],
+    // Node runs the tests by stripping types, which needs every type-only import marked as one.
+    "verbatimModuleSyntax": true,
+    "noUnusedLocals": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "paths": {
+      "@meetly/overlay": ["./index.ts"],
+      "@meetly/overlay/*": ["./*"]
+    }
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules", "harness/dist"]
+}
