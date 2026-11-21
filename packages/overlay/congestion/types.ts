@@ -32,7 +32,18 @@ export interface LinkEstimator {
   takeFeedback(now: number): FeedbackBody;
   /** The echo fields for a heartbeat we are about to send. */
   echo(now: number): { echoMs: number; echoHoldMs: number };
+  /**
+   * The link as a whole: the direction that carries the media. A peer that hears fresh feedback
+   * and sends at least as much as it receives is judged on what it sends; otherwise on what it
+   * receives.
+   */
   estimate(now: number): LinkEstimate;
+  /**
+   * One direction by name. "sent": what the peer's feedback says of what we send (a parent's view
+   * of a child; a prober's view of its probe). "received": what we measure of what arrives (a
+   * child's view of its parent, whatever it is sending upstream at the time).
+   */
+  directed?(direction: "sent" | "received", now: number): LinkEstimate;
 }
 
 export type LayerGateEvents = {
@@ -57,15 +68,56 @@ export interface LayerGate extends Listenable<LayerGateEvents> {
   /** This relay has more children than slots (after a repair): cap everyone until rebalanced. */
   setOverload(on: boolean): void;
   readonly cap: LayerCap;
-  /** How many bytes of replay may be handed to the channel now, so a catch-up does not swamp live media. */
+  /**
+   * How many bytes of replay may be handed to the channel now, so a catch-up does not swamp live
+   * media. Ask only when there is replay waiting: the gate takes a budget it gave as a replay in
+   * progress, and for a moment afterwards reads the channel's backlog as the replay's own.
+   */
   replayBudget(estimate: LinkEstimate, now: number): number;
+  /**
+   * Whether `admit` let this frame through, for the last 256 frames. A frame the gate refused
+   * must not reach the child by another door: a NACK for it is not answered.
+   */
+  wasSent?(frameId: number): boolean;
 }
+
+/** The numbers of SPEC §11.3 and §11.5. `GATE_TUNING` (./tuning.ts) holds the spec's values. */
+export type GateTuning = {
+  /** Rule 3: the cap drops at most once in this long. */
+  dropEveryMs: number;
+  /** Rule 5: this long *ok* before the cap rises. */
+  riseAfterMs: number;
+  /** Rule 5: congested again within this long of a rise, and the wait doubles. */
+  riseProbationMs: number;
+  /** Rule 5: the wait never exceeds this. */
+  riseAfterMaxMs: number;
+  /** Rule 6: no video once `bufferedBytes` is over this many ms of B. */
+  staleBufferMs: number;
+  /** Rule 7: congested this long at the base layer is starved. */
+  starvedAfterMs: number;
+  /** §11.5: a replay may fill the channel up to this many ms of B. */
+  replayBufferMs: number;
+  /**
+   * Not in the spec (see README, "Where the spec was silent"): for this long after a replay was
+   * last given a budget, the channel's own backlog is the replay's and is not read as congestion.
+   */
+  replayGraceMs: number;
+};
 
 export type LayerGateOptions = {
   /** The stream's bitrate with every layer, and with each temporal layer and below. */
   bitrateKbps: number;
   temporalLayers: number;
   frameIntervalMs: number;
+  /**
+   * An audio stream's gate refuses nothing. Without this, the gate takes stream 1 for audio and
+   * every other stream for video, which is stage 1 (SPEC §2).
+   */
+  kind?: "video" | "audio";
+  /** 1 when absent: stage 1 has one spatial layer. */
+  spatialLayers?: number;
+  /** Other numbers than SPEC §11.3's, for a test or a tuning run. */
+  tuning?: Partial<GateTuning>;
 };
 
 export type SourceRateEvents = {
@@ -82,7 +134,19 @@ export interface SourceRateController extends Listenable<SourceRateEvents> {
   readonly targetKbps: number;
 }
 
-export type SourceRateOptions = { maxKbps: number; minKbps: number };
+/** The numbers of SPEC §11.4. `SOURCE_RATE_TUNING` (./tuning.ts) holds the spec's values. */
+export type SourceRateTuning = {
+  /** §11.4: the uplink rule is applied once in this long. */
+  everyMs: number;
+  /** Down: at least this share of the direct children's links congested. */
+  congestedShare: number;
+  downFactor: number;
+  /** Up: every link *ok* for this long. */
+  okForMs: number;
+  upFactor: number;
+};
+
+export type SourceRateOptions = { maxKbps: number; minKbps: number; tuning?: Partial<SourceRateTuning> };
 
 /**
  * Measures how much more a peer could send than it does, by loading a link with probe packets
