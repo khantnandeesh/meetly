@@ -20,6 +20,7 @@ signalling. It never sees media, and a session keeps playing and repairing witho
 | `contract.ts` | the contract suite, written against a URL; `contract.node.test.ts` and `contract.worker.test.ts` run it |
 | `overlay.test.ts` | warm repair with the coordinator dead, under real transport and topology (skips until they are built here) |
 | `client.browser.test.ts` | the client bundled and run in headless Chromium (skips without Playwright) |
+| `orphans.test.ts`, `provisional.test.ts`, `churn.test.ts` | cold repair finds slots; D38; the depth under the gate's churn, in the simulator |
 | `testkit.ts`, `wranglerDev.ts` | for tests: a core driven by hand, simulated peers; running `wrangler dev` |
 | `load.ts`, `loadServer.ts` | K6: the load measurement |
 
@@ -73,6 +74,33 @@ The harness signs tickets with `signTicket` (protocol.ts), starts `startNodeCoor
 - **A PeerId** is 8 random characters and 8 that bind them to the ticket's identity under a key
   stored with the session, so a coordinator that lost its memory can still refuse a `resume`
   from someone holding another peer's grant.
+- **A resumed peer's uptime** starts at its grant's `iat` when the coordinator has forgotten it
+  (found integrating, 6e24f63): probation does not start over at a restart.
+
+## Provisional relays (D38) and keeping the tree short under churn
+
+- **D38.** A leaf that passes §8.1 but for probation, with the short probe's uplink, is made a
+  relay with fan-out 2 when someone has nowhere to go (a joiner, an orphan, a child to move):
+  its grant says `"fanout:2"` in its scope, and the coordinator never counts more than 2 slots
+  for it. Placement offers it only when no full relay (or the source) has a free slot, and as a
+  backup last. At the end of probation, eligible in full, it is sent a new grant without the
+  limit. One that misbehaves first (anything but probation fails §8.1, or half its children lose
+  over 5%) is demoted after 3 s. The fifth-of-the-audience rule promotes full relays only.
+- **Demotion is make-before-break.** A relay to be made a leaf is offered to nobody, its
+  children are sent `move`s to slots elsewhere, and it is told `role: leaf` once they have gone,
+  or after 5 s.
+- **Depth.** Every placement prefers a place where the peer and its subtree end within
+  `neededDepth() + 1` (5 at 200 peers); a dead end is never moved down below that; relief of a
+  parent over its fan-out moves only what does not push a subtree past it (a parent over its
+  fan-out sheds a layer, D37, which costs less). Backups are chosen at the parent's own depth for
+  peers with subtrees (a warm repair then moves nothing deeper) and as deep as the limit allows
+  for leaves (keeping the places near the source for those that need them). Peers whose warm
+  repair would push their subtree too deep are offered a better backup by `assign` "rebalance"
+  with backups only, once a minute: topology's node takes it only if it says `free > 0`, so for
+  a backup at a full relay it needs the node to look at standby places instead. Moves: 5% of
+  the audience a second, a peer again after 10 s.
+- **Measured** in the simulator under the gate's churn (`churn.test.ts`): see the table there.
+  The quarter's case still spends 1–10% of the time at depth 6–8.
 
 ## K6: load (measured 2026-11-21, 4 shared cores, load average 5–6)
 

@@ -103,6 +103,8 @@ export type CoordinatorCoreOptions = {
   scoring?: { judgeRelay: JudgeRelay; parentCost: ParentCost };
   /** False turns off the changes of parent the coordinator asks for (`assign` "move"). Default true. */
   moves?: boolean;
+  /** False turns off D38's provisional relays (fan-out 2 before probation is over). Default true. */
+  provisionalRelays?: boolean;
 };
 
 /**

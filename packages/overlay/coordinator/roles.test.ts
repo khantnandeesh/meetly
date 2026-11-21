@@ -34,7 +34,8 @@ type Joined = { conn: string; peer: PeerId; heard: ServerMessage[] };
 
 /** A session with a source; peers join and report through `say`, and everything sent to them is kept in `heard`. */
 async function session() {
-  const rig = new Rig({ moves: false });
+  // SPEC §8.1 as written: D38's provisional relays have tests of their own (provisional.test.ts).
+  const rig = new Rig({ moves: false, provisionalRelays: false });
   const host = await rig.join("host", "source", relayCaps({ uplinkKbps: 50_000 }));
   await rig.say(host.conn, { t: "streams", streams: STREAMS });
   const source: Joined = { conn: host.conn, peer: host.peer, heard: [] };
@@ -160,8 +161,9 @@ describe("coordinator: demotion (SPEC §8.1)", () => {
   }
 
   it("demotes a relay whose children report over 5% loss from it for 10 s, not sooner", async () => {
-    const { relay, demotedAfter, rig } = await demotionCase(3, 6, 20);
-    assert.ok(demotedAfter !== null && demotedAfter >= 10_000 && demotedAfter <= 12_000, `demoted after ${demotedAfter} ms`);
+    const { relay, demotedAfter, rig } = await demotionCase(3, 6, 25);
+    // Found failing after 10 s; told after its children have had DEMOTE_GRACE_MS (5 s) to move.
+    assert.ok(demotedAfter !== null && demotedAfter >= 15_000 && demotedAfter <= 17_000, `demoted after ${demotedAfter} ms`);
     const grant = JSON.parse(Buffer.from(of(relay.heard, "role").at(-1)!.grant.split(".")[0], "base64url").toString()) as { scope: string[] };
     assert.deepEqual(grant.scope, ["view"]);
     assert.equal(rig.core.snapshot().peers.find((peer) => peer.peer === relay.peer)?.role, "leaf");
@@ -190,7 +192,7 @@ describe("coordinator: demotion (SPEC §8.1)", () => {
       if (second % 3 === 2) await report(false);
     });
     assert.deepEqual(roles(relay), ["relay"], "not yet");
-    await s.advance(3_000, async () => report(false));
+    await s.advance(8_000, async () => report(false));
     assert.deepEqual(roles(relay), ["relay", "leaf"]);
   });
 });
@@ -211,10 +213,15 @@ describe("coordinator: unasked advice (SPEC §6.6)", () => {
     await s.advance(150_000, async (second) => {
       if (second % 4 === 3) await report();
     });
-    const advice = of(deep.heard, "assign").filter((message) => message.reason === "rebalance");
+    // Advice of a parent (a "rebalance" may also offer only better backups: see the tests of the tree under churn).
+    const advice = of(deep.heard, "assign").filter((message) => message.reason === "rebalance" && message.assign[0].parents.length > 0);
     assert.ok(advice.length >= 2 && advice.length <= 3, `${advice.length} pieces of advice in 150 s`);
     assert.equal(advice[0].assign[0].parents[0].peer, s.source.peer, "somewhere shallower: the source");
-    assert.deepEqual(of(mid.heard, "assign"), [], "a peer where it should be is left alone");
+    assert.deepEqual(
+      of(mid.heard, "assign").filter((message) => message.assign[0].parents.length > 0),
+      [],
+      "a peer where it should be is left alone",
+    );
   });
 });
 

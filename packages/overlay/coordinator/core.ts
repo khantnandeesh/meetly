@@ -27,6 +27,8 @@ import type { Placement, TreeNode } from "./treeMap";
 /** WebSocket close codes (SPEC §6.2). Repeated in ./index.ts for callers. */
 const CLOSE = { normal: 1000, badTicket: 4001, full: 4002, kicked: 4003, ended: 4004, badMessage: 4005, replaced: 4006 } as const;
 
+/** The share of the audience offered a better backup in one second, at most. */
+const BACKUP_ADVICE_SHARE = 0.05;
 /** SPEC §6.5: a grant lives ten minutes and is replaced two minutes before it expires. */
 export const GRANT_LIFE_S = 600;
 export const GRANT_RENEW_S = 120;
@@ -61,7 +63,7 @@ type Conn = {
 };
 
 /** What `attach` keeps with a socket: enough to rebuild `Conn`, and the peer's record, after a restart. */
-type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number };
+type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number; pv?: boolean };
 
 type SessionKey = { kid: string; privateKey: CryptoKey; publicKey: CryptoKey; pub: string; idKey: CryptoKey; epochMs: number };
 type StoredSession = { kid: string; pkcs8: string; pub: string; idSecret: string; epochMs: number };
@@ -118,6 +120,7 @@ class Core implements CoordinatorCore {
         // Where it sits is not known until it says so: stale, so not offered, until its next `status`.
         node.lastStatusAt = 0;
         node.grantExp = a.x ?? 0;
+        node.provisional = node.role === "relay" && a.pv === true;
         conn.peer = node.peer;
         this.map.add(node, now);
         this.byIdentity.set(node.identity, node.peer);
@@ -321,7 +324,9 @@ class Core implements CoordinatorCore {
   private async grantFor(node: TreeNode, now: number): Promise<string> {
     const iat = Math.floor(now / 1000);
     const publish = this.publishIds().map((id) => `publish:${id}`);
-    const scope = node.role === "source" ? ["view", "relay", ...publish] : node.role === "relay" ? ["view", "relay"] : ["view"];
+    // D38: a provisional relay's grant says how many children it may take: "fanout:<n>".
+    const relay = node.provisional ? ["view", "relay", `fanout:${this.map.fanout(node)}`] : ["view", "relay"];
+    const scope = node.role === "source" ? ["view", "relay", ...publish] : node.role === "relay" ? relay : ["view"];
     node.grantExp = iat + GRANT_LIFE_S;
     return signGrant({ v: PROTOCOL_VERSION, room: this.o.room, peer: node.peer, role: node.role, scope, iat, exp: node.grantExp, kid: this.key!.kid }, this.key!.privateKey);
   }
@@ -334,7 +339,7 @@ class Core implements CoordinatorCore {
 
   private attach(fx: Effect[], conn: Conn, node: TreeNode | null): void {
     const value: Attachment = { i: conn.identity, n: conn.name.slice(0, 64), r: conn.ticketRole, g: conn.region, o: conn.openedAt };
-    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp });
+    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp, ...(node.provisional ? { pv: true } : {}) });
     fx.push({ type: "attach", conn: conn.id, value: JSON.stringify(value) });
   }
 
@@ -450,6 +455,8 @@ class Core implements CoordinatorCore {
           // promoted to make room for a joiner for 20 s (found integrating: overlay.test.ts).
           node = newNode({ peer, identity: conn.identity, name: conn.name, ticketRole: conn.ticketRole, role: grant.role, caps: hello.caps, region: conn.region, conn: conn.id, joinedAt: Math.min(now, grant.iat * 1000) });
           node.lastStatusAt = 0;
+          // A provisional relay's grant says so (D38): it stays one until its probation is over.
+          node.provisional = grant.role === "relay" && grant.scope.some((scope) => scope.startsWith("fanout:"));
         }
       }
     }
@@ -555,8 +562,8 @@ class Core implements CoordinatorCore {
    * SPEC §7.5): the slots below the dead relay are cut off with it. True if anyone was promoted.
    */
   private async promoteFor(fx: Effect[], node: TreeNode, exclude: readonly PeerId[], now: number): Promise<boolean> {
-    for (const candidate of this.map.promotableFor(node, exclude, now)) {
-      await this.setRole(fx, candidate, "relay", now);
+    for (const candidate of this.map.promotableFor(node, exclude, now, this.o.provisionalRelays !== false)) {
+      await this.setRole(fx, candidate.node, "relay", now, candidate.provisional);
       return true;
     }
     return false;
@@ -702,13 +709,30 @@ class Core implements CoordinatorCore {
       this.reattach(fx, node);
     }
 
-    // SPEC §6.6, §8.1: who relays.
+    // SPEC §6.6, §8.1: who relays. A relay to be made a leaf is first offered to nobody, and its
+    // children are asked to move (make-before-break), then it is told: when they have gone, or
+    // after `DEMOTE_GRACE_MS`. Its `bye` to them (SPEC §6.6) then finds them elsewhere.
     for (const node of this.map.demotable(now)) {
       node.demotedAt = now;
       node.ineligibleSince = null;
-      await this.setRole(fx, node, "leaf", now);
+      node.demotingSince = now;
+      for (const child of this.map.childrenOf(node.peer)) {
+        const kid = this.map.nodes.get(child);
+        if (!kid || kid.conn === null) continue;
+        let placement = this.map.place(kid, { want: "parent", exclude: [node.peer], now, move: true });
+        if (placement.parents.length === 0 && (await this.promoteFor(fx, kid, [node.peer], now))) placement = this.map.place(kid, { want: "parent", exclude: [node.peer], now, move: true });
+        if (placement.parents.length === 0) continue;
+        kid.lastRebalanceAt = now;
+        this.map.hold(kid, placement, now);
+        this.introduce(kid, placement, now);
+        this.send(fx, kid.conn, { t: "assign", reason: "move", assign: this.assignments(placement) });
+      }
     }
-    for (const node of this.map.promotable(now)) await this.setRole(fx, node, "relay", now);
+    for (const node of this.map.demoted(now)) await this.setRole(fx, node, "leaf", now);
+    // D38: provisional relays at the end of probation become full ones, with a grant that says so.
+    for (const node of this.map.graduating(now)) await this.setRole(fx, node, "relay", now, false);
+    // The fifth-of-the-audience rule makes full relays only: a provisional one is made when someone has nowhere to go (`promoteFor`).
+    for (const entry of this.map.promotable(now, false)) await this.setRole(fx, entry.node, "relay", now, entry.provisional);
 
     if (this.o.moves !== false && this.streams.length > 0) {
       const budget = Math.max(1, Math.ceil(this.map.audience() * MOVE_SHARE));
@@ -719,13 +743,23 @@ class Core implements CoordinatorCore {
       }
     }
     // Relays over their fan-out after taking in repairs (SPEC §7.5): the coordinator "moves
-    // someone". Room is made by promotion if need be, then the excess children are moved.
+    // someone". Room is made by promotion if need be, then the excess children are moved, the
+    // smallest subtrees first, and only where the move does not make the tree deeper than it
+    // needs to be: a parent over its fan-out sheds a layer (D37), which costs less than a whole
+    // subtree pushed down a level or two and every peer in it a hop further from the source.
     if (this.streams.length > 0) {
+      const deepest = this.map.neededDepth() + 1;
       for (const relief of this.map.overloaded(now)) {
-        for (const child of relief.excess) {
-          let placement = this.map.place(child, { want: "parent", exclude: [relief.node.peer], now, move: true });
-          if (placement.parents.length === 0 && (await this.promoteFor(fx, child, [], now))) placement = this.map.place(child, { want: "parent", exclude: [relief.node.peer], now, move: true });
-          if (placement.parents.length === 0) break;
+        let moved = 0;
+        for (const child of relief.candidates) {
+          if (moved >= relief.excess) break;
+          const height = this.map.height(child.peer);
+          const fits = (candidate: Placement) => candidate.parents.length > 0 && candidate.parents[0].depth + 1 + height <= Math.max(deepest, relief.node.depth + 1 + height - 1);
+          const options = { want: "parent" as const, exclude: [relief.node.peer], now, move: true };
+          let placement = this.map.place(child, options);
+          if (placement.parents.length === 0 && (await this.promoteFor(fx, child, [], now))) placement = this.map.place(child, options);
+          if (!fits(placement)) continue;
+          moved++;
           child.lastRebalanceAt = now;
           this.map.hold(child, placement, now);
           this.introduce(child, placement, now);
@@ -734,6 +768,18 @@ class Core implements CoordinatorCore {
       }
     }
     await this.serveWaiting(fx, now);
+
+    // Better backups for peers whose warm repair would push their subtree too deep (see
+    // `TreeMap.backupAdvice`). An `assign` "rebalance" with backups only: advice, as SPEC §6.6
+    // has it, which topology's node follows for its backup when the offer is nearer the source.
+    if (this.streams.length > 0) {
+      const budget = Math.max(1, Math.ceil(this.map.audience() * BACKUP_ADVICE_SHARE));
+      for (const advice of this.map.backupAdvice(now, budget)) {
+        advice.node.backupAdviceAt = now;
+        this.introduce(advice.node, advice.placement, now);
+        this.send(fx, advice.node.conn, { t: "assign", reason: "rebalance", assign: this.assignments(advice.placement) });
+      }
+    }
 
     // SPEC §6.6: advice to peers more than two levels deeper than the tree needs.
     if (this.streams.length > 0) {
@@ -762,8 +808,8 @@ class Core implements CoordinatorCore {
     if (conn) this.attach(fx, conn, node);
   }
 
-  private async setRole(fx: Effect[], node: TreeNode, role: OverlayRole, now: number): Promise<void> {
-    this.map.setRole(node, role, now);
+  private async setRole(fx: Effect[], node: TreeNode, role: OverlayRole, now: number, provisional = false): Promise<void> {
+    this.map.setRole(node, role, now, provisional);
     this.send(fx, node.conn, { t: "role", role, grant: await this.grantFor(node, now) });
     this.reattach(fx, node);
   }
