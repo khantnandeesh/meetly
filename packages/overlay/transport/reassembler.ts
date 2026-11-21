@@ -58,6 +58,12 @@ type StreamState = {
   pendingCount: number;
   /** Whole frames asked for: how often, and when last. */
   wholeAsks: Map<number, { asks: number; at: number }>;
+  /**
+   * Every frame below this id is settled: whole or out of asks, with the hole in front of it
+   * filled, explained, or out of asks too. `missing` never names anything there again, so it
+   * starts from here rather than from the oldest frame remembered.
+   */
+  settledBelow: number;
 };
 
 type SenderState = { seqs: Uint16Array; used: number; next: number };
@@ -74,7 +80,7 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
 
   const stream = (id: number): StreamState => {
     let s = streams.get(id);
-    if (!s) streams.set(id, (s = { frames: new Map(), order: [], floor: 0, pendingCount: 0, wholeAsks: new Map() }));
+    if (!s) streams.set(id, (s = { frames: new Map(), order: [], floor: 0, pendingCount: 0, wholeAsks: new Map(), settledBelow: 0 }));
     return s;
   };
 
@@ -148,6 +154,30 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
   };
 
   const askable = (asks: number, askedAt: number, now: number) => asks === 0 || (asks <= nackRetries && now - askedAt >= retryMs());
+  const spent = (asks: number) => asks > nackRetries;
+
+  /** Index of the first id in `order` at or above `id`. */
+  const lowerBound = (order: number[], id: number) => {
+    let lo = 0;
+    let hi = order.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (order[mid] < id) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
+  };
+
+  /** Whether `missing` can never name anything of `record`, or of the hole in front of it, again. */
+  const settled = (s: StreamState, prev: FrameRecord | null, record: FrameRecord): boolean => {
+    const pending = record.pending;
+    if (pending) for (let frag = 0; frag < record.fragCount; frag++) if (pending.arrivedAt[frag] !== pending.arrivedAt[frag] && !spent(pending.asks[frag])) return false;
+    if (!prev || record.gapExplained) return true;
+    const hole = record.id - prev.id - 1;
+    if (hole === 0 || hole > MAX_WHOLE_FRAME_GAP) return true;
+    for (let id = prev.id + 1; id < record.id; id++) if (!spent(s.wholeAsks.get(id)?.asks ?? 0)) return false;
+    return true;
+  };
 
   return {
     push(packet, header, from, receivedAt) {
@@ -186,6 +216,8 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
         };
         s.frames.set(id, record);
         insertOrdered(s.order, id);
+        // A frame that fills a hole may itself have holes to ask for.
+        if (id < s.settledBelow) s.settledBelow = id;
         s.pendingCount++;
         s.wholeAsks.delete(id);
         const newest = s.order[s.order.length - 1];
@@ -268,21 +300,24 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
       for (const [streamId, s] of streams) {
         const order = s.order;
         const n = order.length;
-        if (n === 0) continue;
-        // laterAt[i]: the earliest arrival of any packet of a frame after order[i].
-        const laterAt = new Float64Array(n);
+        const start = lowerBound(order, s.settledBelow);
+        if (start >= n) continue;
+        // laterAt[i - start]: the earliest arrival of any packet of a frame after order[i].
+        const laterAt = new Float64Array(n - start);
         let earliest = Infinity;
-        for (let i = n - 1; i >= 0; i--) {
-          laterAt[i] = earliest;
+        for (let i = n - 1; i >= start; i--) {
+          laterAt[i - start] = earliest;
           const at = s.frames.get(order[i])!.firstAt;
           if (at < earliest) earliest = at;
         }
-        let prev: FrameRecord | null = null;
-        for (let i = 0; i < n && items.length < max; i++) {
+        let prev: FrameRecord | null = start > 0 ? s.frames.get(order[start - 1])! : null;
+        let settling = true;
+        for (let i = start; i < n && items.length < max; i++) {
           const record = s.frames.get(order[i])!;
+          const before = prev;
           // Whole frames missing in front of this one: due once this frame, or a later one, has been here for reorderMs.
           if (prev && record.id - prev.id > 1 && record.id - prev.id - 1 <= MAX_WHOLE_FRAME_GAP) {
-            const seenLaterAt = Math.min(record.firstAt, laterAt[i]);
+            const seenLaterAt = Math.min(record.firstAt, laterAt[i - start]);
             if (now - seenLaterAt >= reorderMs && !neverSent(prev, record)) {
               for (let id = prev.id + 1; id < record.id && items.length < max; id++) {
                 const asked = s.wholeAsks.get(id);
@@ -294,10 +329,13 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
           }
           prev = record;
           const pending = record.pending;
-          if (!pending || items.length >= max) continue;
+          if (!pending || items.length >= max) {
+            if (settling && (settling = settled(s, before, record))) s.settledBelow = record.id + 1;
+            continue;
+          }
           // Fragments missing inside this frame: due once a later fragment, or a later frame, has been here for reorderMs.
           let ask: number[] | null = null;
-          let later = laterAt[i];
+          let later = laterAt[i - start];
           for (let frag = record.fragCount - 1; frag >= 0; frag--) {
             const at = pending.arrivedAt[frag];
             if (at === at) {
@@ -306,7 +344,10 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
               (ask ??= []).push(frag);
             }
           }
-          if (!ask) continue;
+          if (!ask) {
+            if (settling && (settling = settled(s, before, record))) s.settledBelow = record.id + 1;
+            continue;
+          }
           ask.reverse();
           const frameItems = nackItemsFor(streamId, record.id, ask).slice(0, max - items.length);
           for (const item of frameItems) {
@@ -317,6 +358,7 @@ export function createReassembler(options: ReassemblerOptions): Reassembler {
               pending.askedAt[frag] = now;
             }
           }
+          if (settling && (settling = settled(s, before, record))) s.settledBelow = record.id + 1;
         }
         if (items.length >= max) break;
       }
