@@ -38,7 +38,8 @@ const payoff = (person) =>
       noise: sw ? sw.getAttribute("data-on") : null,
       polls: mine ? `${tick && tick.getAttribute("data-show") === "true" ? "✓ " : ""}${read(mine).replace(/\s+/g, "")}` : null,
       reactions: rows.map((row) => read(row).replace(/\s+/g, "")).join(" | "),
-      hands: hands.map((row) => read(row.querySelector(".gm-place"))).join(" "),
+      // Each row's place is whichever of its three labels shows.
+      hands: hands.map((row) => read(row.querySelector(".gm-place").parentElement)).join(" "),
     };
   });
 const LANE = "👏×12 | 🎉×5 | ❤️Lena | 😂×3";
@@ -51,7 +52,8 @@ const whole = (p) => ({
   noise: p.noise === "true",
   polls: /^✓ /.test(p.polls ?? "") && /\d+%$/.test(p.polls),
   reactions: p.reactions.split(" | ").filter(Boolean).length === 4,
-  hands: ["", "1st", "1st 2nd", "1st 2nd 3rd"].includes(p.hands),
+  // The queue moves on, never empties: three hands in order whenever it is still.
+  hands: p.hands === "1st 2nd 3rd",
 });
 // What each picture is about, which its tile's crop must never cut: the banner, the switch, your
 // vote, the lane, the speaker's label and the queue. The rest may run off the tile's edge.

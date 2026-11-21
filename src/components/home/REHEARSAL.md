@@ -1,4 +1,4 @@
-# Rehearsal: home feature grid ("Inside a meeting"), v3
+# Rehearsal: home feature grid ("Inside a meeting"), v3.1
 
 The stageshow skill's hand-over note for the feature grid (`src/components/home/`). The hero's note is
 `src/components/hero/REHEARSAL.md`.
@@ -21,6 +21,13 @@ The stageshow skill's hand-over note for the feature grid (`src/components/home/
   - gate polish, and lime everywhere.
 - **v3:** the founder still wants "more animation and jazz", so the tiles stay alive. They are
   calm, truthful, and only one moves at a time.
+- **v3.1:** the review failed v3 narrowly, on four things:
+  - Hands sat empty for most of each round after Lower all.
+  - The reaction avatar was 11px from the chips.
+  - The noise crop cut through letters.
+  - The phone's growing bar was off the crop.
+
+  All four are fixed below.
 
 ## Gold
 
@@ -59,18 +66,25 @@ v2, which the review accepted, the bordered poll card and People panel included.
     expires: it slides out and the rest glide down.
     - The lane's order is the product's: oldest at the bottom, newest on top (Reactions.tsx).
     - Nothing flies.
-  - Hands: a hand goes up per beat and gets its ordinal; with three up, Lower all is pressed (its
-    fill, no cursor) and the rows go.
-    - The list below glides up into their place, then is pushed down a row per new hand.
-    - Each round is new people in a new order. The heading keeps its count as it fades, so there
-      is no "Raised hands 1" over no rows, and no ghost row.
+  - Hands: the queue rolls on and never empties. Each turn, the 1st has the floor (the panel's
+    speaking bars on their row), then lowers their hand. The 2nd and 3rd glide up a place and take
+    their new ordinals, and someone new puts a hand up as 3rd.
+    - At rest there are always three hands in order.
+    - Lower all stays in view as the host's control, never pressed.
+    - The queue cycles through five people, so nobody is in it twice.
 - **The review's other items:**
-  - Avatar: 96px from 48rem, 64px on a phone, centred in the tile, ringed, clear of the lane.
+  - Avatar: 96px from 48rem, 64px on a phone, ringed, in the middle of the space beside the lane
+    (40px right of the tile's centre).
+    - It is 48px clear of the widest chip at 1440, 108 at 1024, 44 at 768 and 71 at 390.
+    - The band above the lane is left as the tile's own ground.
   - Phone share: the screen runs off the right and the bottom, drawn at 0.85 (every word 10px or
     more). The banner is whole, 24px down and a gutter from the right.
     - At 1:1 the banner is 350px, which a 358px tile cannot hold with a gutter.
-  - Noise crop: the menu runs on (`data-crop`); the crop cuts through the Speaker list's device
-    row, not along a rule.
+    - Its chart is six weeks wide there and ends a gutter inside the tile, so the newest week, the
+      one that grows, is in view.
+  - Noise crop: the menu runs on (`data-crop`). The crop falls just under "SPEAKER", whole, in the
+    padding above the first speaker's words: no letters are cut. Checked at 1440, 1024, 768
+    and 390.
   - Poll: the question sits on the options' left edge; the counts are separate spans with a gap.
   - Numbers: the grid's counters are a small tick (the new figure rises in, the old rises out).
     The kit's Count re-centred its digit strip after each roll, which film read as a 120 to 140px
@@ -82,9 +96,9 @@ v2, which the review accepted, the bordered poll card and People panel included.
     - Calmed: the waveform (light), the device check (muted), the speaking bars (light), the hand
       badges (the hand-raised tint), Lower all (text colour).
 - **Weight.**
-  - First load: +2.1 KB JS and +1.6 KB CSS gzip against main (242,456 → 244,545 JS;
-    16,947 → 18,503 CSS).
-  - The grid's motion is a 1.8 KB deferred chunk, on the hero's 10.2 KB engine chunk, shared.
+  - First load: +2.1 KB JS and +1.6 KB CSS gzip against main (242,456 → 244,528 JS;
+    16,947 → 18,511 CSS).
+  - The grid's motion is a 1.75 KB deferred chunk, on the hero's 10.2 KB engine chunk, shared.
   - GridStages imports the kit's Count only so the bundler keeps one engine chunk for both.
     Without it the engine shipped twice.
 
@@ -114,7 +128,10 @@ The home e2e suite also samples the grid every 100ms for 21s. It checks that:
 - Still printed, judged intended:
   - `lopsided` lane chips: Reactions.tsx's own `pl-2 pr-3`;
   - `jump` on a poll count's left edge when it gains a digit: the product's own reflow;
-  - `vanishes with no exit` on a poll figure: an outgoing tick already faded.
+  - `vanishes with no exit` on a poll figure: an outgoing tick already faded;
+  - `jump` on the hands' speaking bars: the bars moving while the 1st speaks.
+- The review's optional fixed-width poll counts were tried and left out: a fixed percent column
+  opened a visible gap ("1 ·   8%"), which read worse than the product's own reflow.
 
 ## Not checked
 

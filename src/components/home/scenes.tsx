@@ -39,10 +39,13 @@ const BARS = 10;
  * The presenter's own screen-share tile (Stage.tsx): the shared slide filling it edge to edge, and
  * the "You're sharing your screen" banner with Stop sharing at its top. The presenter's chart takes
  * in a new week now and then: the bars move along and the new one grows. On a phone the computer's
- * screen is drawn a little smaller (0.85), so the banner fits whole at a phone's gutter.
+ * screen is drawn a little smaller (0.85), so the banner fits whole at a phone's gutter, and runs
+ * off the tile's right edge; its chart is six weeks wide there, ending inside the tile.
  */
 export function ShareScene({ s, layout }: { s: ShareState; layout: "wide" | "compact" }) {
-  const weeks = Array.from({ length: BARS + 1 }, (_, i) => s.week - BARS + i);
+  // On a phone the chart is six weeks wide, so its newest end shows inside the tile.
+  const bars = layout === "compact" ? 6 : BARS;
+  const weeks = Array.from({ length: bars + 1 }, (_, i) => s.week - bars + i);
   const top = Math.max(...weeks.slice(1).map(signups));
   return (
     <div className="gm-scene gm-share" data-layout={layout} data-beat={s.beat}>
@@ -51,7 +54,7 @@ export function ShareScene({ s, layout }: { s: ShareState; layout: "wide" | "com
           <div className="gm-share-page">
             <span className="gm-slide-kicker">Weekly review</span>
             <span className="gm-slide-title">Sign-ups since the beta</span>
-            <div className="gm-slide-chart" data-crop>
+            <div className="gm-slide-chart" data-crop style={vars({ "--n": bars })}>
               {weeks.map((week, index) => {
                 const newest = week === s.week;
                 const level = newest && !s.grown ? 0.02 : signups(week) / top;
@@ -305,8 +308,13 @@ export function ReactionsScene({ s, num = plain }: { s: ReactState; num?: Num })
 
 /* ------------------------------------------------------------------ hands */
 
-export type HandsState = { round: number; count: number; pressed: boolean; beat: boolean };
-export const HANDS_POSTER: HandsState = { round: 0, count: 3, pressed: false, beat: false };
+/**
+ * The queue of raised hands moves on, one turn at a time: the 1st is given the floor and speaks,
+ * lowers their hand, the 2nd and 3rd move up a place, and someone new puts a hand up as 3rd.
+ * `next` counts the hands that have gone up; the queue is hands next-3, next-2 and next-1.
+ */
+export type HandsState = { next: number; speaking: boolean; leaving: boolean; beat: boolean };
+export const HANDS_POSTER: HandsState = { next: 3, speaking: false, leaving: false, beat: false };
 
 const PEOPLE = {
   dana: { name: "Dana Brooks", color: "#9fe0c2" },
@@ -317,43 +325,28 @@ const PEOPLE = {
   priya: { name: "Priya Nair", color: "#a9d6f5" },
 } as const;
 type Person = keyof typeof PEOPLE;
-// Who puts a hand up, in order, round after round: never the same three in the same order.
-const ROUNDS: Person[][] = [
-  ["priya", "jonas", "kofi"],
-  ["ines", "amara", "jonas"],
-  ["kofi", "priya", "ines"],
-  ["amara", "kofi", "priya"],
-];
-export const roundAt = (round: number) => ROUNDS[round % ROUNDS.length];
+// Who puts a hand up next, in turn (the host, Dana, runs the queue). Any four in a row are four
+// different people, so nobody is in the queue twice.
+const RAISERS: Person[] = ["priya", "jonas", "kofi", "ines", "amara"];
 const PLACES = ["1st", "2nd", "3rd"];
-// Everyone, you first, then A to Z (PeoplePanel.tsx): the six the panel counts.
+// Everyone, you first, then A to Z (PeoplePanel.tsx): the six the panel counts. It starts under
+// the three hands, past the tile's foot.
 const EVERYONE: { id: Person; note?: string }[] = [
   { id: "dana", note: "You · Host" },
   { id: "amara" },
   { id: "ines" },
-  { id: "jonas" },
-  { id: "kofi" },
-  { id: "priya" },
 ];
-// The raised-hands section's height (PeoplePanel.tsx: a 40px heading, 56px rows, 4px under them),
-// and so how far the list under it moves when the section changes. With no hand up the section is
-// gone and the list takes its place.
-const handsHeight = (count: number) => (count === 0 ? 0 : 40 + count * 56 + 4);
-// Where the tile's foot crops the panel (feature-grid.css: every tile's picture is 280px tall), less
-// the panel's 60px header. A row of the list shows only while it fits whole above it, so the list
-// always ends on a whole row and fades out row by row as the hands push it down.
-const LIST_ROOM = 280 - 60;
-const fits = (count: number, bottom: number) => handsHeight(count) + bottom <= LIST_ROOM;
 
 /**
  * The People panel (Conference.tsx, PeoplePanel.tsx) as the host sees it: raised hands first, in
- * the order they went up, then everyone. The list under the hands moves (by transform) as the
- * section grows and shrinks, as the panel's own rows glide.
+ * the order they went up, then everyone. As the queue moves, its rows glide up a place (by
+ * transform) and take their new places' names.
  */
 export function HandsScene({ s, num = plain }: { s: HandsState; num?: Num }) {
-  const round = roundAt(s.round);
+  // The queue, oldest first, with the 1st's row kept while it leaves.
+  const hands = Array.from({ length: 4 }, (_, i) => s.next - 4 + i).filter((hand) => hand >= 0);
   return (
-    <div className="gm-scene gm-hands" data-any={s.count > 0} data-beat={s.beat}>
+    <div className="gm-scene gm-hands" data-beat={s.beat}>
       <div className="gm-panel">
         <div className="flex items-center justify-between py-2.5 pr-2.5 pl-5">
           <span className="flex items-baseline gap-2 font-display text-lg font-semibold">
@@ -364,61 +357,72 @@ export function HandsScene({ s, num = plain }: { s: HandsState; num?: Num }) {
             <X className="size-5" />
           </span>
         </div>
-        <div className="gm-hands-section">
-          <div className="gm-hands-head flex h-10 items-end justify-between gap-2 pr-3 pb-0.5 pl-5">
-            <span className="eyebrow flex gap-2 pb-1">
-              Raised hands
-              {/* As the section goes, it keeps the count it had, never a number over no rows. */}
-              <span className="tracking-normal tabular-nums">{num(s.count || 3)}</span>
-            </span>
-            <span className="gm-lower text-sm font-semibold" data-pressed={s.pressed || undefined}>
-              Lower all
-            </span>
-          </div>
-          <div className="px-2">
-            {PLACES.map((place, index) => {
-              const person = PEOPLE[round[index]];
-              return (
-                <div key={index} className="gm-hand flex h-14 items-center gap-3 px-3" data-show={s.count > index} style={vars({ "--i": index })}>
-                  <Face name={person.name} color={person.color} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[0.9375rem] font-medium">{person.name}</span>
-                    <span className="gm-place block text-xs" data-first={index === 0 || undefined}>
-                      {place}
-                    </span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1">
-                    <span className="gm-handbadge grid size-8 place-items-center rounded-lg">
-                      <Hand className="size-4" />
-                    </span>
-                    <span className="grid size-8 place-items-center text-muted">
-                      <Mic className="size-[1.125rem]" />
-                    </span>
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+        <div className="gm-hands-head flex h-10 items-end justify-between gap-2 pr-3 pb-0.5 pl-5">
+          <span className="eyebrow flex gap-2 pb-1">
+            Raised hands
+            <span className="tracking-normal tabular-nums">{num(3)}</span>
+          </span>
+          <span className="gm-lower text-sm font-semibold">Lower all</span>
         </div>
-        <div className="gm-everyone" style={vars({ "--gm-shift": `${handsHeight(s.count) - handsHeight(3)}px` })}>
-          <div className="eyebrow flex h-10 items-end gap-2 px-5 pb-1.5" data-show={fits(s.count, 40)}>
-            In this meeting
-            <span className="tracking-normal tabular-nums">6</span>
-          </div>
-          <div className="px-2">
-            {EVERYONE.map(({ id, note }, index) => (
-              <div key={id} className="flex h-14 items-center gap-3 px-3" data-show={fits(s.count, 40 + 56 * (index + 1))}>
-                <Face name={PEOPLE[id].name} color={PEOPLE[id].color} />
+        <div className="gm-queue mx-2">
+          {hands.map((hand) => {
+            const place = hand - (s.next - 3);
+            const person = PEOPLE[RAISERS[hand % RAISERS.length]];
+            const gone = place < 0 || (place === 0 && s.leaving);
+            return (
+              <div
+                key={hand}
+                className="gm-hand flex h-14 items-center gap-3 px-3"
+                data-show={!gone}
+                data-new={hand >= 3 || undefined}
+                style={vars({ "--slot": Math.max(place, 0) })}
+              >
+                <Face name={person.name} color={person.color} />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-[0.9375rem] font-medium">{PEOPLE[id].name}</span>
-                  {note && <span className="block text-xs text-muted">{note}</span>}
+                  <span className="block truncate text-[0.9375rem] font-medium">{person.name}</span>
+                  <span className="gm-swap gm-places text-xs">
+                    {PLACES.map((label, index) => (
+                      <span key={label} className="gm-place" data-show={index === Math.max(place, 0)} data-first={index === 0 || undefined}>
+                        {label}
+                      </span>
+                    ))}
+                  </span>
                 </span>
-                <span className="grid size-8 place-items-center text-muted">
-                  <Mic className="size-[1.125rem]" />
+                <span className="flex shrink-0 items-center gap-1">
+                  <span className="gm-handbadge grid size-8 place-items-center rounded-lg">
+                    <Hand className="size-4" />
+                  </span>
+                  <span className="gm-swap size-8 place-items-center text-muted">
+                    {/* The 1st has the floor: the panel shows them speaking. */}
+                    <Mic className="size-[1.125rem]" data-show={!(place === 0 && s.speaking)} />
+                    <span className="bars" data-show={place === 0 && s.speaking}>
+                      <i />
+                      <i />
+                      <i />
+                    </span>
+                  </span>
                 </span>
               </div>
-            ))}
-          </div>
+            );
+          })}
+        </div>
+        <div className="eyebrow mt-1 flex h-10 items-end gap-2 px-5 pb-1.5">
+          In this meeting
+          <span className="tracking-normal tabular-nums">6</span>
+        </div>
+        <div className="px-2">
+          {EVERYONE.map(({ id, note }) => (
+            <div key={id} className="flex h-14 items-center gap-3 px-3">
+              <Face name={PEOPLE[id].name} color={PEOPLE[id].color} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-[0.9375rem] font-medium">{PEOPLE[id].name}</span>
+                {note && <span className="block text-xs text-muted">{note}</span>}
+              </span>
+              <span className="grid size-8 place-items-center text-muted">
+                <Mic className="size-[1.125rem]" />
+              </span>
+            </div>
+          ))}
         </div>
       </div>
     </div>

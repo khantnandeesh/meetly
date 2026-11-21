@@ -37,7 +37,7 @@ import {
  * noise, poll, reactions, hands), skipping tiles that are off screen; each tile plays one short
  * beat of its story, settles, and hands on after a pause. Each story only goes forward: the chart
  * takes in a new week, a noise comes and is kept out, votes arrive (and a poll ends and the next
- * begins), reactions arrive and expire, hands go up in a new order and are lowered. Nothing is
+ * begins), reactions arrive and expire, the queue of hands moves on a place. Nothing is
  * played back, so no tile ever undoes itself in view. Off screen, a stage is reset to its poster
  * out of sight and its story starts again from there.
  */
@@ -229,20 +229,15 @@ const reactions = story<ReactState>("reactions", REACT_POSTER, async ({ a, s, go
   await go({ rows: [...rest, arriving] });
 });
 
-/** Hands go up one by one in a new order; with three up, the host lowers them all. */
-const hands = story<HandsState>("hands", HANDS_POSTER, async ({ a, s, go, jump }) => {
-  const { count } = s();
-  if (count === 3) {
-    await go({ pressed: true });
-    await a.wait(220);
-    await go({ pressed: false, count: 0 });
-    await a.wait(1000);
-    return;
-  }
-  // The next round's people take the empty rows out of sight, then the first of them puts a hand up.
-  if (count === 0) await jump({ round: s().round + 1 });
-  await go({ count: count + 1 });
-  await a.wait(700);
+/** The queue moves on: the 1st has the floor and speaks, lowers their hand, the others move up a place, and a new hand goes up as 3rd. */
+const hands = story<HandsState>("hands", HANDS_POSTER, async ({ a, s, go }) => {
+  await go({ speaking: true });
+  await a.wait(1100);
+  await go({ speaking: false, leaving: true });
+  // The others move up as the 1st's row fades, so the top place is never empty.
+  await a.wait(120);
+  await go({ next: s().next + 1, leaving: false });
+  await a.wait(800);
 });
 
 /* --------------------------------------------------------------- the stages */

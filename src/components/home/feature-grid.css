@@ -273,9 +273,11 @@
   margin-top: 3.4cqw;
   border-bottom: max(1.5px, 0.25cqw) solid #d8d5cc;
 }
+/* On a phone the chart ends a gutter (24px, 28 before the 0.85) inside the tile, where the screen's
+   hidden part (9rem / 0.85) begins: its newest week shows. */
 .gm-share[data-layout="compact"] .gm-slide-chart {
   --gap: 14px;
-  width: 560px;
+  width: calc(100% - 9rem / 0.85 - 28px);
   height: 150px;
   margin-top: 22px;
 }
@@ -283,7 +285,7 @@
   position: absolute;
   bottom: 0;
   left: 0;
-  width: calc((100% - 9 * var(--gap)) / 10);
+  width: calc((100% - (var(--n) - 1) * var(--gap)) / var(--n));
   height: 100%;
   background: #d8d5cc;
   transform-origin: 50% 100%;
@@ -334,7 +336,7 @@
   top: 0;
   left: 0;
   right: 0;
-  height: 73px;
+  height: 85px;
 }
 .gm-wave-bars {
   position: absolute;
@@ -419,7 +421,7 @@
 /* The .menu look (globals.css) without its opening animation. */
 .gm-menu {
   position: absolute;
-  top: 85px;
+  top: 97px;
   left: var(--fg-pad);
   right: var(--fg-pad);
   padding: 6px;
@@ -537,6 +539,7 @@
   transform: scale(0.5);
 }
 
+
 /* 4. Reactions: a speaker's video tile, camera off, the whole tile; the reaction lane over its
    lower left, above the name label, oldest at the bottom, newest on top. */
 .gm-video {
@@ -544,12 +547,12 @@
   inset: 0;
   background: radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--c) 18%, var(--surface-2)), var(--surface) 75%);
 }
-/* The speaker's picture, camera off: centred in the tile between its title and its name label,
-   clear of the lane, ringed while they speak. */
+/* The speaker's picture, camera off: in the middle of the space the lane leaves beside it (40px
+   right of the tile's centre), between the title and the name label, ringed while they speak. */
 .gm-disc {
   position: absolute;
   top: calc(50% - 4px);
-  left: 50%;
+  left: calc(50% + 2.5rem);
   translate: -50% -50%;
   display: grid;
   width: 4rem;
@@ -643,8 +646,8 @@
   }
 }
 
-/* 5. Hands: the People panel, pinned on the gutters and running off the tile's foot. Hands go up
-   one by one, each given its place; Lower all clears them, top first. */
+/* 5. Hands: the People panel, pinned on the gutters and running off the tile's foot. The queue
+   moves on a place at a time: the 1st speaks and lowers, the others move up, a new hand joins. */
 .gm-panel {
   position: absolute;
   top: 0;
@@ -656,15 +659,8 @@
     inset 0 0 0 1px var(--border),
     0 24px 60px -24px rgb(0 0 0 / 0.8);
 }
-.gm-hands-head {
-  transition: opacity var(--dur-base) var(--ease-enter);
-}
-.gm-hands[data-any="false"] .gm-hands-head {
-  opacity: 0;
-  transition: opacity var(--dur-fast) var(--ease-exit) 210ms;
-}
 /* PeoplePanel.tsx's button (h-8, rounded-lg, px-2.5), in the panel's text colour here: the
-   tile's lime is the queue's. Pressed, it shows the button's own hover fill. */
+   tile's lime is the queue's. */
 .gm-lower {
   display: grid;
   height: 32px;
@@ -672,25 +668,47 @@
   padding: 0 10px;
   border-radius: 8px;
   color: var(--text);
-  transition: opacity var(--dur-fast);
 }
-.gm-lower[data-pressed] {
-  background: var(--surface-2);
+/* Three places, a row each (PeoplePanel.tsx: 56px). A row glides to its new place by transform. */
+.gm-queue {
+  position: relative;
+  height: 168px;
 }
-.gm-hand {
+.gm-scene .gm-queue .gm-hand {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  transform: translateY(calc(var(--slot) * 56px));
+  transition:
+    transform 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity var(--dur-base) var(--ease-enter);
   will-change: transform, opacity;
 }
-.gm-hand[data-show="false"] {
-  transform: translateY(6px);
-  transition-delay: calc(var(--i) * 70ms);
+.gm-scene .gm-queue .gm-hand[data-show="false"] {
+  transition:
+    transform 360ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity var(--dur-fast) var(--ease-exit);
 }
-.gm-hands[data-any="true"] .gm-hand[data-show="true"] {
-  transition-delay: 120ms;
+/* A new hand goes up as 3rd once the others have moved up. */
+.gm-queue .gm-hand[data-new] {
+  animation: gm-hand-in 320ms var(--ease-enter) 380ms backwards;
+}
+@keyframes gm-hand-in {
+  from {
+    opacity: 0;
+    transform: translateY(calc(var(--slot) * 56px + 8px));
+  }
 }
 /* The hand-raised tint (the top bar's chip), the lime kept for the first in the queue. */
 .gm-handbadge {
   background: color-mix(in srgb, var(--accent) 16%, var(--surface-2));
   color: var(--text);
+}
+/* The row's place, its three labels crossfading in one line under the name. */
+.gm-places {
+  display: grid;
+  line-height: 1rem;
 }
 .gm-place {
   color: var(--muted);
@@ -698,14 +716,10 @@
 .gm-place[data-first] {
   color: var(--accent);
 }
-/* Everyone else, under the hands: up into the section's place once the hands are lowered (after
-   the rows have gone), down a row's height as each hand goes up (before that row comes in). */
-.gm-everyone {
-  transform: translateY(var(--gm-shift));
-  transition: transform var(--dur-move) var(--ease-move);
-  will-change: transform;
+/* The 1st, given the floor, speaking: the panel's bars, in the text colour, moving only then. */
+.gm-hands .bars {
+  color: var(--text);
 }
-.gm-hands[data-any="false"] .gm-everyone,
-.gm-hands[data-any="false"] .gm-everyone [data-show="true"] {
-  transition-delay: 260ms;
+.gm-hands .bars[data-show="false"] > i {
+  animation: none;
 }
