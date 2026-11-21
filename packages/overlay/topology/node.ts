@@ -362,6 +362,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   const finishing: { record: RepairRecord; at: number }[] = [];
   const switchesFinishing: { from: PeerId; to: PeerId; at: number; until: number }[] = [];
   let uplinkAt = 0;
+  /** What the player says of its playout, for FEEDBACK. */
+  const playout = { delayMs: 0, bufferMs: 0 };
   /** A probe of the link to the parent, while it runs (`runProbe`). */
   let probing: { probe: UplinkProbe; parent: Peer } | null = null;
   let lastStatus = "";
@@ -793,8 +795,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         linkSeq: 0,
         sendMs: 0,
         ...peer.estimator.takeFeedback(now),
-        playoutDelayMs: 0,
-        bufferMs: 0,
+        playoutDelayMs: Math.min(0xffff, Math.max(0, Math.round(playout.delayMs))),
+        bufferMs: Math.min(0xffff, Math.max(0, Math.round(playout.bufferMs))),
         maxSpatial: video?.wanted.maxSpatial ?? 15,
         maxTemporal: video?.wanted.maxTemporal ?? 15,
       });
@@ -1884,6 +1886,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       if (!stream || (stream.wanted.maxSpatial === cap.maxSpatial && stream.wanted.maxTemporal === cap.maxTemporal)) return;
       stream.wanted = { ...cap };
       if (parent) send(parent, { t: "layers", stream: streamId, maxSpatial: cap.maxSpatial, maxTemporal: cap.maxTemporal, reason: "viewport" });
+    },
+
+    setPlayout(playoutDelayMs, bufferMs) {
+      playout.delayMs = Number.isFinite(playoutDelayMs) ? playoutDelayMs : 0;
+      playout.bufferMs = Number.isFinite(bufferMs) ? bufferMs : 0;
     },
 
     setOldestWanted(streamId, frameId) {

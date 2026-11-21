@@ -1,0 +1,585 @@
+/**
+ * The composition root: the modules put together into a viewer and a source (index.ts's two
+ * factories). Nothing here decides anything the modules decide; it carries numbers between them,
+ * as PLAN §4 says it must, because they never import each other:
+ *
+ *   coordinator client ── welcome, signalling, CoordinatorPort, session clock
+ *        │
+ *   transport links ── grants checked against welcome.key (SPEC §5.2, §6.5)
+ *        │
+ *   topology node ── congestion's estimator and gate for every link and child; runs the uplink
+ *        │            probe (SPEC §8.1, §11.6) after probation, the target a full fan-out's cost
+ *        │
+ *   media player (viewer) ◄── frames as they complete; link hints; wanted layers, the oldest
+ *                              frame worth a NACK and the playout delay go back up
+ *   media source (source) ──► frames to the node; congestion's rate controller sets its bitrate
+ *
+ * And the MetricsSample (SPEC §12.1) every `metricsMs`, from the player's counters and the node's
+ * `takeStats()`, to the coordinator and to whoever listens.
+ *
+ * Shared file: the architect's, see docs/overlay/PLAN.md "Shared files".
+ */
+import { createEngineClock, type EngineClock } from "./clock";
+import { createCoordinatorClient } from "./coordinator/index";
+import type { CoordinatorClient } from "./coordinator/types";
+import { createLayerGate, createLinkEstimator, createSourceRateController, createUplinkProbe } from "./congestion/index";
+import { DEFAULT_ENCODING, createPlayer, createProgramSource, probeDecoders } from "./media/index";
+import type { Player, ProgramEncoding, ProgramInput, ProgramSource } from "./media/types";
+import { createOverlayNode, judgeRelay } from "./topology/index";
+import type { NodeStats, NodeStatus, OverlayNode } from "./topology/types";
+import { createLinkManager, probeNat } from "./transport/index";
+import type { LinkManager } from "./transport/types";
+import {
+  emptyHistogram,
+  importGrantPublicKey,
+  latencyBucket,
+  verifyGrant,
+  type Capabilities,
+  type MetricsEvent,
+  type MetricsSample,
+  type OverlayParams,
+  type ServerMessageOf,
+  type StreamConfig,
+} from "./protocol";
+import type { Listenable, Logger, SessionClock, Unsubscribe } from "./runtime";
+import type { OverlayConnectOptions, OverlayEvents, OverlaySource, OverlayState, OverlayViewer } from "./index";
+
+/** SPEC D18: nobody relays before this long in the session; the probe waits for it too. */
+const PROBATION_MS = 20_000;
+/** SPEC §11.6: the probe runs again this often while the peer is eligible. */
+const REPROBE_MS = 5 * 60_000;
+/** A probe cut short is tried again after this long. */
+const PROBE_RETRY_MS = 30_000;
+/** SPEC §8.1, §11.6 (as amended, [D30]'s commit): a full fan-out's cost: maxFanout × 1.15 × B / 0.7. */
+const probeTargetKbps = (params: OverlayParams, streamKbps: number) => (params.maxFanout * 1.15 * streamKbps) / 0.7;
+/** How often what the player wants is passed to the node. */
+const WANTS_EVERY_MS = 200;
+/** The source applies SPEC §11.4's uplink rule once a second. */
+const RATE_EVERY_MS = 1000;
+/** §11.4: the source never goes below this. */
+const MIN_SOURCE_KBPS = 300;
+/** Grants are checked with this much slack for clocks that disagree. */
+const GRANT_LEEWAY_S = 60;
+
+/* ------------------------------ small pieces ------------------------------ */
+
+class Emitter<Events extends Record<string, unknown[]>> implements Listenable<Events> {
+  private listeners: { [K in keyof Events]?: Set<(...args: Events[K]) => void> } = {};
+  constructor(private readonly logger?: Logger) {}
+  on<K extends keyof Events>(event: K, listener: (...args: Events[K]) => void): Unsubscribe {
+    const set = (this.listeners[event] ??= new Set());
+    set.add(listener);
+    return () => set.delete(listener);
+  }
+  emit<K extends keyof Events>(event: K, ...args: Events[K]): void {
+    for (const listener of [...(this.listeners[event] ?? [])]) {
+      try {
+        listener(...args);
+      } catch (error) {
+        this.logger?.error("overlay", "a listener threw", error);
+      }
+    }
+  }
+}
+
+type Navigatorish = Navigator & {
+  getBattery?: () => Promise<{ charging: boolean; level: number }>;
+  connection?: { saveData?: boolean };
+  userAgentData?: { mobile?: boolean; brands?: { brand: string }[] };
+};
+
+/** What this browser says of itself (SPEC §6.3 `caps`). A claim: §8 says how far it is trusted. */
+async function gatherCapabilities(): Promise<Capabilities> {
+  const nav = (typeof navigator === "undefined" ? {} : navigator) as Navigatorish;
+  const ua = nav.userAgent ?? "";
+  const brands = nav.userAgentData?.brands?.map((b) => b.brand).join(" ") ?? "";
+  const browser: Capabilities["browser"] = /Chrom/.test(brands) || (/Chrome\/|Chromium\//.test(ua) && !/Edg\/|OPR\//.test(ua)) || /Edg\//.test(ua) ? "chromium" : /Firefox\//.test(ua) ? "firefox" : /Safari\//.test(ua) ? "safari" : "other";
+  const mobile = nav.userAgentData?.mobile ?? /Mobi|Android|iPhone|iPad/.test(ua);
+  let onPower: boolean | null = null;
+  try {
+    const battery = await nav.getBattery?.();
+    // A machine with no battery reports one that is charging and full.
+    if (battery) onPower = battery.charging;
+  } catch {
+    onPower = null;
+  }
+  let decode: string[] = [];
+  try {
+    decode = (await probeDecoders()).slice(0, 16);
+  } catch {
+    decode = [];
+  }
+  return {
+    browser,
+    desktop: !mobile,
+    onPower,
+    nat: "unknown",
+    uplinkKbps: null,
+    cores: Math.min(1024, Math.max(1, Math.round(nav.hardwareConcurrency || 1))),
+    decode,
+    dataSaver: nav.connection?.saveData === true,
+    visible: typeof document === "undefined" ? true : document.visibilityState === "visible",
+  };
+}
+
+const round = (x: number) => Math.round(x);
+const clampInt = (x: number, max = 0xffffffff) => Math.min(max, Math.max(0, Math.round(Number.isFinite(x) ? x : 0)));
+
+/* ------------------------------ what both sides share ------------------------------ */
+
+type PeerEvents = OverlayEvents & { firstFrame: []; audioBlocked: [blocked: boolean]; streams: [streams: StreamConfig[]] };
+
+/**
+ * One peer's engine, either side: the client, the links, the node, and what runs between them.
+ * The viewer adds a player, the source a program source.
+ */
+abstract class PeerEngine {
+  readonly events: Emitter<PeerEvents>;
+  state: OverlayState = "idle";
+  protected readonly clock: EngineClock;
+  protected readonly client: CoordinatorClient;
+  protected node: OverlayNode | null = null;
+  protected links: LinkManager | null = null;
+  protected welcome: ServerMessageOf<"welcome"> | null = null;
+  protected caps: Capabilities | null = null;
+  protected readonly streams = new Map<number, StreamConfig>();
+  protected readonly timers: (() => void)[] = [];
+  protected readonly pending: MetricsEvent[] = [];
+  private seq = 0;
+  private sampledAt = 0;
+  private probeTimer: (() => void) | null = null;
+  protected startedAt = 0;
+  protected welcomedAt = 0;
+
+  constructor(protected readonly options: OverlayConnectOptions) {
+    this.events = new Emitter(options.logger);
+    this.clock = createEngineClock();
+    this.client = createCoordinatorClient({ url: options.coordinatorUrl, ticket: options.ticket, clock: this.clock, logger: options.logger });
+    this.client.on("closed", (reason, detail) => this.finish(reason, detail));
+    this.client.on("offline", () => this.setState("reconnecting"));
+    this.client.on("welcome", () => {
+      if (this.state === "reconnecting") this.setState("connected");
+    });
+  }
+
+  protected setState(state: OverlayState): void {
+    if (this.state === state) return;
+    this.state = state;
+    this.events.emit("state", state);
+  }
+
+  protected session = (local: number) => Math.max(0, this.client.sessionClock.fromLocal(local));
+
+  /** `hello` → `welcome`, then the links and the node. The side's own parts come after. */
+  async connect(): Promise<void> {
+    if (this.state !== "idle") throw new Error(`overlay: connect() when ${this.state}`);
+    this.setState("connecting");
+    this.startedAt = this.clock.now();
+    try {
+      this.caps = { ...(await gatherCapabilities()), ...this.options.capabilities };
+      const welcome = await this.client.connect(this.caps);
+      this.welcome = welcome;
+      this.welcomedAt = this.clock.now();
+      for (const stream of welcome.streams) this.streams.set(stream.id, stream);
+      const key = await importGrantPublicKey(welcome.key.pub);
+      const room = welcome.room;
+      const links = createLinkManager({
+        self: welcome.peer,
+        grant: () => this.client.grant(),
+        verifyPeer: async (peer, grant) => (await verifyGrant(grant, key, { room, peer, now: welcome.epochMs + this.client.sessionClock.now(), leewayS: GRANT_LEEWAY_S })) !== null,
+        signaler: this.client.signaler,
+        ice: welcome.ice,
+        clock: this.clock,
+        logger: this.options.logger,
+        wrapChannel: this.options.wrapChannel,
+      });
+      this.links = links;
+      const node = createOverlayNode({
+        self: welcome.peer,
+        links,
+        coordinator: this.client,
+        params: welcome.params,
+        clock: this.clock,
+        sessionClock: this.client.sessionClock,
+        createLinkEstimator: (estimatorOptions) => createLinkEstimator(estimatorOptions),
+        createLayerGate,
+        logger: this.options.logger,
+      });
+      this.node = node;
+      node.on("metric", (event) => this.pending.push(event));
+      node.on("error", (error) => this.events.emit("error", error));
+      node.on("status", () => this.sendStatus());
+      node.on("config", (config) => this.onConfig(config));
+      node.on("probe", (spare) => this.onProbe(spare));
+      await this.beforeStart(welcome);
+      node.start(welcome.role, welcome.streams, welcome.assign);
+      this.sampledAt = this.clock.now();
+      this.timers.push(this.clock.setInterval(() => this.sample(), welcome.params.metricsMs));
+      this.setState("connected");
+      this.sendStatus();
+      // NAT type, once the ICE servers are known. A session offering none is one network (the
+      // harness on one machine, a LAN): every peer's host candidates reach every other's.
+      void (welcome.ice.length === 0 ? Promise.resolve<Capabilities["nat"]>("open") : probeNat(welcome.ice)).then((nat) => {
+        if (!this.caps || this.options.capabilities?.nat) return;
+        this.caps = { ...this.caps, nat };
+        this.sendStatus();
+      });
+      if (welcome.role !== "source") this.scheduleProbe(PROBATION_MS);
+    } catch (error) {
+      this.setState("closed");
+      throw error;
+    }
+  }
+
+  /** The side's own wiring, before the node starts. */
+  protected abstract beforeStart(welcome: ServerMessageOf<"welcome">): Promise<void>;
+  protected abstract sideOfSample(sample: MetricsSample): void;
+
+  protected onConfig(config: StreamConfig): void {
+    this.streams.set(config.id, config);
+    this.events.emit("streams", [...this.streams.values()]);
+  }
+
+  /* --- status, the probe --- */
+
+  protected sendStatus(): void {
+    const node = this.node;
+    if (!node || !this.caps) return;
+    const status = node.status();
+    const up = this.lastUp;
+    this.client.sendStatus({
+      depth: Math.min(255, status.depth),
+      links: status.stripes.map((s) => ({ stream: s.stream, stripe: s.stripe, parent: s.parent, backup: s.backup })),
+      children: status.children.length,
+      standby: status.standbyChildren.length,
+      free: status.freeSlots,
+      caps: this.caps,
+      lossPct: up?.lossPct ?? 0,
+      rttMs: up?.rttMs ?? null,
+    });
+  }
+  protected lastUp: NodeStats["up"] = null;
+
+  private videoKbps(): number {
+    for (const stream of this.streams.values()) if (stream.kind === "video") return stream.bitrateKbps;
+    return DEFAULT_ENCODING.video.bitrateKbps;
+  }
+
+  private scheduleProbe(afterMs: number): void {
+    this.probeTimer?.();
+    this.probeTimer = this.clock.setTimeout(() => this.maybeProbe(), afterMs);
+  }
+
+  /** SPEC §8.1: after probation, and every 5 minutes while eligible, if the claim could make this peer a relay at all. */
+  private maybeProbe(): void {
+    const node = this.node;
+    const welcome = this.welcome;
+    if (!node || !welcome || !this.caps || this.state === "closed") return;
+    const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.videoKbps(), welcome.params);
+    // Only the uplink is unknown: the probe is what finds it. Anything else, and it would be wasted.
+    if (verdict.reasons.some((reason) => reason !== "uplink")) return this.scheduleProbe(PROBE_RETRY_MS);
+    node.runProbe(createUplinkProbe({ targetKbps: probeTargetKbps(welcome.params, this.videoKbps()), durationMs: 1000 }));
+  }
+
+  private onProbe(spare: number | null): void {
+    if (spare === null) return this.scheduleProbe(PROBE_RETRY_MS);
+    if (this.caps) this.caps = { ...this.caps, uplinkKbps: Math.round(spare) };
+    this.sendStatus();
+    this.scheduleProbe(REPROBE_MS);
+  }
+
+  /* --- metrics --- */
+
+  private sample(): void {
+    const node = this.node;
+    const welcome = this.welcome;
+    if (!node || !welcome) return;
+    const now = this.clock.now();
+    const intervalMs = Math.max(0, now - this.sampledAt);
+    this.sampledAt = now;
+    const stats = node.takeStats();
+    this.lastUp = stats.up;
+    const status = node.status();
+    const sample: MetricsSample = {
+      peer: welcome.peer,
+      seq: this.seq++,
+      at: Math.max(0, this.client.sessionClock.now()),
+      intervalMs: Math.min(3_600_000, intervalMs),
+      role: status.role,
+      depth: clampInt(status.depth, 255),
+      playoutDelayMs: 0,
+      events: [],
+    };
+    if (stats.up) {
+      sample.up = { ...stats.up, rttMs: stats.up.rttMs === null ? null : Math.min(3_600_000, Math.max(0, stats.up.rttMs)), queueDelayMs: Math.min(3_600_000, Math.max(0, stats.up.queueDelayMs)), lossPct: Math.min(100, Math.max(0, stats.up.lossPct)) };
+    }
+    if (stats.relay) {
+      sample.relay = {
+        ...stats.relay,
+        children: clampInt(stats.relay.children, 255),
+        standby: clampInt(stats.relay.standby, 255),
+        bufferedMaxBytes: clampInt(stats.relay.bufferedMaxBytes),
+        layerDrops: clampInt(stats.relay.layerDrops),
+        retransmitsSent: clampInt(stats.relay.retransmitsSent),
+      };
+    }
+    this.sideOfSample(sample);
+    if (stats.join) this.onJoinStats(stats.join);
+    sample.events = this.pending.splice(0, 64);
+    try {
+      this.client.sendMetrics(sample);
+    } catch (error) {
+      this.options.logger?.warn("overlay", "a metrics sample did not encode", error);
+    }
+    this.events.emit("metrics", sample);
+  }
+
+  /** The viewer reports its `join` event when it has everything for it. */
+  protected onJoinStats(_join: NonNullable<NodeStats["join"]>): void {}
+
+  /* --- the end --- */
+
+  private finish(reason: "kicked" | "ended" | "denied" | "full" | "left", detail: string): void {
+    if (this.state === "closed") return;
+    void this.teardown(false);
+    this.events.emit("closed", reason, detail);
+  }
+
+  protected async teardown(graceful: boolean): Promise<void> {
+    if (this.state === "closed") return;
+    this.setState("closed");
+    this.probeTimer?.();
+    for (const stop of this.timers.splice(0)) stop();
+    if (graceful) await this.node?.stop().catch(() => undefined);
+    this.links?.closeAll();
+    this.client.close();
+    this.clock.close();
+  }
+
+  status(): NodeStatus | null {
+    return this.node?.status() ?? null;
+  }
+
+  sessionClock(): SessionClock | null {
+    return this.welcome ? this.client.sessionClock : null;
+  }
+}
+
+/* ------------------------------ the viewer ------------------------------ */
+
+class ViewerEngine extends PeerEngine {
+  private player: Player | null = null;
+  private readonly decode: boolean;
+  private glassToGlass = emptyHistogram();
+  private frameGap = emptyHistogram();
+  private audioGlassToGlass = emptyHistogram();
+  private lastRenderedUs: number | null = null;
+  private counted = { rendered: 0, dropped: 0, lost: 0, playedMs: 0, concealedMs: 0, underruns: 0 };
+  private firstFrameAt: number | null = null;
+  private joinReported = false;
+
+  constructor(options: OverlayConnectOptions & { decode?: boolean }) {
+    super(options);
+    this.decode = options.decode ?? true;
+  }
+
+  protected async beforeStart(welcome: ServerMessageOf<"welcome">): Promise<void> {
+    const node = this.node!;
+    const player = createPlayer({ sessionClock: this.client.sessionClock, clock: this.clock, playoutMinMs: welcome.params.playoutMinMs, playoutMaxMs: welcome.params.playoutMaxMs, decode: this.decode, logger: this.options.logger });
+    this.player = player;
+    if (this.streams.size > 0) await player.configure([...this.streams.values()]);
+    // Frames go to the player the moment they are whole (SPEC §3.3).
+    node.on("frame", (frame) => player.push(frame));
+    // §10.2: D follows the link to the parent: congestion's estimate of what arrives.
+    node.on("uplink", (estimate) => player.setLinkHints({ jitterMs: estimate.jitterMs, rttMs: estimate.rttMs, lossPct: estimate.lossPct }));
+    player.on("rendered", (_stream, _frameId, captureUs, renderedUs) => {
+      this.glassToGlass[latencyBucket((renderedUs - captureUs) / 1000)]++;
+      if (this.lastRenderedUs !== null) this.frameGap[latencyBucket((renderedUs - this.lastRenderedUs) / 1000)]++;
+      this.lastRenderedUs = renderedUs;
+    });
+    player.on("firstFrame", () => {
+      this.firstFrameAt ??= this.clock.now();
+      this.events.emit("firstFrame");
+    });
+    player.on("freeze", (stream, ms) => this.pending.push({ t: "freeze", stream, at: Math.max(0, this.client.sessionClock.now()), ms: Math.min(3_600_000, Math.max(0, ms)) }));
+    player.on("audioBlocked", (blocked) => this.events.emit("audioBlocked", blocked));
+    player.on("error", (error) => this.events.emit("error", error));
+    // What the player can use, the oldest frame still worth a NACK, and D, go back up (SPEC §4.5, §4.6).
+    this.timers.push(
+      this.clock.setInterval(() => {
+        for (const id of this.streams.keys()) {
+          node.setWanted(id, player.wantedLayers(id));
+          node.setOldestWanted(id, player.oldestWanted(id));
+        }
+        node.setPlayout(player.stats().playoutDelayMs, 0);
+      }, WANTS_EVERY_MS),
+    );
+  }
+
+  protected override onConfig(config: StreamConfig): void {
+    const known = this.streams.get(config.id);
+    super.onConfig(config);
+    if (!known || known.configId !== config.configId) void this.player?.configure([...this.streams.values()]).catch((error: unknown) => this.events.emit("error", error instanceof Error ? error : new Error(String(error))));
+  }
+
+  protected sideOfSample(sample: MetricsSample): void {
+    const player = this.player;
+    if (!player) return;
+    const stats = player.stats();
+    sample.playoutDelayMs = Math.min(3_600_000, Math.max(0, stats.playoutDelayMs));
+    if (stats.video) {
+      const video = stats.video;
+      let maxTemporal = 15;
+      for (const stream of this.streams.values()) if (stream.kind === "video") maxTemporal = Math.min(15, player.wantedLayers(stream.id).maxTemporal);
+      sample.video = {
+        rendered: clampInt(video.rendered - this.counted.rendered),
+        dropped: clampInt(video.dropped - this.counted.dropped),
+        lost: clampInt(video.lost - this.counted.lost),
+        glassToGlass: this.glassToGlass,
+        frameGap: this.frameGap,
+        maxTemporal,
+      };
+      this.counted.rendered = video.rendered;
+      this.counted.dropped = video.dropped;
+      this.counted.lost = video.lost;
+      this.glassToGlass = emptyHistogram();
+      this.frameGap = emptyHistogram();
+    }
+    if (stats.audio) {
+      const audio = stats.audio;
+      sample.audio = {
+        playedMs: Math.min(3_600_000, Math.max(0, audio.playedMs - this.counted.playedMs)),
+        concealedMs: Math.min(3_600_000, Math.max(0, audio.concealedMs - this.counted.concealedMs)),
+        underruns: clampInt(audio.underruns - this.counted.underruns),
+        // The player reports no per-frame audio timing; the picture's is the gate's measure (§12.3).
+        glassToGlass: this.audioGlassToGlass,
+        avOffsetMs: Math.min(10_000, Math.max(-10_000, round(audio.avOffsetMs))),
+      };
+      this.counted.playedMs = audio.playedMs;
+      this.counted.concealedMs = audio.concealedMs;
+      this.counted.underruns = audio.underruns;
+    }
+  }
+
+  protected override onJoinStats(join: NonNullable<NodeStats["join"]>): void {
+    if (this.joinReported || this.firstFrameAt === null) return;
+    this.joinReported = true;
+    const firstFrame = this.session(this.firstFrameAt);
+    // First among the sample's events: `sample()` takes them from `pending` after this.
+    this.pending.unshift({
+      t: "join",
+      start: this.session(this.startedAt),
+      welcome: this.session(this.welcomedAt),
+      linked: join.linked,
+      firstPacket: join.firstPacket ?? firstFrame,
+      firstFrame,
+      turn: join.turn,
+    });
+  }
+
+  videoTrack(): MediaStreamTrack | null {
+    return this.player?.videoTrack() ?? null;
+  }
+  resumeAudio(): Promise<void> {
+    return this.player?.resumeAudio() ?? Promise.resolve();
+  }
+  setVolume(volume: number): void {
+    this.player?.setVolume(volume);
+  }
+  stats() {
+    return this.player?.stats() ?? null;
+  }
+  async close(): Promise<void> {
+    await this.teardown(true);
+    await this.player?.close().catch(() => undefined);
+  }
+}
+
+/* ------------------------------ the source ------------------------------ */
+
+class SourceEngine extends PeerEngine {
+  private source: ProgramSource | null = null;
+  private readonly encoding: ProgramEncoding;
+
+  constructor(options: OverlayConnectOptions & { encoding?: ProgramEncoding }) {
+    super(options);
+    this.encoding = options.encoding ?? DEFAULT_ENCODING;
+  }
+
+  protected async beforeStart(): Promise<void> {
+    const node = this.node!;
+    // The node sends each audio frame twice on every hop (SPEC D25), so the source sends it once.
+    const source = createProgramSource({ encoding: this.encoding, sessionClock: this.client.sessionClock, clock: this.clock, audioCopies: 1, logger: this.options.logger });
+    this.source = source;
+    source.on("frame", (frame) => node.publish(frame));
+    source.on("config", (config) => {
+      node.publishConfig(config);
+      this.streams.set(config.id, config);
+      this.client.sendStreams(source.streams());
+    });
+    source.on("error", (error) => this.events.emit("error", error));
+    // SPEC §11.4: the encoder's target from the source's own uplink and the audience's hint.
+    const rate = createSourceRateController({ maxKbps: this.encoding.video.bitrateKbps, minKbps: Math.min(MIN_SOURCE_KBPS, this.encoding.video.bitrateKbps) });
+    rate.on("target", (kbps) => source.setVideoBitrate(kbps));
+    this.client.on("message", (message) => {
+      if (message.t === "hint") rate.onHint(message.bitrateKbps, this.clock.now());
+    });
+    this.timers.push(this.clock.setInterval(() => rate.onChildren(node.childEstimates(), this.clock.now()), RATE_EVERY_MS));
+  }
+
+  protected sideOfSample(): void {}
+
+  async publish(input: ProgramInput): Promise<void> {
+    const node = this.node;
+    const source = this.source;
+    if (!node || !source) throw new Error("overlay: publish() before connect()");
+    await source.start(input);
+    const streams = source.streams();
+    for (const config of streams) {
+      node.publishConfig(config);
+      this.streams.set(config.id, config);
+    }
+    this.client.sendStreams(streams);
+  }
+
+  async close(): Promise<void> {
+    await this.source?.stop().catch(() => undefined);
+    await this.teardown(true);
+  }
+}
+
+/* ------------------------------ the factories ------------------------------ */
+
+export function createViewer(options: OverlayConnectOptions & { decode?: boolean }): OverlayViewer {
+  const engine = new ViewerEngine(options);
+  return {
+    on: (event, listener) => engine.events.on(event, listener),
+    get state() {
+      return engine.state;
+    },
+    connect: () => engine.connect(),
+    videoTrack: () => engine.videoTrack(),
+    resumeAudio: () => engine.resumeAudio(),
+    setVolume: (volume) => engine.setVolume(volume),
+    status: () => engine.status(),
+    stats: () => engine.stats(),
+    sessionClock: () => engine.sessionClock(),
+    close: () => engine.close(),
+  };
+}
+
+export function createSource(options: OverlayConnectOptions & { encoding?: ProgramEncoding }): OverlaySource {
+  const engine = new SourceEngine(options);
+  return {
+    on: (event, listener) => engine.events.on(event as keyof OverlayEvents, listener as never),
+    get state() {
+      return engine.state;
+    },
+    connect: () => engine.connect(),
+    publish: (input) => engine.publish(input),
+    status: () => engine.status(),
+    sessionClock: () => engine.sessionClock(),
+    close: () => engine.close(),
+  };
+}
+

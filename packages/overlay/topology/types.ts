@@ -200,6 +200,8 @@ export interface OverlayNode extends Listenable<OverlayNodeEvents> {
   setWanted(streamId: number, cap: LayerCap): void;
   /** The oldest frame of a stream the player still wants: nothing older is NACKed. */
   setOldestWanted(streamId: number, frameId: number | null): void;
+  /** The playout delay in force (*D*, SPEC §10.2) and the media held ahead of playout, in ms: reported upstream in FEEDBACK (SPEC §4.5). */
+  setPlayout(playoutDelayMs: number, bufferMs: number): void;
   status(): NodeStatus;
   /** The estimates of the links to direct children: the source feeds them to its rate controller. */
   childEstimates(): LinkEstimate[];

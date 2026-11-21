@@ -24,13 +24,15 @@ describe("overlay skeleton", () => {
     assert.equal(typeof OverlayRoom, "function");
   });
 
-  it("is still a stub wherever it has not been built, and says whose it is", () => {
-    const stubs: [string, () => unknown][] = [
-      ["architect", () => createOverlayViewer({ coordinatorUrl: "", ticket: async () => "" })],
-      ["architect", () => createOverlaySource({ coordinatorUrl: "", ticket: async () => "" })],
-    ];
-    for (const [owner, call] of stubs) {
-      assert.throws(call, (error: unknown) => error instanceof NotImplementedError && error.owner === owner && /not implemented/.test(error.message));
+  it("is built: the composition root's factories make a viewer and a source without connecting", async () => {
+    for (const make of [createOverlayViewer, createOverlaySource]) {
+      let peer: ReturnType<typeof make> | null = null;
+      assert.doesNotThrow(() => {
+        peer = make({ coordinatorUrl: "ws://127.0.0.1:1/overlay/v1/rooms/x/ws", ticket: async () => "" });
+      }, (error: unknown) => error instanceof NotImplementedError);
+      assert.equal(peer!.state, "idle");
+      assert.equal(peer!.status(), null);
+      await peer!.close();
     }
   });
 

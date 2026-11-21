@@ -9,8 +9,9 @@
  *
  * Shared file: see docs/overlay/PLAN.md "Shared files".
  */
-import { notImplemented, type Listenable, type Logger, type SessionClock } from "./runtime";
-import type { MetricsSample, StreamConfig } from "./protocol";
+import { createSource, createViewer } from "./engine";
+import type { Listenable, Logger, SessionClock } from "./runtime";
+import type { Capabilities, MetricsSample, StreamConfig } from "./protocol";
 import type { PlayerStats, ProgramEncoding, ProgramInput } from "./media/types";
 import type { NodeStatus } from "./topology/types";
 import type { TransportOptions } from "./transport/types";
@@ -30,6 +31,11 @@ export type OverlayConnectOptions = {
    * never sets it.
    */
   wrapChannel?: TransportOptions["wrapChannel"];
+  /**
+   * What this peer says of itself, over what the engine finds (SPEC §6.3 `caps`). For a test that
+   * knows better than the browser can tell; an application never sets it.
+   */
+  capabilities?: Partial<Capabilities>;
 };
 
 export type OverlayState = "idle" | "connecting" | "connected" | "reconnecting" | "closed";
@@ -76,7 +82,6 @@ export const createOverlayViewer: (
     /** False for the harness's light viewers: `PlayerOptions.decode` (SPEC §13.2). */
     decode?: boolean;
   },
-) => OverlayViewer = () => notImplemented("architect", "createOverlayViewer");
+) => OverlayViewer = createViewer;
 
-export const createOverlaySource: (options: OverlayConnectOptions & { encoding?: ProgramEncoding }) => OverlaySource = () =>
-  notImplemented("architect", "createOverlaySource");
+export const createOverlaySource: (options: OverlayConnectOptions & { encoding?: ProgramEncoding }) => OverlaySource = createSource;
