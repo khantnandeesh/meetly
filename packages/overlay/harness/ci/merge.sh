@@ -31,14 +31,17 @@ for branch in "${branches[@]}"; do
   if git merge --quiet --no-edit "$target" >/dev/null 2>&1; then
     entries+=("{\"branch\":\"$branch\",\"sha\":\"$sha\",\"result\":\"merged\"}")
     echo "merged $branch at $sha"
-  elif [ "$(git diff --name-only --diff-filter=U)" = "packages/overlay/skeleton.test.ts" ]; then
-    # Every engineer removes their own lines from the list of stubs; neighbouring removals
-    # conflict. A swarm does not run that test, so keep this side's and say so.
-    git checkout --ours packages/overlay/skeleton.test.ts
-    git add packages/overlay/skeleton.test.ts
+  elif [ -z "$(git diff --name-only --diff-filter=U | grep -vxE 'packages/overlay/skeleton.test.ts|docs/overlay/SPEC.md')" ]; then
+    # Files a swarm does not run. skeleton.test.ts: every engineer removes their own lines from
+    # the list of stubs, and neighbouring removals conflict; keep this side's. SPEC.md: both
+    # sides append decisions to §16's table; keep the other side's, which is the engine's.
+    files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+    if git diff --name-only --diff-filter=U | grep -qx packages/overlay/skeleton.test.ts; then git checkout --ours packages/overlay/skeleton.test.ts; fi
+    if git diff --name-only --diff-filter=U | grep -qx docs/overlay/SPEC.md; then git checkout --theirs docs/overlay/SPEC.md; fi
+    git add packages/overlay/skeleton.test.ts docs/overlay/SPEC.md
     git commit --quiet --no-edit
-    entries+=("{\"branch\":\"$branch\",\"sha\":\"$sha\",\"result\":\"merged\",\"note\":\"skeleton.test.ts conflicted and was not merged; the swarm does not run it\"}")
-    echo "merged $branch at $sha (skeleton.test.ts conflicted: kept the harness side, which a swarm does not run)"
+    entries+=("{\"branch\":\"$branch\",\"sha\":\"$sha\",\"result\":\"merged\",\"note\":\"conflicts in files a swarm does not run, resolved: $files\"}")
+    echo "merged $branch at $sha (conflicts in files a swarm does not run, resolved: $files)"
   else
     files=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
     git merge --abort

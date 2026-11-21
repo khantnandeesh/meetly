@@ -7,9 +7,10 @@
 #
 # How shards on different runners share one coordinator: runners cannot reach each other, so shard
 # 0 runs the coordinator, puts it behind a Cloudflare quick tunnel (harness/ci/tunnel.sh) and
-# uploads the URL, a start time and a fresh admission secret as an artifact; every other shard
-# waits for that artifact (harness/ci/rendezvous.sh), then all join at the same moment. Peers
-# use STUN only: there is no TURN server to give them.
+# uploads the URL, a start time, a fresh admission secret and the run's layout as an artifact;
+# every other shard waits for that artifact (harness/ci/rendezvous.sh), then all join at the same
+# moment. Peers use STUN only: there is no TURN server to give them, so a runner behind a
+# symmetric NAT is left out (harness/layout.ts) and the report covers cone-NAT peers only.
 name: Overlay swarm
 
 on:
@@ -49,7 +50,7 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 40
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       has_shards: ${{ steps.plan.outputs.has_shards }}
@@ -70,17 +71,44 @@ jobs:
           COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
           RUNS_INPUT: ${{ inputs.runs }}
         run: node packages/overlay/harness/ci/plan.mjs
-      # One commit of overlay-integration for every shard of the run (ci/merge.sh).
+      # One commit of overlay-integration for every shard of the run (ci/merge.sh): the newest one
+      # whose CI passed, or the branch's head if none has.
       - id: pin
-        run: echo "sha=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/overlay-integration | cut -f1)" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs"
+          sha=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?branch=overlay-integration&event=push&status=success&per_page=30" \
+            | jq -r '[.workflow_runs[] | select(.name == "CI")][0].head_sha // empty' || true)
+          [ -n "$sha" ] || sha=$(git ls-remote "https://github.com/$GITHUB_REPOSITORY" refs/heads/overlay-integration | cut -f1)
+          echo "overlay-integration: $sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+      # A free account runs 20 jobs at once, and this push's own CI wants 5 of them. A sharded run
+      # waits for that CI to finish, so that all its shards get a runner at once.
+      - name: Wait for this push's CI to leave its runners
+        if: steps.plan.outputs.has_shards == 'true' && github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions/runs"
+          for _ in $(seq 1 120); do
+            status=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" "$api?head_sha=$GITHUB_SHA&per_page=20" \
+              | jq -r '[.workflow_runs[] | select(.name == "CI")][0].status // "none"' || echo unknown)
+            echo "CI: $status"
+            [ "$status" = "completed" ] || [ "$status" = "none" ] && break
+            sleep 15
+          done
 
-  # PLAN H5 (and H6): one shard of a run on its own runner. Shard 0 also runs the coordinator.
+  # PLAN H5 (and H6): one shard of a run on its own runner. Shard 0 runs the coordinator and its
+  # tunnel and no peer; it lays the run out once every other shard has said what NAT it is behind
+  # (harness/layout.ts): the source alone on the first runner with an open NAT, the viewers spread
+  # over the rest, and a runner behind a symmetric NAT (AWS-hosted) excluded before it starts.
   shard:
     name: ${{ matrix.run }} ${{ matrix.shard }}/${{ matrix.shards }}
     needs: plan
     if: needs.plan.outputs.has_shards == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
@@ -94,6 +122,7 @@ jobs:
       SEED: ${{ github.run_number }}
       RUN_ID: ${{ matrix.run }}-${{ github.run_id }}-${{ github.run_attempt }}
       OUT: ${{ github.workspace }}/swarm-out/${{ matrix.run }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -111,35 +140,42 @@ jobs:
       - run: npm ci
       - name: What is real, what is a stub
         run: node packages/overlay/harness/swarm.mjs modules --out "$OUT"
-      - name: Cache Playwright browsers
-        uses: actions/cache@v5
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
-      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+      - name: What NAT this runner is behind
         run: |
-          set -euo pipefail
-          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
-          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
-          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+          mkdir -p "$OUT" nat
+          timeout 30 node packages/overlay/harness/ci/natcheck.mjs "$OUT/nat.json" || true
+          [ -f "$OUT/nat.json" ] || echo '{"mapped":[],"symmetric":null}' > "$OUT/nat.json"
+          cp "$OUT/nat.json" "nat/nat-$SHARD.json"
+      - name: Report it to shard 0
+        if: matrix.shard != 0
+        uses: actions/upload-artifact@v6
+        with:
+          name: nat-${{ matrix.run }}-${{ matrix.shard }}
+          path: nat/nat-${{ matrix.shard }}.json
+          retention-days: 1
 
-      # Shard 0: the coordinator, the tunnel, and the rendezvous the others wait for.
-      - name: Start the coordinator behind a tunnel
+      # Shard 0: lay the run out, then the coordinator, the tunnel, and the rendezvous.
+      - name: Lay the run out, start the coordinator behind a tunnel
         if: matrix.shard == 0
         run: |
           set -euo pipefail
           mkdir -p "$OUT" rendezvous
+          # Six minutes for every other shard to get a runner and report; one still queued is late.
+          bash packages/overlay/harness/ci/collect.sh "nat-$RUN-" $(( SHARDS - 1 )) nat 360
+          node packages/overlay/harness/swarm.mjs layout --shards "$SHARDS" --nat-dir nat > "$OUT/layout.json"
+          cat "$OUT/layout.json"
           secret=$(openssl rand -hex 24)
           echo "::add-mask::$secret"
-          # Two and a half minutes for the tunnel to come up and the other runners to find it; five
-          # for a wide run, some of whose shards wait for a free runner first (ci/plan.mjs).
-          start_at=$(( $(date +%s%3N) + (SHARDS > 8 ? 300000 : 150000) ))
+          # Two and a half minutes for the tunnel and for the others to find the rendezvous.
+          start_at=$(( $(date +%s%3N) + 150000 ))
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
           nohup node packages/overlay/harness/swarm.mjs coordinator --scenario "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" \
             --port "$PORT" --host 127.0.0.1 --start-at "$start_at" --secret "$secret" --stun "$STUN" > "$OUT/coordinator.log" 2>&1 &
           for _ in $(seq 1 30); do curl -fsS -o /dev/null "http://127.0.0.1:$PORT/overlay/v1/health" && break; sleep 1; done
           url=$(bash packages/overlay/harness/ci/tunnel.sh "$PORT" "$OUT/cloudflared.log")
-          printf '{"url":"%s","startAt":%s,"secret":"%s"}\n' "$url" "$start_at" "$secret" > rendezvous/rendezvous.json
+          jq -n --arg url "$url" --argjson startAt "$start_at" --arg secret "$secret" --slurpfile layout "$OUT/layout.json" \
+            '{url: $url, startAt: $startAt, secret: $secret, layout: $layout[0]}' > rendezvous/rendezvous.json
+          jq '{layout}' rendezvous/rendezvous.json > "$OUT/layout.json"
           echo "COORDINATOR=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
           echo "START_AT=$start_at" >> "$GITHUB_ENV"
           echo "SECRET=$secret" >> "$GITHUB_ENV"
@@ -153,8 +189,6 @@ jobs:
           retention-days: 1
       - name: Wait for shard 0's rendezvous
         if: matrix.shard != 0
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           bash packages/overlay/harness/ci/rendezvous.sh "rendezvous-$RUN" rendezvous
@@ -163,22 +197,41 @@ jobs:
           echo "COORDINATOR=$(jq -r .url rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
           echo "START_AT=$(jq -r .startAt rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
           echo "SECRET=$secret" >> "$GITHUB_ENV"
+          jq '{layout}' rendezvous/rendezvous.json > "$OUT/layout.json"
+          if jq -e --argjson s "$SHARD" '.layout.excluded | any(.shard == $s)' rendezvous/rendezvous.json > /dev/null; then
+            echo "EXCLUDED=1" >> "$GITHUB_ENV"
+            echo "::notice title=Overlay swarm::shard $SHARD excluded: $(jq -r --argjson s "$SHARD" '.layout.excluded[] | select(.shard == $s) | .why' rendezvous/rendezvous.json)"
+          fi
           late=$(( $(date +%s%3N) - $(jq -r .startAt rendezvous/rendezvous.json) ))
           if [ "$late" -gt 0 ]; then echo "::warning title=Overlay swarm::shard $SHARD found the rendezvous ${late} ms after the run's start: its peers join late"; fi
 
-      - name: What NAT this runner is behind
-        run: |
-          mkdir -p "$OUT"
-          timeout 30 node packages/overlay/harness/ci/natcheck.mjs "$OUT/nat.json" || true
-      - name: Run shard ${{ matrix.shard }} of ${{ matrix.shards }}
+      - name: Cache Playwright browsers
+        if: matrix.shard != 0 && env.EXCLUDED != '1'
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        if: matrix.shard != 0 && env.EXCLUDED != '1'
         run: |
           set -euo pipefail
-          mkdir -p "$OUT"
-          nat=(); [ -f "$OUT/nat.json" ] && nat=(--nat "$OUT/nat.json")
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+      - name: Excluded, so no peer starts here
+        if: env.EXCLUDED == '1'
+        run: |
+          node packages/overlay/harness/swarm.mjs excluded "$SCENARIO" --peers "$PEERS" --seed "$SEED" --run-id "$RUN_ID" --shard "$SHARD/$SHARDS" \
+            --layout "$OUT/layout.json" --nat "$OUT/nat.json" --ice stun --out "$OUT"
+      - name: Run shard ${{ matrix.shard }} of ${{ matrix.shards }}
+        if: env.EXCLUDED != '1'
+        run: |
+          set -euo pipefail
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
           merged=(); [ -f "$OUT/merged.json" ] && merged=(--merged "$OUT/merged.json")
           node packages/overlay/harness/swarm.mjs run "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" --run-id "$RUN_ID" \
-            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --start-at "$START_AT" --secret "$SECRET" --ice stun "${merged[@]}" "${nat[@]}" --out "$OUT"
+            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --start-at "$START_AT" --secret "$SECRET" --ice stun \
+            --layout "$OUT/layout.json" "${merged[@]}" --nat "$OUT/nat.json" --out "$OUT"
       - name: Keep the coordinator up until the others are done
         if: matrix.shard == 0
         run: |

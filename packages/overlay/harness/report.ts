@@ -58,8 +58,11 @@ const atLeast = (name: string, value: number | null, limit: number): GateCheck =
 
 /** Puts the shards of one run together and judges it against the gate. */
 export function buildReport(results: ShardResult[], options: ReportOptions = {}): SwarmReport {
-  const shards = [...results].sort((a, b) => a.shard.index - b.shard.index);
-  const first = shards[0];
+  const everyShard = [...results].sort((a, b) => a.shard.index - b.shard.index);
+  // A shard the layout left out started no peer: it is listed, and otherwise not in the numbers.
+  const excluded = everyShard.filter((shard) => shard.excluded).map((shard) => ({ shard: shard.shard.index, why: shard.excluded as string, nat: shard.host.nat?.mapped ?? [] }));
+  const shards = everyShard.filter((shard) => !shard.excluded);
+  const first = everyShard[0];
   const notes: string[] = [];
   const expect = { ...first?.expect, ...options };
   const wantPeers = expect.peers ?? GATE.peers;
@@ -137,7 +140,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     }
   };
 
-  const indexes = new Set<number>();
+  const indexes = new Set<number>(excluded.map((e) => e.shard));
   for (const shard of shards) {
     if (indexes.has(shard.shard.index)) notes.push(`shard ${shard.shard.index} appears twice: the second copy was still counted`);
     indexes.add(shard.shard.index);
@@ -173,7 +176,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     else worstLagP99 = worstLagP99 === null ? p99 : Math.max(worstLagP99, p99);
     const joins = shard.samples.reduce((n, s) => n + s.events.filter((e) => e.t === "join").length, 0);
     const settled = shard.host.loadAvg1Settled?.length ? shard.host.loadAvg1Settled : shard.host.loadAvg1;
-    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), loadSettledMax: Math.max(0, ...settled), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins, nat: !shard.host.nat || shard.host.nat.symmetric === null ? "unknown" : shard.host.nat.symmetric ? "symmetric" : "open" });
+    hosts.push({ shard: shard.shard.index, role: shard.role, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), loadSettledMax: Math.max(0, ...settled), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins, nat: !shard.host.nat || shard.host.nat.symmetric === null ? "unknown" : shard.host.nat.symmetric ? "symmetric" : "open" });
     for (const note of new Set(shard.notes ?? [])) shardNotes.set(note, [...(shardNotes.get(note) ?? []), shard.shard.index]);
   }
   failed.sort((a, b) => a.shard - b.shard || a.index - b.index);
@@ -185,6 +188,15 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   notes.sort();
 
   const shardCount = first?.shard.count ?? 0;
+  const laidOut = shards.some((shard) => shard.peersOfRun !== undefined && shard.role !== undefined && shard.role !== "all") || excluded.length > 0;
+  const ran = shards.reduce((n, shard) => n + (shard.peersOfRun ?? 0), 0);
+  for (const e of excluded) notes.push(`shard ${e.shard}: excluded before it started a peer: ${e.why}`);
+  // Without TURN, the run says nothing about viewers who would need it.
+  const turnOffered = shards.length > 0 && shards.every((shard) => shard.ice === "turn");
+  const coverage =
+    shardCount > 1 && !turnOffered
+      ? "Covers cone-NAT peers only: no TURN was offered, so viewers whose links need it (about 15–22% of real audiences) are untested."
+      : null;
   const peers = first?.peers ?? peersStarted;
   const clockSums = sourceClock === null ? [] : viewerClocks.map((viewer) => viewer + (sourceClock as number));
   const clockUncertaintyMs = exactQuantiles(clockSums);
@@ -245,7 +257,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     below("join time p95 (ms)", joinMs.p95, GATE.joinP95Ms),
   ];
   const validity: GateCheck[] = [
-    atLeast("peers, at least", results.length ? peers : null, wantPeers),
+    // Laid out (./layout.ts): the run's peers that really ran, on the shards that took part.
+    laidOut ? atLeast("peers of the run that ran, at least", ran, wantPeers) : atLeast("peers, at least", results.length ? peers : null, wantPeers),
     atLeast("shards that reported, of the run's", results.length ? indexes.size : null, shardCount || 1),
     atLeast("repair events, at least", repairMs.n, wantRepairs),
     below("peers that failed to start", failed.length, 0),
@@ -282,6 +295,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     honesty,
     clockByShard,
     measuredClockMs,
+    excluded,
+    coverage,
     streamKbps: exactQuantiles(streamKbps),
     joinPhasesMs: {
       welcome: exactQuantiles(joinPhases.welcome),
@@ -325,6 +340,8 @@ export function renderReport(report: SwarmReport): string {
       "",
     );
   }
+  if (report.coverage) lines.push(`> **${report.coverage}**`, "");
+  if (report.excluded.length) lines.push(`Excluded before they started a peer: ${report.excluded.map((e) => `shard ${e.shard} (${e.why})`).join("; ")}.`, "");
   const verdict = gate.verdict === "invalid" ? "INVALID (neither a pass nor a fail)" : gate.verdict === "pass" ? "PASS" : "FAIL";
   lines.push(`**Verdict: ${verdict}**${gate.isGate ? "" : " — not the gate run"}`, "");
   lines.push(`${report.peers} peers, ${report.shards} shard${report.shards === 1 ? "" : "s"}, ${Math.round(report.durationS)} s.`, "");
@@ -368,13 +385,13 @@ export function renderReport(report: SwarmReport): string {
   lines.push(`Clock uncertainty (viewer + source): p50 ${ms(report.clockUncertaintyMs.p50)}, p95 ${ms(report.clockUncertaintyMs.p95)}, max ${ms(report.clockUncertaintyMs.max)} ms over ${report.clockUncertaintyMs.n} viewers.`);
   lines.push(
     "",
-    "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames | NAT | Load once filled, max |",
-    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
+    "| Shard | Role | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames | NAT | Load once filled, max |",
+    "| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: |",
   );
   for (const host of report.hosts) {
     const clock = report.clockByShard.find((c) => c.shard === host.shard);
     lines.push(
-      `| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} | ${host.nat ?? "unknown"} | ${Math.round((host.loadSettledMax ?? host.loadAvg1Max) * 100) / 100} |`,
+      `| ${host.shard} | ${host.role ?? "–"} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} | ${host.nat ?? "unknown"} | ${Math.round((host.loadSettledMax ?? host.loadAvg1Max) * 100) / 100} |`,
     );
   }
   lines.push("", "\"Clock\" is SPEC §4.1's bound, half the best probe's round trip: the validity check. \"Clocks apart\" reads each viewer's session clock and the source's against their machines' wall clocks; it is the real disagreement give or take the last column.");

@@ -227,7 +227,7 @@ describe("harness report", () => {
     ]);
     assert.equal(report.gate.valid, false);
     assert.ok(report.gate.notes.some((note) => /^shard 1: clock uncertainty p95 27 ms/.test(note)));
-    assert.match(renderReport(report), /\| 1 \| 4 \| 2 \| 10 \| 27 \|/);
+    assert.match(renderReport(report), /\| 1 \| – \| 4 \| 2 \| 10 \| 27 \|/);
   });
 
   it("measures how far apart viewers' clocks and the source's really were, against wall clocks", () => {
@@ -312,6 +312,29 @@ describe("harness report", () => {
     assert.equal(ntpBoundMs("nothing"), null);
   });
 
+  it("leaves excluded shards out of the numbers, and judges a laid-out run on the peers that ran", () => {
+    const results = goodRun().map((s) => ({ ...s, ice: "stun" as const }));
+    for (const s of results) s.shard.count = 4;
+    results[0].role = "source";
+    results[0].peersOfRun = 120;
+    results[1].role = "viewers";
+    results[1].peersOfRun = 85;
+    const aws: ShardResult = { ...shard(2, 4, []), excluded: "symmetric NAT (an AWS-hosted runner): no link to another machine opens without TURN", role: "excluded", peersOfRun: 0, host: { cores: 0, loadAvg1: [], maxEventLoopLagMs: 0 } };
+    const coordinator: ShardResult = { ...shard(3, 4, []), role: "coordinator", peersOfRun: 0, clock: undefined, ice: "stun" };
+    let report = buildReport([...results, aws, coordinator]);
+    assert.deepEqual(report.excluded.map((e) => e.shard), [2]);
+    assert.deepEqual(report.hosts.map((h) => [h.shard, h.role]), [[0, "source"], [1, "viewers"], [3, "coordinator"]]);
+    const check = (name: string) => report.gate.validity.find((v) => v.name.startsWith(name));
+    assert.deepEqual([check("peers of the run that ran")?.value, check("peers of the run that ran")?.pass], [205, true]);
+    assert.equal(check("shards that reported")?.value, 4, "an excluded shard reported");
+    assert.match(renderReport(report), /Covers cone-NAT peers only/);
+    assert.match(renderReport(report), /Excluded before they started a peer: shard 2 \(symmetric NAT/);
+    // Too few peers left once the AWS shard is out.
+    results[1].peersOfRun = 60;
+    report = buildReport([...results, aws, coordinator]);
+    assert.equal(report.gate.validity.find((v) => v.name.startsWith("peers of the run that ran"))?.pass, false);
+  });
+
   it("finds the largest size that was a valid measurement (H4)", () => {
     const at = (peers: number, lagMs: number): ShardResult[] =>
       goodRun().map((s) => ({ ...s, peers, expect: { peers, minRepairs: 10 }, host: { ...s.host, pageLag: lagOf(lagMs) } }));
@@ -370,7 +393,7 @@ describe("harness scenarios: what every shard works out alone", () => {
     assert.deepEqual(all, again, "every shard derives the same script");
     const joins = all.filter((step) => step.event.action === "join");
     assert.deepEqual(joins.map((step) => step.index), Array.from({ length: 120 }, (_, i) => 200 + i));
-    assert.ok(joins.every((step) => step.shard === shardOf(step.index as number, count)));
+    assert.ok(joins.every((step) => step.shard === shardOf(step.index as number, { shard: { index: 0, count } })));
     const kills = all.filter((step) => step.event.action === "kill");
     for (let s = 0; s < count; s++) assert.ok(kills.some((step) => step.shard === s), `shard ${s} kills somebody`);
     assert.deepEqual(all.filter((step) => step.shard === -1).map((step) => step.event.action), ["kill-coordinator"]);

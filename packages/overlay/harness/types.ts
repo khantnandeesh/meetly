@@ -90,6 +90,8 @@ export type SwarmConfig = {
   peers: number;
   /** This process runs the peers whose index modulo `count` is `index`. Shard 0 also runs the source. */
   shard: { index: number; count: number };
+  /** Who does what, when shard 0 has laid the run out (./layout.ts). Without it, the modulo rule above. */
+  layout?: ShardLayout;
   durationS: number;
   /** Viewers joining per second while the swarm fills. */
   joinPerS: number;
@@ -145,6 +147,12 @@ export type SwarmConfig = {
   log?: (line: string) => void;
 };
 
+/**
+ * Which runner does what (./layout.ts): the coordinator alone on one, the source alone on another,
+ * the viewers spread over the rest, and the runners that cannot take part left out.
+ */
+export type ShardLayout = { coordinatorShard: number; sourceShard: number; viewerShards: number[]; excluded: { shard: number; why: string }[] };
+
 /** What one shard hands back: every metrics sample of every peer it ran. */
 export type ShardResult = {
   runId: string;
@@ -152,6 +160,14 @@ export type ShardResult = {
   startedAt: number;
   endedAt: number;
   peersStarted: number;
+  /** Set when this shard was left out of the run (./layout.ts) and started no peer: not a failure. */
+  excluded?: string;
+  /** What this shard did. */
+  role?: "coordinator" | "source" | "viewers" | "all" | "excluded";
+  /** How many of the run's peers (not churn's later joins) this shard started. */
+  peersOfRun?: number;
+  /** "turn" offered a relay to every link; anything else, none was. */
+  ice?: SwarmConfig["ice"];
   /** Peers whose page crashed or never joined: a run with any is not a valid measurement. */
   peersFailed: { index: number; why: string }[];
   samples: MetricsSample[];
@@ -277,6 +293,10 @@ export type SwarmReport = {
     /** The two machines' wall clocks may differ by up to this (theirs plus shard 0's). */
     ntpBoundMs?: number | null;
   }[];
+  /** Shards the layout left out (./layout.ts), and why. Not failures: they started no peer. */
+  excluded: { shard: number; why: string; nat: string[] }[];
+  /** What part of a real audience the run speaks for, when it is not all of it. */
+  coverage: string | null;
   /** What the stream really was: `up.rxKbps` of every viewer at depth 1, sample by sample. Too low, and a "slow" cap is not under it. */
   streamKbps: Quantiles;
   /** Viewer-plus-source clock disagreement as measured against wall clocks, with their bounds; null when a shard could not be read so. */
@@ -293,7 +313,7 @@ export type SwarmReport = {
   honesty: GateCheck[];
   /** Event-loop lag over every shard's driver and pages. */
   eventLoopLagMs: Quantiles;
-  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number; nat?: "symmetric" | "open" | "unknown"; loadSettledMax?: number }[];
+  hosts: { shard: number; role?: ShardResult["role"]; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number; nat?: "symmetric" | "open" | "unknown"; loadSettledMax?: number }[];
   engine: "real" | "standin" | "mixed" | "unknown";
   /** Parts of the package that were stubs in any shard. */
   stubbed: string[];
