@@ -77,10 +77,25 @@ jobs:
         run: npx eslint packages/overlay src
       - name: Unit tests
         run: npm run test:overlay
-      # A few headless Chromium peers and one killed relay. A placeholder that passes with a
-      # notice until the harness exists (packages/overlay/harness/smoke.ts); when it does, this
-      # job also installs Playwright, as `e2e` below does.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      # As in `e2e` below: Playwright is not a dependency of the repository, so it is installed
+      # outside the project and found through NODE_PATH.
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+      # Seven real peers in headless Chromium, in the proof's tree; one relay is killed without
+      # warning, and every viewer it fed must be rendering again within a second, having lost no
+      # frame (packages/overlay/harness/smoke.ts). It runs whatever of the engine is built and
+      # says, in a warning on the run's summary, what it had to stand in for.
       - name: Swarm smoke test
+        timeout-minutes: 3
         run: npm run overlay:smoke
 
   build:
