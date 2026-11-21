@@ -177,7 +177,12 @@ class Client implements CoordinatorClient {
             } else if (welcomed) this.onMessage(message);
             // Told why before being shown the door: the close that follows carries the code.
           };
-          mine.onerror = () => {};
+          // A browser follows an error with a close; Node's WebSocket, refused a connection, fires
+          // only the error and stays "connecting". Either way, before `welcome` it is a failure.
+          mine.onerror = () => {
+            if (!welcomed) fail(new CoordinatorError("unreachable", "connection failed"));
+            else if (mine.readyState === 1) mine.close();
+          };
           mine.onclose = (event: CloseEvent) => {
             if (this.socket === mine) this.socket = null;
             const reason = TERMINAL[event.code];
