@@ -82,7 +82,7 @@ function TilePicture({ id }: { id: TileId }) {
   const [ready, setReady] = useState(false);
   const onReady = useCallback(() => setReady(true), []);
   return (
-    <div className="gm-slot" data-tile={id} aria-hidden="true">
+    <div className="gm-slot" data-scene={id} aria-hidden="true">
       {!ready && (
         <div className="gm-poster">
           <div className="gm-poster-scale" data-layout="wide">

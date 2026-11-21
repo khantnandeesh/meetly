@@ -26,7 +26,7 @@ const payoff = (person) =>
       if (el.classList.contains("ss-count")) return el.getAttribute("aria-label") || "";
       return Array.from(el.childNodes).map(read).join("");
     };
-    const pick = (tile, selector) => Array.from(document.querySelectorAll(`.gm-slot[data-tile='${tile}'] ${selector}`)).filter((el) => el.getClientRects().length > 0);
+    const pick = (tile, selector) => Array.from(document.querySelectorAll(`.gm-slot[data-scene='${tile}'] ${selector}`)).filter((el) => el.getClientRects().length > 0);
     const banner = pick("share", ".gm-share-banner")[0];
     const sw = pick("noise", ".switch")[0];
     const foot = pick("polls", ".gm-foot")[0];
@@ -61,6 +61,9 @@ module.exports = async function home(browser) {
     }, feature);
     H.ok(`the ${feature} tile reads "${title}"${line ? ` / "${line}"` : ""}, and nothing more`, copy.title === title && copy.line === line && copy.words === (line ? 2 : 1), JSON.stringify(copy));
   }
+  // The home page stays mounted (hidden) after a visit, so its pictures must not look like a call's
+  // video tiles to the call page, which finds those by [data-tile] across the document.
+  H.ok("the grid adds nothing the call page would count as a video tile", (await desk.page.locator("[data-tile]").count()) === 0);
   H.ok("the poster, before any animation, shows each tile's payoff", atPayoff(await payoff(desk), DESKTOP_LANE), JSON.stringify(await payoff(desk)));
 
   // The hero's notification: Deny and Admit on a line of their own under "Pat wants to join".
@@ -80,7 +83,7 @@ module.exports = async function home(browser) {
   // The animations load once the grid is near, each tile plays its loop and comes back to its payoff.
   await grid(desk).scrollIntoViewIfNeeded();
   H.ok("the animations load when the grid comes into view", await H.until(async () => (await desk.page.locator(".gm-stage .ss-stage").count()) === 5, 8000));
-  const marks = () => desk.page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll(".gm-slot")).map((slot) => [slot.dataset.tile, slot.querySelector(".ss-stage")?.getAttribute("data-mark") ?? null])));
+  const marks = () => desk.page.evaluate(() => Object.fromEntries(Array.from(document.querySelectorAll(".gm-slot")).map((slot) => [slot.dataset.scene, slot.querySelector(".ss-stage")?.getAttribute("data-mark") ?? null])));
   const played = await H.until(async () => {
     const now = await marks();
     return Object.entries(LAST_BEAT).every(([tile, beat]) => now[tile] === beat);
