@@ -1,0 +1,287 @@
+# The overlay engine's big swarms (packages/overlay/harness, SPEC §13.3, PLAN H4–H6): real peers in
+# headless Chromium, sharded across runners, against one coordinator, and one report.
+#
+# Not run on every push: a push runs only what its commit message names, as
+# `[swarm: experiment sizes scenarios sharded gate merge]` (harness/ci/plan.mjs says what each is); a manual
+# run what its `runs` input says; the nightly run (on the default branch) the gate.
+#
+# How shards on different runners share one coordinator: runners cannot reach each other, so shard
+# 0 runs the coordinator, puts it behind a Cloudflare quick tunnel (harness/ci/tunnel.sh) and
+# uploads the URL, a start time and a fresh admission secret as an artifact; every other shard
+# waits for that artifact (harness/ci/rendezvous.sh), then all join at the same moment. Peers
+# use STUN only: there is no TURN server to give them.
+name: Overlay swarm
+
+on:
+  push:
+    branches:
+      - overlay-harness
+    paths:
+      - "packages/overlay/**"
+      - ".github/workflows/overlay-swarm.yml"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "What to run: any of experiment, sizes, scenarios, sharded, gate, merge"
+        default: "gate merge"
+        type: string
+  schedule:
+    - cron: "17 3 * * *"
+
+permissions:
+  contents: read
+  # rendezvous.sh lists this run's artifacts while it is in progress.
+  actions: read
+
+# One swarm at a time per branch, and a newer push does not cancel one under way: a push that
+# asks for nothing would otherwise kill a gate run ten minutes in.
+concurrency:
+  group: overlay-swarm-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_VERSION: "22"
+  PLAYWRIGHT_VERSION: "1.63.0"
+  PORT: "4280"
+  STUN: "stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478"
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
+      has_shards: ${{ steps.plan.outputs.has_shards }}
+      single: ${{ steps.plan.outputs.single }}
+      has_single: ${{ steps.plan.outputs.has_single }}
+      merge: ${{ steps.plan.outputs.merge }}
+      any: ${{ steps.plan.outputs.any }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: packages/overlay/harness/ci
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+          RUNS_INPUT: ${{ inputs.runs }}
+        run: node packages/overlay/harness/ci/plan.mjs
+
+  # PLAN H5 (and H6): one shard of a run on its own runner. Shard 0 also runs the coordinator.
+  shard:
+    name: ${{ matrix.run }} ${{ matrix.shard }}/${{ matrix.shards }}
+    needs: plan
+    if: needs.plan.outputs.has_shards == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      RUN: ${{ matrix.run }}
+      SCENARIO: ${{ matrix.scenario }}
+      SHARD: ${{ matrix.shard }}
+      SHARDS: ${{ matrix.shards }}
+      PEERS: ${{ matrix.peers }}
+      CHURN_S: ${{ matrix.churnS }}
+      SEED: ${{ github.run_number }}
+      RUN_ID: ${{ matrix.run }}-${{ github.run_id }}-${{ github.run_attempt }}
+      OUT: ${{ github.workspace }}/swarm-out/${{ matrix.run }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Merge the engineers' branches (whatever of the engine is real)
+        if: needs.plan.outputs.merge == 'true'
+        run: |
+          mkdir -p "$OUT"
+          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json"
+      - run: npm ci
+      - name: What is real, what is a stub
+        run: node packages/overlay/harness/swarm.mjs modules --out "$OUT"
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+
+      # Shard 0: the coordinator, the tunnel, and the rendezvous the others wait for.
+      - name: Start the coordinator behind a tunnel
+        if: matrix.shard == 0
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT" rendezvous
+          secret=$(openssl rand -hex 24)
+          echo "::add-mask::$secret"
+          # Two and a half minutes for the tunnel to come up and the other runners to find it.
+          start_at=$(( $(date +%s%3N) + 150000 ))
+          churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
+          nohup node packages/overlay/harness/swarm.mjs coordinator --scenario "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" \
+            --port "$PORT" --host 127.0.0.1 --start-at "$start_at" --secret "$secret" --stun "$STUN" > "$OUT/coordinator.log" 2>&1 &
+          for _ in $(seq 1 30); do curl -fsS -o /dev/null "http://127.0.0.1:$PORT/overlay/v1/health" && break; sleep 1; done
+          url=$(bash packages/overlay/harness/ci/tunnel.sh "$PORT" "$OUT/cloudflared.log")
+          printf '{"url":"%s","startAt":%s,"secret":"%s"}\n' "$url" "$start_at" "$secret" > rendezvous/rendezvous.json
+          echo "COORDINATOR=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
+          echo "START_AT=$start_at" >> "$GITHUB_ENV"
+          echo "SECRET=$secret" >> "$GITHUB_ENV"
+          echo "Coordinator at $url (here: 127.0.0.1:$PORT); the run starts at $(date -u -d @$((start_at / 1000)))"
+      - name: Publish the rendezvous
+        if: matrix.shard == 0
+        uses: actions/upload-artifact@v6
+        with:
+          name: rendezvous-${{ matrix.run }}
+          path: rendezvous/rendezvous.json
+          retention-days: 1
+      - name: Wait for shard 0's rendezvous
+        if: matrix.shard != 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          bash packages/overlay/harness/ci/rendezvous.sh "rendezvous-$RUN" rendezvous
+          secret=$(jq -r .secret rendezvous/rendezvous.json)
+          echo "::add-mask::$secret"
+          echo "COORDINATOR=$(jq -r .url rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
+          echo "START_AT=$(jq -r .startAt rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
+          echo "SECRET=$secret" >> "$GITHUB_ENV"
+          late=$(( $(date +%s%3N) - $(jq -r .startAt rendezvous/rendezvous.json) ))
+          if [ "$late" -gt 0 ]; then echo "::warning title=Overlay swarm::shard $SHARD found the rendezvous ${late} ms after the run's start: its peers join late"; fi
+
+      - name: Run shard ${{ matrix.shard }} of ${{ matrix.shards }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$OUT"
+          churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
+          merged=(); [ -f "$OUT/merged.json" ] && merged=(--merged "$OUT/merged.json")
+          node packages/overlay/harness/swarm.mjs run "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" --run-id "$RUN_ID" \
+            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --start-at "$START_AT" --secret "$SECRET" --ice stun "${merged[@]}" --out "$OUT"
+      - name: Keep the coordinator up until the others are done
+        if: matrix.shard == 0
+        run: |
+          # The coordinator process ends by itself (--for); it must outlive every shard's run.
+          while pgrep -f "swarm.mjs coordinator" > /dev/null; do sleep 5; done
+          tail -n 40 "$OUT/coordinator.log" || true
+      - name: Upload the shard's result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: swarm-${{ matrix.run }}-shard-${{ matrix.shard }}
+          path: swarm-out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  # One runner, its own coordinator: PLAN H4's sizes (how many peers fit on one 4-core runner with
+  # light viewers), and the small named scenarios (proof-tree, chain-kill, slow-child).
+  single:
+    name: ${{ matrix.scenario }} at ${{ matrix.peers }} peers on one runner
+    needs: plan
+    if: needs.plan.outputs.has_single == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.single) }}
+    env:
+      OUT: ${{ github.workspace }}/swarm-out/${{ matrix.dir }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Merge the engineers' branches (whatever of the engine is real)
+        if: needs.plan.outputs.merge == 'true'
+        run: |
+          mkdir -p "$OUT"
+          bash packages/overlay/harness/ci/merge.sh "$OUT/merged.json"
+      - run: npm ci
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+      - name: ${{ matrix.scenario }}, ${{ matrix.peers }} peers
+        run: |
+          set -euo pipefail
+          merged=(); [ -f "$OUT/merged.json" ] && merged=(--merged "$OUT/merged.json")
+          node packages/overlay/harness/swarm.mjs run "${{ matrix.scenario }}" --peers "${{ matrix.peers }}" --seed "${{ github.run_number }}" \
+            --run-id "${{ matrix.dir }}-${{ github.run_id }}" --port "$PORT" "${merged[@]}" --out "$OUT"
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: swarm-${{ matrix.dir }}
+          path: swarm-out/
+          retention-days: 14
+          if-no-files-found: warn
+
+  report:
+    name: Report
+    needs: [plan, shard, single]
+    if: always() && needs.plan.outputs.any == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v6
+        with:
+          pattern: swarm-*
+          path: artifacts
+          merge-multiple: true
+      - name: One report per run
+        run: |
+          set -uo pipefail
+          status=0
+          mkdir -p reports
+          for dir in artifacts/*/; do
+            run=$(basename "$dir")
+            case "$run" in sizes-*) continue ;; esac
+            node packages/overlay/harness/swarm.mjs report "$dir" --out "reports/$run" > /dev/null || status=1
+            {
+              cat "reports/$run/report.md"
+              if [ -f "$dir/merged.json" ]; then echo; echo "Merged before the run: \`$(tr -d '\n' < "$dir/merged.json")\`"; fi
+              if [ -f "$dir/cloudflared.log" ]; then echo; echo "Coordinator reached through a Cloudflare quick tunnel."; fi
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          done
+          if ls -d artifacts/sizes-*/ > /dev/null 2>&1; then
+            node packages/overlay/harness/swarm.mjs sizes artifacts/sizes-*/ --out reports/sizes >> "$GITHUB_STEP_SUMMARY" || status=1
+          fi
+          exit $status
+      - name: Upload the reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: reports
+          path: reports/
+          retention-days: 30
+          if-no-files-found: warn

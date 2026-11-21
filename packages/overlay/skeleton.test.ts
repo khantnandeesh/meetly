@@ -11,7 +11,7 @@ import { describe, it } from "node:test";
 import { NotImplementedError, PROTOCOL_VERSION, createOverlaySource, createOverlayViewer } from "@meetly/overlay";
 import { ROUTES } from "@meetly/overlay/coordinator/index";
 import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
-import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
+import { GATE, GATE_MIX, PROFILES } from "@meetly/overlay/harness/index";
 import { DEFAULT_ENCODING } from "@meetly/overlay/media/index";
 import { CHANNELS } from "@meetly/overlay/transport/index";
 
@@ -28,7 +28,6 @@ describe("overlay skeleton", () => {
     const stubs: [string, () => unknown][] = [
       ["architect", () => createOverlayViewer({ coordinatorUrl: "", ticket: async () => "" })],
       ["architect", () => createOverlaySource({ coordinatorUrl: "", ticket: async () => "" })],
-      ["E-harness", () => buildReport([])],
     ];
     for (const [owner, call] of stubs) {
       assert.throws(call, (error: unknown) => error instanceof NotImplementedError && error.owner === owner && /not implemented/.test(error.message));
