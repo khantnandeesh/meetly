@@ -366,6 +366,20 @@ describe("jitter buffer §10.4: catching up", () => {
     for (const popped of rest) assert.equal(popped.decodeOnly, false);
   });
 
+  it("media held beyond D because of where it is played from (setExtraDelayMs) is not a backlog: nothing is caught up on", () => {
+    const { clock, buffer } = setup();
+    // Played 150 ms after capture (D = 60, and 90 ms more for the sound it waits for), arriving 5 ms after.
+    buffer.setExtraDelayMs(90);
+    const out = play(clock, buffer, 3000, live(videoFrames(80), 5));
+    assert.ok(out.length >= 70);
+    for (const popped of out) {
+      assert.equal(popped.decodeOnly, false, `frame ${popped.frame.header.frameId}`);
+      assert.ok(popped.at * 1000 >= popped.frame.header.captureUs + 150_000);
+    }
+    assert.equal(buffer.delayUs(), D * 1000, "D itself is unchanged");
+    assert.equal(buffer.effectiveDelayUs(), (D + 90) * 1000);
+  });
+
   it("in steady state nothing is decodeOnly", () => {
     const { clock, buffer } = setup();
     const out = play(clock, buffer, 3000, live(videoFrames(80), 30));
