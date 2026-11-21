@@ -23,8 +23,14 @@ export const RESYNC_SLACK_MS = 25;
 export const ADJUST_INTERVAL_MS = 1000;
 /** A report older than this says nothing about now. */
 const REPORT_STALE_MS = 500;
-/** How many samples of the two clocks' difference are kept, to find its true value. */
-const CLOCK_WINDOW = 256;
+/**
+ * How many readings of the two clocks' difference are kept, to find its true value: 160 ms at a
+ * reading a tick. Enough to catch the context's clock just after each of its steps (it moves a
+ * block, or a sound card's buffer, at a time), and short, because when the context's thread
+ * stalls its clock loses that time for good (an underrun), and a reading from before is then a
+ * lie that would show the picture early by the length of the stall for as long as it is kept.
+ */
+const CLOCK_WINDOW = 32;
 
 export type AudioPlayoutCounters = { playedMs: number; concealedMs: number; late: number; drops: number; repeats: number; resyncs: number };
 
