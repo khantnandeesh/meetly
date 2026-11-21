@@ -111,7 +111,19 @@ export function audioFrame(frameId: number, captureUs: number): EncodedFrame {
  * from a queue `queueMs` deep (300 if not given) and lost when it is full; what waits in it is
  * the sender's `bufferedAmount`, as a data channel's is.
  */
-type Wire = { latencyMs: number; lossPct: number; kbps?: number; queueMs?: number };
+/**
+ * One direction of a link. `jitterMs` and `burst` are the harness's (harness/impairment.ts): a
+ * further delay uniform in 0..jitterMs per packet, so packets overtake each other; and loss in
+ * Gilbert–Elliott runs, the good state's loss set so that the overall share is still `lossPct`.
+ */
+type Wire = {
+  latencyMs: number;
+  lossPct: number;
+  kbps?: number;
+  queueMs?: number;
+  jitterMs?: number;
+  burst?: { enterPct: number; leavePct: number; lossPctInBurst: number };
+};
 
 class SimLink implements Link {
   state: LinkState = "connecting";
@@ -179,7 +191,7 @@ class SimLink implements Link {
     net.packets++;
     const other = this.other;
     const wire = this.wire;
-    if (!other || this.owner.dead || (wire.lossPct > 0 && net.random() * 100 < wire.lossPct)) return true;
+    if (!other || this.owner.dead || this.lost(wire)) return true;
     const copy = packet.slice();
     let waitMs = 0;
     if (wire.kbps !== undefined) {
@@ -195,8 +207,22 @@ class SimLink implements Link {
       other.count.packetsReceived++;
       other.count.bytesReceived += copy.byteLength;
       other.events.emit("packet", copy, net.clock.now());
-    }, wire.latencyMs + waitMs);
+    }, wire.latencyMs + waitMs + (wire.jitterMs ? net.random() * wire.jitterMs : 0));
     return true;
+  }
+
+  private inBurst = false;
+
+  private lost(wire: Wire): boolean {
+    const random = this.owner.net.random;
+    const burst = wire.burst;
+    if (!burst) return wire.lossPct > 0 && random() * 100 < wire.lossPct;
+    if (this.inBurst) {
+      if (random() * 100 < burst.leavePct) this.inBurst = false;
+    } else if (random() * 100 < burst.enterPct) this.inBurst = true;
+    const bad = burst.enterPct / (burst.enterPct + burst.leavePct);
+    const goodLoss = Math.min(100, Math.max(0, (wire.lossPct - bad * burst.lossPctInBurst) / (1 - bad)));
+    return random() * 100 < (this.inBurst ? burst.lossPctInBurst : goodLoss);
   }
 
   sendMessage(message: PeerMessage): void {

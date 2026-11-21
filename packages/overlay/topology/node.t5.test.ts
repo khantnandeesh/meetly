@@ -78,6 +78,29 @@ describe("node: NACK and retransmission (SPEC §4.6, D5)", () => {
   });
 });
 
+describe("node: NACK under the gate mix's bad profile (SPEC §4.6, §12.3)", () => {
+  // The harness's "bad" profile (harness/scenarios.ts): 60 ms, 0–40 ms of jitter, 3% loss in
+  // Gilbert–Elliott bursts, on every direction of both hops.
+  const BAD = { latencyMs: 60, jitterMs: 40, lossPct: 3, burst: { enterPct: 1, leavePct: 30, lossPctInBurst: 50 } };
+  it("two bad hops lose under 0.5% of frames at the leaf", async () => {
+    const net = new SimNet({ seed: 1, backups: false, latencyMs: 5 });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    net.join("1", "relay", ["0"]);
+    await net.runAsync(300);
+    const leaf = net.join("2", "leaf", ["1"]);
+    await net.runAsync(2000);
+    net.setWire("0", "1", BAD);
+    net.setWire("1", "2", BAD);
+    const from = net.published;
+    await net.runAsync(30_000);
+    const to = net.published - 20;
+    const lost = missing(leaf, from, to).length;
+    assert.ok(lost / (to - from + 1) < 0.005, `lost ${lost} of ${to - from + 1}`);
+  });
+});
+
 describe("node: NACK into a backlog (SPEC §4.6, D36)", () => {
   it("a backed-up child is not sent an enhancement layer again; its lost keyframe packet is, once the backlog clears", async () => {
     const net = new SimNet({ backups: false, latencyMs: 5 });
