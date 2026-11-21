@@ -808,6 +808,19 @@ Spare uplink is not known when a peer joins, and nothing a browser reports can b
 it. After probation the peer sends its parent PROBE packets (§4.7) for one second at what a full
 fan-out would cost (§11.6) and reads the result from feedback (§11.6). **[D19]**
 
+**[D38] Provisional relays** (decided by integrator 2026-11-21). Probation makes a session's
+first viewers wait: until someone has been in for 20 s nobody may relay, and only the source's
+few slots exist. So a viewer that passes every check of the table but probation and uplink, and
+whose short probe (about 2 s, sized for two children: 2 × 1.15 × *B* / 0.7, the larger of that
+and the uplink rule's 2 × 1.15 × *B*) shows the room, may be made a **provisional relay**, with a
+fan-out of 2 whatever its uplink. The `role` message carries `fanout: 2`, and the relay takes no
+more active children than that (a repair or a viewer with nothing to watch over it as §7.5 and
+[D37] say). The coordinator places joiners under provisional relays only when no full relay has a
+free slot. One that misbehaves in its first 20 s (its children's loss or STARVED, as for
+demotion below) is demoted, and its children are moved first, make-before-break (`move`). Past
+probation, and with the full probe's result, it is judged as any relay and its fan-out is the
+table's.
+
 **Fan-out** is how many active children a relay takes:
 `min(maxFanout, floor(0.7 × spareUplinkKbps / (1.15 × sessionKbps)))`. The 0.7 leaves room for
 the peer's own use; the 1.15 for retransmissions and replays. `maxFanout` is 4; the source's is
@@ -1443,6 +1456,7 @@ Rotating speakers on the overlay. Out of scope.
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
 | D36 | No retransmission of enhancement layers into a backlog over 50 ms of B; base layer and keyframes held until it clears (integrator, 2026-11-21) | 4.6 |
 | D37 | A parent at its fan-out takes a viewer with nothing to watch, up to twice the fan-out, and sheds a layer (integrator, 2026-11-21) | 7.1 |
+| D38 | Provisional relays: fan-out 2 on a short probe, before probation ends, used only when no full relay has a slot (integrator, 2026-11-21) | 8.1 |
 | D39 | The reordering window is max(10 ms, p95 inter-arrival jitter), at most 60 ms (integrator, 2026-11-21) | 4.6 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
