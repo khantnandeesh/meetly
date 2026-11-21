@@ -155,12 +155,16 @@ async function phones(browser) {
     // chip alone cuts the code short, as it did before the timer; with the timer out of the layout,
     // that is the same bar as without it.)
     await mo.page.evaluate(() => window.__meetly.call.setHandRaised(true));
-    await H.sleep(1200);
+    const chip = await mo.page
+      .locator('[data-in-call] header ul[aria-label="Raised hands"]')
+      .waitFor({ state: "attached", timeout: 8000 })
+      .then(() => true, () => false);
+    await H.sleep(600);
     bar = await topBar(mo, `${width} hand`);
     H.ok(
-      `${width} px with a raised hand too: nothing overflows, "1.2k" is whole, and the timer is whole beside the code or out of the way${width >= 390 ? "; the code is whole" : ""}`,
-      !bar.overflow && bar.peopleWhole && bar.timerClear && (width >= 390 ? bar.codeWhole : !bar.timerShown),
-      JSON.stringify(bar),
+      `${width} px with a raised hand too: nothing overflows, "1.2k" is whole, and the timer shows only beside a whole code, never squeezing it`,
+      chip && !bar.overflow && bar.peopleWhole && bar.timerClear && (!bar.timerShown || bar.codeWhole),
+      JSON.stringify({ ...bar, chip }),
     );
     await H.shot(mo, `timer-phone-${width}-hand`);
     // Leave properly: a closed page lingers in the room for a while, raised hand and all.
