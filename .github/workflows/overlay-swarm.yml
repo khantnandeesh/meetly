@@ -160,14 +160,19 @@ jobs:
           late=$(( $(date +%s%3N) - $(jq -r .startAt rendezvous/rendezvous.json) ))
           if [ "$late" -gt 0 ]; then echo "::warning title=Overlay swarm::shard $SHARD found the rendezvous ${late} ms after the run's start: its peers join late"; fi
 
+      - name: What NAT this runner is behind
+        run: |
+          mkdir -p "$OUT"
+          timeout 30 node packages/overlay/harness/ci/natcheck.mjs "$OUT/nat.json" || true
       - name: Run shard ${{ matrix.shard }} of ${{ matrix.shards }}
         run: |
           set -euo pipefail
           mkdir -p "$OUT"
+          nat=(); [ -f "$OUT/nat.json" ] && nat=(--nat "$OUT/nat.json")
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
           merged=(); [ -f "$OUT/merged.json" ] && merged=(--merged "$OUT/merged.json")
           node packages/overlay/harness/swarm.mjs run "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" --run-id "$RUN_ID" \
-            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --start-at "$START_AT" --secret "$SECRET" --ice stun "${merged[@]}" --out "$OUT"
+            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --start-at "$START_AT" --secret "$SECRET" --ice stun "${merged[@]}" "${nat[@]}" --out "$OUT"
       - name: Keep the coordinator up until the others are done
         if: matrix.shard == 0
         run: |

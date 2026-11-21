@@ -155,7 +155,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     if (p99 === null) lagMissing = true;
     else worstLagP99 = worstLagP99 === null ? p99 : Math.max(worstLagP99, p99);
     const joins = shard.samples.reduce((n, s) => n + s.events.filter((e) => e.t === "join").length, 0);
-    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins });
+    hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins, nat: !shard.host.nat || shard.host.nat.symmetric === null ? "unknown" : shard.host.nat.symmetric ? "symmetric" : "open" });
     for (const note of new Set(shard.notes ?? [])) shardNotes.set(note, [...(shardNotes.get(note) ?? []), shard.shard.index]);
   }
   failed.sort((a, b) => a.shard - b.shard || a.index - b.index);
@@ -307,13 +307,13 @@ export function renderReport(report: SwarmReport): string {
   lines.push(`Clock uncertainty (viewer + source): p50 ${ms(report.clockUncertaintyMs.p50)}, p95 ${ms(report.clockUncertaintyMs.p95)}, max ${ms(report.clockUncertaintyMs.max)} ms over ${report.clockUncertaintyMs.n} viewers.`);
   lines.push(
     "",
-    "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames |",
-    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+    "| Shard | Cores | Load (1 min, max) | Event-loop lag p99 (ms) | Clock, viewer + source, p95 (ms) | Clocks apart, measured p95 (ms) | ± wall clocks (ms) | Peers started | Failed | First frames | NAT |",
+    "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
   );
   for (const host of report.hosts) {
     const clock = report.clockByShard.find((c) => c.shard === host.shard);
     lines.push(
-      `| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} |`,
+      `| ${host.shard} | ${host.cores} | ${Math.round(host.loadAvg1Max * 100) / 100} | ${ms(host.lagP99Ms)} | ${ms(clock?.p95 ?? null)} | ${ms(clock?.measuredP95 ?? null)} | ${ms(clock?.ntpBoundMs ?? null)} | ${host.peersStarted ?? "–"} | ${host.peersFailed ?? "–"} | ${host.joins ?? "–"} | ${host.nat ?? "unknown"} |`,
     );
   }
   lines.push("", "\"Clock\" is SPEC §4.1's bound, half the best probe's round trip: the validity check. \"Clocks apart\" reads each viewer's session clock and the source's against their machines' wall clocks; it is the real disagreement give or take the last column.");

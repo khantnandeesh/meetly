@@ -157,6 +157,8 @@ export type ShardResult = {
     maxEventLoopLagMs: number;
     /** This machine's own time sync (chrony), if it could be read: `boundMs` = |offset| + root delay / 2 + root dispersion. */
     ntp?: { boundMs: number | null; text: string };
+    /** What NAT this machine is behind, by two STUN servers (ci/natcheck.mjs): symmetric needs TURN between machines. */
+    nat?: { symmetric: boolean | null; mapped: string[] };
     /** The driver's own event-loop lag, and its pages', as histograms on the 97 latency buckets. */
     driverLag?: number[];
     pageLag?: number[];
@@ -275,7 +277,7 @@ export type SwarmReport = {
   honesty: GateCheck[];
   /** Event-loop lag over every shard's driver and pages. */
   eventLoopLagMs: Quantiles;
-  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number }[];
+  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number; nat?: "symmetric" | "open" | "unknown" }[];
   engine: "real" | "standin" | "mixed" | "unknown";
   /** Parts of the package that were stubs in any shard. */
   stubbed: string[];
