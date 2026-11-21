@@ -154,6 +154,8 @@ export type ShardResult = {
   host: {
     cores: number;
     loadAvg1: number[];
+    /** The same, only once the swarm had filled: what the health bar is read from. */
+    loadAvg1Settled?: number[];
     maxEventLoopLagMs: number;
     /** This machine's own time sync (chrony), if it could be read: `boundMs` = |offset| + root delay / 2 + root dispersion. */
     ntp?: { boundMs: number | null; text: string };
@@ -189,6 +191,9 @@ export type ShardResult = {
      */
     sourceVsWallMs?: number | null;
     viewersVsWallMs?: number[];
+    /** The same, as the lowest and highest seen over the whole run: the worst moment counts, not the last. */
+    sourceVsWallRangeMs?: [number, number] | null;
+    viewersVsWallRangeMs?: [number, number][];
   };
   /** Links the shard's peers opened, and how: what ICE chose. */
   links?: LinkCounts;
@@ -267,6 +272,10 @@ export type SwarmReport = {
     /** The two machines' wall clocks may differ by up to this (theirs plus shard 0's). */
     ntpBoundMs?: number | null;
   }[];
+  /** Viewer-plus-source clock disagreement as measured against wall clocks, with their bounds; null when a shard could not be read so. */
+  measuredClockMs: Quantiles | null;
+  /** Where joins' time went: connect() to welcome, to a parent linked, to its first packet, to the first frame. Exact. */
+  joinPhasesMs: { welcome: Quantiles; linked: Quantiles; firstPacket: Quantiles; firstFrame: Quantiles };
   /** Latency of the viewers that decoded for real, and of the light ones (D29). */
   glassToGlassDecoding: Quantiles;
   glassToGlassLight: Quantiles;
@@ -277,7 +286,7 @@ export type SwarmReport = {
   honesty: GateCheck[];
   /** Event-loop lag over every shard's driver and pages. */
   eventLoopLagMs: Quantiles;
-  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number; nat?: "symmetric" | "open" | "unknown" }[];
+  hosts: { shard: number; cores: number; loadAvg1Max: number; lagP99Ms: number | null; peersStarted?: number; peersFailed?: number; joins?: number; nat?: "symmetric" | "open" | "unknown"; loadSettledMax?: number }[];
   engine: "real" | "standin" | "mixed" | "unknown";
   /** Parts of the package that were stubs in any shard. */
   stubbed: string[];
@@ -331,6 +340,8 @@ export type PageState = {
   /** The first frame has been rendered (a viewer), or the program is being sent (the source). */
   started: boolean;
   error: string | null;
+  /** How many times a viewer of the package's engine called `connect()` before it got in. */
+  connectAttempts?: number;
   /** Session clock minus `Date.now()`, now: see `ShardResult.clock.viewersVsWallMs`. Null before the clock is known. */
   sessionMinusWallMs?: number | null;
   /** The session clock's uncertainty now, and at its worst since the first probes. */

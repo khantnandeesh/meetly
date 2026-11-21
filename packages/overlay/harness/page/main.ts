@@ -32,16 +32,24 @@ let realStarted = false;
 let failure: string | null = null;
 const realSamples: MetricsSample[] = [];
 let uncertaintyMax = 0;
+/** How many times the viewer called `connect()`: more than one, and the coordinator was unreachable at first. */
+let connectAttempts = 0;
 
-/* The page's own event-loop lag: how late a 20 ms timer fires. */
+/*
+ * The page's own event-loop lag: how late a 20 ms timer fires, each one against the moment it
+ * was set for. (Measured against a fixed schedule, a repeating timer's own drift built up into a
+ * sawtooth of up to 20 ms, which read as lag on an idle machine.)
+ */
 const LAG_EVERY_MS = 20;
 let lag = emptyHistogram();
-let lagDue = clock.now() + LAG_EVERY_MS;
-clock.setInterval(() => {
-  const now = clock.now();
-  lag[latencyBucket(Math.max(0, now - lagDue))]++;
-  lagDue = Math.max(lagDue + LAG_EVERY_MS, now);
-}, LAG_EVERY_MS);
+const lagTick = (due: number): void => {
+  clock.setTimeout(() => {
+    const now = clock.now();
+    lag[latencyBucket(Math.max(0, now - due))]++;
+    lagTick(now + LAG_EVERY_MS);
+  }, LAG_EVERY_MS);
+};
+lagTick(clock.now() + LAG_EVERY_MS);
 
 async function start(options: PageStartOptions): Promise<void> {
   profile = options.profile;
@@ -70,13 +78,33 @@ async function start(options: PageStartOptions): Promise<void> {
         await source.publish({ video: media.getVideoTracks()[0], audio: media.getAudioTracks()[0] });
         realStarted = true;
       } else {
-        const viewer = createOverlayViewer({ ...connect, decode: options.decode });
-        real = viewer;
-        engine = "real";
-        viewer.on("metrics", (sample) => realSamples.push(sample));
-        viewer.on("firstFrame", () => (realStarted = true));
-        viewer.on("error", (error) => (failure = String(error)));
-        await viewer.connect();
+        // A viewer who arrives while the coordinator is dead (the gate's 30 s outage) tries again,
+        // as a person would, for up to a minute. Its join is then timed from its first try: SPEC
+        // §12.2 times a join from `connect()`, and the person pressed join then.
+        const firstTry = clock.now();
+        for (;;) {
+          connectAttempts++;
+          const viewer = createOverlayViewer({ ...connect, decode: options.decode });
+          real = viewer;
+          engine = "real";
+          viewer.on("metrics", (sample) => {
+            if (connectAttempts > 1) {
+              const started = viewer.sessionClock()?.fromLocal(firstTry);
+              for (const event of sample.events) if (event.t === "join" && started !== undefined && Number.isFinite(started)) event.start = Math.min(event.start, Math.max(0, started));
+            }
+            realSamples.push(sample);
+          });
+          viewer.on("firstFrame", () => (realStarted = true));
+          viewer.on("error", (error) => (failure = String(error)));
+          try {
+            await viewer.connect();
+            break;
+          } catch (error) {
+            if (!/unreachable/i.test(String(error)) || clock.now() - firstTry > 60_000) throw error;
+            await viewer.close().catch(() => undefined);
+            await new Promise<void>((resolve) => clock.setTimeout(resolve, 1000));
+          }
+        }
       }
       return;
     } catch (error) {
@@ -117,6 +145,7 @@ function state(): PageState {
     // Infinity does not survive the trip to the driver as JSON.
     clockUncertaintyMs: Number.isFinite(uncertainty) ? uncertainty : -1,
     clockUncertaintyMaxMs: uncertaintyMax,
+    connectAttempts,
     sessionMinusWallMs: session === null || !Number.isFinite(session) ? null : session - wall,
     lag: taken,
     links: linkCounts(),

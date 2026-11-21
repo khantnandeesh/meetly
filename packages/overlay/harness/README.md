@@ -119,11 +119,30 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
 
-## Sharded runs so far (H5, H6)
+## The whole engine (H6): run 44951357064, on overlay-integration
 
-None of these is a measurement of the overlay: the composition root (`createOverlayViewer`,
-`createOverlaySource`) is still a stub, so every page ran the harness's stand-in peer, whatever
-else was merged. They show that the sharded harness works, and what it will say.
+[44951357064](https://github.com/khantnandeesh/meetly/actions/runs/44951357064), `integration`:
+overlay-integration (6921832) merged in, 13 of 13 factories real, the pages running the
+package's own peer and the package's coordinator. The first runs of the overlay itself.
+
+| Scenario | Result | Against |
+| --- | --- | --- |
+| proof-tree (7 peers, clean) | 2 warm repairs of 250–260 ms, 0 frames lost, the coordinator not used; latency p50 150 ms; decoding and light viewers agree; join 6.0–6.5 s for every viewer | proof 206–209 ms; PLAN T3 ≤ 250 ms |
+| chain-kill (5 peers) | 3 of 4 viewers never rendered: no chain formed, nothing to repair | PLAN T4 |
+| slow-child (8 peers) | siblings lost 0 frames, latency p95 unmoved (160 → 160 ms), the slow child concealed 0 ms of audio; **no `layer` event** in any sample, so the drop and return times are not measured | E-congestion: ~0.7 s, ~1.23 s, +6 s, +11 s |
+| sharded, gate-small at 100 (4 × 25) | invalid: 8 joiners failed (coordinator unreachable during the outage), clocks 26.4 ms; repair p95 over 10 s, latency p95 600 ms, join p95 over 10 s | |
+| gate, 200 (8 × 25), D28 mix and churn | **invalid**: 6 joiners failed (as above), event-loop lag p99 50–110 ms on six runners (load up to 22: 25 real peers are too many for 4 vCPUs), clocks 47.4 ms. Repair p95 4,500 ms (4,167 repairs: 517 warm, 218 cold, 3,432 wait), latency p95 750 ms, join p95 over 10 s, 146,182 frames lost | SPEC §1: 500 / 500 / 3,000 ms |
+
+All eight gate runners were on Azure this time (the NAT check found none symmetric). Since that
+run, a viewer of the package's engine that finds the coordinator unreachable tries again for a
+minute, as the stand-in did, and its join is timed from its first try; run locally on an
+8-peer gate-small, six viewers did so and none failed to start, though three that joined during
+the outage never rendered.
+
+## Sharded runs before the composition root (H5)
+
+The composition root was still a stub in these, so every page ran the harness's stand-in peer,
+whatever else was merged. They show that the sharded harness works, and what it will say.
 
 | Run | Shards × peers | Coordinator | Verdict | Why |
 | --- | --- | --- | --- | --- |
