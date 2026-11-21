@@ -1221,8 +1221,14 @@ const serverMessage = tagged({
   /** The answer to `time`: `t0` as sent, `t1` the session clock when it arrived. */
   time: { t0: num(0, 2 ** 53), t1: sessionMs },
   signal: { from: peerId, data: signalData },
-  /** Connect to these. `id` when it answers a `need`. */
-  assign: { id: optional(int(0, 0xffffffff)), reason: oneOf("join", "need", "rebalance"), assign: list(assignment, 64) },
+  /**
+   * Connect to these. `id` when it answers a `need`. Three reasons are offers: "join" (you have nowhere to
+   * connect), "need" (you asked), "rebalance" (advice; the peer's own rule decides, SPEC §7.6). "move" is not
+   * an offer: change to the first of these parents that will have you, make-before-break, whatever
+   * your own cost rule says, and stay where you are only if none will. It is how the coordinator
+   * keeps relays near the source (coordinator/README.md, "Keeping the tree short").
+   */
+  assign: { id: optional(int(0, 0xffffffff)), reason: oneOf("join", "need", "rebalance", "move"), assign: list(assignment, 64) },
   /** You are now a relay, or no longer one. Comes with the grant that says so. */
   role: { role: overlayRole, grant: token },
   /** A grant to replace the one you hold, before it expires. */
