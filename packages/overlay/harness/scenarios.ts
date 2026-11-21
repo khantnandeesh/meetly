@@ -16,6 +16,9 @@ export const PROFILES: Record<string, ImpairmentProfile> = {
   home: { name: "home", delayMs: 30, jitterMs: 15, lossPct: 1 },
   bad: { name: "bad", delayMs: 60, jitterMs: 40, lossPct: 3, burst: { enterPct: 1, leavePct: 30, lossPctInBurst: 50 } },
   slow: { name: "slow", delayMs: 40, jitterMs: 20, lossPct: 1, kbps: 900, queueMs: 300 },
+  /** slow-child (PLAN C3): a clean link capped under the stream, and then given room again. */
+  "cap-900": { name: "cap-900", delayMs: 0, jitterMs: 0, lossPct: 0, kbps: 900, queueMs: 300 },
+  "cap-3000": { name: "cap-3000", delayMs: 0, jitterMs: 0, lossPct: 0, kbps: 3000, queueMs: 300 },
 };
 
 /** The gate's audience (D28): mostly ordinary connections, some bad, a few too slow for every layer. */
@@ -129,6 +132,12 @@ export function gateChurn(fromS: number, forS: number, everyS = 10, outageS = 30
 
 /* ------------------------------ the scenarios ------------------------------ */
 
+/** slow-child's timing, and E-congestion's measured numbers it is checked against (their C3 run). */
+export const SLOW_CHILD = {
+  liftAfterS: 15,
+  baseline: { firstDropMs: 700, settledMs: 1230, siblingsFramesLost: 0, siblingsLatencyP95ShiftMs: 5, slowChildAudioConcealedMs: 0, layer1BackAfterLiftMs: 6000, layer2BackAfterLiftMs: 11000 },
+} as const;
+
 export type ScenarioOptions = {
   runId?: string;
   seed?: number;
@@ -158,7 +167,7 @@ export const SCENARIOS = {
   /** PLAN T4: a chain three deep; the depth-1 relay killed. */
   "chain-kill": "a chain three deep with two leaves; the depth-1 relay killed",
   /** PLAN C3: one viewer capped at 900 kbps under a 1,200 kbps stream. */
-  "slow-child": "7 peers; one viewer's network becomes 900 kbps",
+  "slow-child": "E-congestion's tree of 8: one of the source's three children capped at 900 kbps under 1,200, then given 3 Mbps",
   /** PLAN H3, H4: the gate's mix and churn, small. */
   "gate-small": "the gate's networks and churn at 30 peers (or --peers)",
   /** PLAN H6, SPEC §12.3. */
@@ -207,9 +216,20 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
       return { ...config, churn: [{ atS: at, action: "kill", pick: "shallowest-relay", count: 1 }], durationS: at + 6, expect: { peers: 5, minRepairs: 1 } };
     }
     case "slow-child": {
-      const config = { ...base, peers: 7, params: proofTree };
-      const at = fillS(config) + 3;
-      return { ...config, churn: [{ atS: at, action: "impair", pick: "leaf", count: 1, profile: "slow" }], durationS: at + 12, expect: { peers: 7, minRepairs: 0 } };
+      // E-congestion's tree (congestion/browser/run.ts): the source's three children, and four
+      // grandchildren under them. One child of the source is capped at 900 kbps under the 1,200
+      // kbps stream; 15 s later it has 3 Mbps, room for every layer again.
+      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2 }, program: SYNTHETIC };
+      const at = fillS(config) + 5;
+      return {
+        ...config,
+        churn: [
+          { atS: at, action: "impair", pick: "shallowest-relay", count: 1, profile: "cap-900" },
+          { atS: at + SLOW_CHILD.liftAfterS, action: "impair", pick: "impaired", count: 1, profile: "cap-3000" },
+        ],
+        durationS: at + SLOW_CHILD.liftAfterS + 15,
+        expect: { peers: 8, minRepairs: 0 },
+      };
     }
     case "two-runner": {
       const config = { ...base, peers: options.peers ?? 8, ice: options.ice ?? "stun", joinPerS: 1 };

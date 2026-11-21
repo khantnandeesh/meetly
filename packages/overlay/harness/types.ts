@@ -71,7 +71,7 @@ export type ChurnEvent =
   | { atS: number; action: "kill-coordinator"; forS: number };
 
 /** Whom a churn event falls on. Resolved against the coordinator's tree at that moment, with the run's seed. */
-export type PeerPick = "any" | "relay" | "leaf" | "deepest-relay" | "shallowest-relay" | "busiest-relay";
+export type PeerPick = "any" | "relay" | "leaf" | "deepest-relay" | "shallowest-relay" | "busiest-relay" | "impaired";
 
 export type SwarmConfig = {
   /** Shared by every shard of one run. */
@@ -194,7 +194,9 @@ export type ShardResult = {
   decoders?: PeerId[];
   impairment?: ImpairmentCounters;
   /** What the churn script did, and to whom. */
-  churnLog?: { atS: number; action: string; targets: string[] }[];
+  churnLog?: { atS: number; action: string; targets: string[]; peer?: PeerId; sessionMs?: number }[];
+  /** Each peer's parent when the run ended, as its page said: who was under whom. */
+  tree?: { peer: PeerId; parent: PeerId | null; index: number }[];
   notes?: string[];
 };
 

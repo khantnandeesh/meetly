@@ -19,6 +19,7 @@ import type { NodeCoordinator } from "../coordinator/types";
 import { buildReport, largestValid, renderReport, renderSizes, reportJson } from "./report";
 import { SCENARIOS, churnSteps, scenario, type ScenarioName } from "./scenarios";
 import { runShard } from "./shard";
+import { renderSlowChild, slowChildReport } from "./slowChild";
 import { startStandinCoordinator, type StandinCoordinator } from "./standin/coordinator";
 import { MODULES, probeStubs } from "./stubs";
 import type { ShardResult, SwarmConfig } from "./types";
@@ -101,7 +102,8 @@ function readResults(paths: string[]): ShardResult[] {
 
 function writeReport(results: ShardResult[], out: string | undefined, require: string): number {
   const report = buildReport(results);
-  const text = renderReport(report);
+  // slow-child has measures of its own (PLAN C3), set beside E-congestion's numbers.
+  const text = renderReport(report) + (report.scenario === "slow-child" && results.length === 1 ? "\n" + renderSlowChild(slowChildReport(results[0])) : "");
   if (out) {
     mkdirSync(out, { recursive: true });
     writeFileSync(join(out, "report.json"), reportJson(report));

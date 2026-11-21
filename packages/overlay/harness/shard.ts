@@ -133,6 +133,10 @@ export function pickPeer<T extends { index: number; children: number; depth: num
       pool = relays.filter((p) => p.depth === depth);
       break;
     }
+    case "impaired":
+      // Whoever an earlier "impair" fell on (the driver marks them), so a later one can lift it.
+      pool = sorted.filter((p) => (p as { impaired?: boolean }).impaired);
+      break;
     case "busiest-relay": {
       const children = Math.max(...relays.map((p) => p.children));
       pool = relays.filter((p) => p.children === children);
@@ -178,6 +182,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   const failed: ShardResult["peersFailed"] = [];
   const samples: MetricsSample[] = [];
   const churnLog: NonNullable<ShardResult["churnLog"]> = [];
+  const impaired = new Set<number>();
   const loads: number[] = [];
   const pageLag = emptyHistogram();
   const driverLag = emptyHistogram();
@@ -284,7 +289,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
 
   async function churn(step: ChurnStep): Promise<void> {
     const event = step.event;
-    const entry = { atS: Math.round(atS() * 10) / 10, action: event.action, targets: [] as string[] };
+    const entry: NonNullable<ShardResult["churnLog"]>[number] = { atS: Math.round(atS() * 10) / 10, action: event.action, targets: [] };
     churnLog.push(entry);
     if (event.action === "kill-coordinator") {
       if (!coordinator) return;
@@ -308,7 +313,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     }
     // Fresh numbers, so the pick is made on the tree as it is now.
     await poll();
-    const viewers = [...peers.values()].filter((p) => p.alive && p.role === "viewer" && p.state?.started).map((p) => ({ index: p.index, children: p.state?.children ?? 0, depth: p.state?.depth ?? 255, handle: p }));
+    const viewers = [...peers.values()].filter((p) => p.alive && p.role === "viewer" && p.state?.started).map((p) => ({ index: p.index, children: p.state?.children ?? 0, depth: p.state?.depth ?? 255, impaired: impaired.has(p.index), handle: p }));
     const target = pickPeer(viewers, event.pick, step.seed);
     if (!target) {
       entry.targets.push(`nobody: no "${event.pick}" on this shard`);
@@ -316,6 +321,9 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     }
     const peer = target.handle;
     entry.targets.push(`peer ${peer.index} (${peer.state?.peer ?? "?"}, depth ${target.depth}, ${target.children} children)`);
+    if (peer.state?.peer) entry.peer = peer.state.peer;
+    // When, on the session clock: what the samples' times are on.
+    if (typeof peer.state?.sessionMinusWallMs === "number") entry.sessionMs = Date.now() + peer.state.sessionMinusWallMs;
     log(`churn ${entry.atS}s: ${event.action} ${entry.targets[0]}`);
     if (event.action === "kill") {
       peer.alive = false;
@@ -343,6 +351,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     } else if (event.action === "impair") {
       const profile = config.profiles.find((p) => p.name === event.profile) ?? PROFILES[event.profile] ?? null;
       peer.profile = profile;
+      impaired.add(peer.index);
       await peer.page.evaluate((p) => window.__overlay.setProfile(p), profile).catch(() => undefined);
     }
   }
@@ -456,6 +465,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       viewersVsWallMs: viewers.filter((p) => p.vsWall !== null).map((p) => p.vsWall as number),
     },
     links,
+    tree: [...peers.values()].filter((p) => p.state?.peer).map((p) => ({ peer: p.state!.peer as PeerId, parent: p.state!.parent, index: p.index })),
     decoders: [...peers.values()].filter((p) => p.decode && p.state?.peer).map((p) => p.state!.peer as PeerId),
     impairment,
     churnLog,

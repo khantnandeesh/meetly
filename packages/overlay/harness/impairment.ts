@@ -197,7 +197,6 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
     let downProfile: ImpairmentProfile | null = null;
     let down: LinkModel | null = null;
     let order = 0;
-    let heldBytes = 0;
     let cancel: Cancel | null = null;
     let wakeAt = Infinity;
     /** While a reliable channel has anything on its way, nothing may go around it. */
@@ -220,8 +219,6 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
       const now = clock.now();
       for (let head = flight.peek(); head && head.at <= now; head = flight.peek()) {
         flight.pop();
-        // Only what this peer sends is its buffer; what it is being sent is the other end's.
-        if (!head.inbound) heldBytes -= head.bytes;
         const late = now - head.at;
         counters.lateMsSum += late;
         if (late > counters.lateMsMax) counters.lateMsMax = late;
@@ -243,15 +240,17 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
       cancel = null;
       wakeAt = Infinity;
       flight.clear();
-      heldBytes = 0;
     };
 
     const wrapped: PacketChannel = {
       get readyState() {
         return inner.readyState;
       },
+      // What a real channel would still hold: the bytes waiting behind the rate cap. Bytes on
+      // their way (the profile's delay and jitter) have left the sender, as they would have left
+      // a real one, and a real RTCDataChannel does not count them; nor what this peer receives.
       get bufferedAmount() {
-        return inner.bufferedAmount + heldBytes;
+        return inner.bufferedAmount + (model ? Math.round(model.queuedBytes(clock.now())) : 0);
       },
       send(data) {
         const wanted = pick({ self, peer: info.peer, kind: info.kind });
@@ -283,7 +282,6 @@ export const createImpairment: ImpairmentFactory = (pick, seed, options = {}) =>
         }
         // The caller may reuse its buffer for the next child (`writeHopFields`): keep our own copy.
         flight.push({ at, order: order++, data: typeof data === "string" ? data : data.slice(), bytes, inbound: false });
-        heldBytes += bytes;
         schedule();
       },
       close() {

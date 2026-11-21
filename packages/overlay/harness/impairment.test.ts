@@ -177,7 +177,7 @@ describe("impairment: the channel", () => {
       clock.advance(10);
     }
     assert.equal(inner.sent.length, 2, "at 50 ms those sent at 0 and at 10 have arrived");
-    assert.equal(channel.bufferedAmount, 12, "what is on its way counts as buffered");
+    assert.equal(channel.bufferedAmount, 0, "what is on its way has left the sender: a real channel does not count it");
     clock.advance(100);
     assert.deepEqual(
       inner.sent.map((s) => s.at),
@@ -319,6 +319,27 @@ describe("impairment: the channel", () => {
       return inner.sent.map((s) => (s.data as Uint8Array)[0] | ((s.data as Uint8Array)[1] << 8)).sort((x, y) => x - y);
     };
     assert.deepEqual(run(true), run(false));
+  });
+
+  it("counts as buffered only the queue behind the rate cap, never what is in flight (E-congestion's rule 6)", () => {
+    const clock = fakeClock();
+    // "bad": 60 ms away, no cap. A 30 kB keyframe in 27 packets is all in flight at once.
+    const far = createImpairment(() => PROFILES.bad, 1, { clock })(fakeChannel().channel, { peer: "b", kind: "media" });
+    for (let i = 0; i < 27; i++) far.send(new Uint8Array(1120));
+    assert.equal(far.bufferedAmount, 0);
+    // 800 kbps is 100 bytes a millisecond: 10 packets of 1,000 bytes sent at once leave 9,000
+    // waiting after the first has gone, 4,000 after 6 ms, and none once they have all gone.
+    const capped: ImpairmentProfile = { name: "cap", delayMs: 40, jitterMs: 0, lossPct: 0, kbps: 800, queueMs: 1000 };
+    const inner = fakeChannel();
+    const channel = createImpairment(() => capped, 1, { clock })(inner.channel, { peer: "b", kind: "media" });
+    for (let i = 0; i < 10; i++) channel.send(new Uint8Array(1000));
+    clock.advance(10);
+    assert.equal(channel.bufferedAmount, 9000);
+    clock.advance(50);
+    assert.equal(channel.bufferedAmount, 4000);
+    clock.advance(100);
+    assert.equal(channel.bufferedAmount, 0);
+    assert.equal(inner.sent.length, 10);
   });
 
   it("counts as buffered only what this peer sends, not what its capped downlink holds", () => {

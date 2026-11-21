@@ -2,7 +2,7 @@
 # headless Chromium, sharded across runners, against one coordinator, and one report.
 #
 # Not run on every push: a push runs only what its commit message names, as
-# `[swarm: experiment sizes sharded gate merge]` (harness/ci/plan.mjs says what each is); a manual
+# `[swarm: experiment sizes scenarios sharded gate merge]` (harness/ci/plan.mjs says what each is); a manual
 # run what its `runs` input says; the nightly run (on the default branch) the gate.
 #
 # How shards on different runners share one coordinator: runners cannot reach each other, so shard
@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
     inputs:
       runs:
-        description: "What to run: any of experiment, sizes, sharded, gate, merge"
+        description: "What to run: any of experiment, sizes, scenarios, sharded, gate, merge"
         default: "gate merge"
         type: string
   schedule:
@@ -53,8 +53,8 @@ jobs:
     outputs:
       shards: ${{ steps.plan.outputs.shards }}
       has_shards: ${{ steps.plan.outputs.has_shards }}
-      sizes: ${{ steps.plan.outputs.sizes }}
-      has_sizes: ${{ steps.plan.outputs.has_sizes }}
+      single: ${{ steps.plan.outputs.single }}
+      has_single: ${{ steps.plan.outputs.has_single }}
       merge: ${{ steps.plan.outputs.merge }}
       any: ${{ steps.plan.outputs.any }}
     steps:
@@ -183,19 +183,19 @@ jobs:
           retention-days: 14
           if-no-files-found: warn
 
-  # PLAN H4: how many peers fit on one 4-core runner with light viewers. One size per runner.
-  sizes:
-    name: gate-small at ${{ matrix.peers }} peers on one runner
+  # One runner, its own coordinator: PLAN H4's sizes (how many peers fit on one 4-core runner with
+  # light viewers), and the small named scenarios (proof-tree, chain-kill, slow-child).
+  single:
+    name: ${{ matrix.scenario }} at ${{ matrix.peers }} peers on one runner
     needs: plan
-    if: needs.plan.outputs.has_sizes == 'true'
+    if: needs.plan.outputs.has_single == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     strategy:
       fail-fast: false
-      matrix:
-        peers: ${{ fromJSON(needs.plan.outputs.sizes) }}
+      matrix: ${{ fromJSON(needs.plan.outputs.single) }}
     env:
-      OUT: ${{ github.workspace }}/swarm-out/sizes-${{ matrix.peers }}
+      OUT: ${{ github.workspace }}/swarm-out/${{ matrix.dir }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -222,24 +222,24 @@ jobs:
           npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
           echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
           "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
-      - name: gate-small, ${{ matrix.peers }} peers
+      - name: ${{ matrix.scenario }}, ${{ matrix.peers }} peers
         run: |
           set -euo pipefail
           merged=(); [ -f "$OUT/merged.json" ] && merged=(--merged "$OUT/merged.json")
-          node packages/overlay/harness/swarm.mjs run gate-small --peers "${{ matrix.peers }}" --seed "${{ github.run_number }}" \
-            --run-id "sizes-${{ matrix.peers }}-${{ github.run_id }}" --port "$PORT" "${merged[@]}" --out "$OUT"
+          node packages/overlay/harness/swarm.mjs run "${{ matrix.scenario }}" --peers "${{ matrix.peers }}" --seed "${{ github.run_number }}" \
+            --run-id "${{ matrix.dir }}-${{ github.run_id }}" --port "$PORT" "${merged[@]}" --out "$OUT"
       - name: Upload the result
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: swarm-sizes-${{ matrix.peers }}
+          name: swarm-${{ matrix.dir }}
           path: swarm-out/
           retention-days: 14
           if-no-files-found: warn
 
   report:
     name: Report
-    needs: [plan, shard, sizes]
+    needs: [plan, shard, single]
     if: always() && needs.plan.outputs.any == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -14,7 +14,7 @@ function plan(env: Record<string, string>): Record<string, string> {
 describe("overlay-swarm plan", () => {
   it("runs nothing big for a push that does not ask", () => {
     const out = plan({ EVENT: "push", COMMIT_MESSAGE: "Fix a typo" });
-    assert.deepEqual([out.any, out.has_shards, out.has_sizes], ["false", "false", "false"]);
+    assert.deepEqual([out.any, out.has_shards, out.has_single], ["false", "false", "false"]);
   });
 
   it("runs what a push's message asks for, counting every [swarm: ...] in it", () => {
@@ -24,7 +24,10 @@ describe("overlay-swarm plan", () => {
       shards.map((s) => [s.run, s.shard, s.shards, s.peers]),
       [0, 1, 2, 3].map((i) => ["sharded", i, 4, 100]),
     );
-    assert.deepEqual(JSON.parse(out.sizes), [30, 40, 50, 60]);
+    assert.deepEqual(
+      (JSON.parse(out.single).include as { dir: string; peers: number }[]).map((s) => [s.dir, s.peers]),
+      [["sizes-30", 30], ["sizes-40", 40], ["sizes-50", 50], ["sizes-60", 60]],
+    );
     assert.equal(out.merge, "true");
   });
 
@@ -32,6 +35,14 @@ describe("overlay-swarm plan", () => {
     const out = plan({ EVENT: "schedule" });
     const shards = JSON.parse(out.shards).include as { run: string; peers: number }[];
     assert.deepEqual([shards.length, shards[0].run, shards[0].peers, out.merge], [8, "gate", 200, "true"]);
+  });
+
+  it("runs the small named scenarios, each alone", () => {
+    const out = plan({ EVENT: "push", COMMIT_MESSAGE: "[swarm: scenarios]" });
+    assert.deepEqual(
+      (JSON.parse(out.single).include as { scenario: string }[]).map((s) => s.scenario),
+      ["proof-tree", "chain-kill", "slow-child"],
+    );
   });
 
   it("runs a manual run's input", () => {

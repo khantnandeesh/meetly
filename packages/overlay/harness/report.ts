@@ -83,6 +83,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   let lagMissing = false;
 
   const seen = new Set<string>();
+  const shardNotes = new Map<string, number[]>();
   const decoders = new Set<string>();
   let decodersKnown = false;
   for (const shard of shards) {
@@ -155,9 +156,14 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     else worstLagP99 = worstLagP99 === null ? p99 : Math.max(worstLagP99, p99);
     const joins = shard.samples.reduce((n, s) => n + s.events.filter((e) => e.t === "join").length, 0);
     hosts.push({ shard: shard.shard.index, cores: shard.host.cores, loadAvg1Max: Math.max(0, ...shard.host.loadAvg1), lagP99Ms: p99, peersStarted: shard.peersStarted, peersFailed: shard.peersFailed.length, joins });
-    for (const note of shard.notes ?? []) notes.push(`shard ${shard.shard.index}: ${note}`);
+    for (const note of new Set(shard.notes ?? [])) shardNotes.set(note, [...(shardNotes.get(note) ?? []), shard.shard.index]);
   }
   failed.sort((a, b) => a.shard - b.shard || a.index - b.index);
+  // A note every shard made (what was merged, how links are counted) is said once.
+  for (const [note, from] of shardNotes) {
+    if (from.length === shards.length && shards.length > 1) notes.push(`every shard: ${note}`);
+    else for (const index of from) notes.push(`shard ${index}: ${note}`);
+  }
   notes.sort();
 
   const shardCount = first?.shard.count ?? 0;
@@ -273,7 +279,7 @@ export function renderReport(report: SwarmReport): string {
   lines.push(row("Repair time", report.repairMs, "206–209 warm, 225–227 cold"));
   lines.push(row("Glass-to-glass latency", report.glassToGlassMs, ""));
   lines.push(row("Freezes (over 200 ms)", report.freezeMs, ""));
-  for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) lines.push(row(`Latency at depth ${depth}`, q, ""));
+  for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) if (q.n > 0) lines.push(row(`Latency at depth ${depth === "255" ? "unknown" : depth}`, q, ""));
   if (report.glassToGlassDecoding.n) lines.push(row("Latency, decoding viewers (D29)", report.glassToGlassDecoding, ""));
   if (report.glassToGlassLight.n) lines.push(row("Latency, light viewers (D29)", report.glassToGlassLight, ""));
   lines.push("", "Histogram quantiles are bucket upper edges: up to 10 ms over below 500 ms, never under.", "");

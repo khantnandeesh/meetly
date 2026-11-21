@@ -10,6 +10,7 @@
 //               tunnel, STUN only. Can they reach it, and can their peers link to each other?
 //   sizes       PLAN H4: gate-small at 30, 40, 50 and 60 peers, each alone on one runner; the
 //               largest valid one is reported.
+//   scenarios   proof-tree, chain-kill and slow-child (PLAN T3, T4, C3), each alone on a runner.
 //   sharded     PLAN H5: gate-small at 100 peers, 4 shards of 25 on 4 runners, one report.
 //   gate        PLAN H6, SPEC §12.3: 200 peers, 8 shards of 25, ten minutes of churn.
 //   merge       before any of these, merge the engineers' overlay-* branches into the checkout,
@@ -41,15 +42,19 @@ for (const [run, r] of Object.entries(RUNS)) {
   if (!want.has(run)) continue;
   for (let shard = 0; shard < r.shards; shard++) shards.push({ run, shard, ...r });
 }
-const sizes = want.has("sizes") ? [30, 40, 50, 60] : [];
+/** Runs of one runner each, with its own coordinator. `dir` is where its result goes. */
+const single = [];
+if (want.has("sizes")) for (const peers of [30, 40, 50, 60]) single.push({ dir: `sizes-${peers}`, scenario: "gate-small", peers });
+if (want.has("scenarios"))
+  for (const [scenario, peers] of [["proof-tree", 7], ["chain-kill", 5], ["slow-child", 8]]) single.push({ dir: `scenario-${scenario}`, scenario, peers });
 
 const out = {
   shards: JSON.stringify({ include: shards.length ? shards : [{ run: "none", shard: 0 }] }),
   has_shards: String(shards.length > 0),
-  sizes: JSON.stringify(sizes.length ? sizes : [0]),
-  has_sizes: String(sizes.length > 0),
+  single: JSON.stringify({ include: single.length ? single : [{ dir: "none", scenario: "none", peers: 0 }] }),
+  has_single: String(single.length > 0),
   merge: String(want.has("merge")),
-  any: String(shards.length > 0 || sizes.length > 0),
+  any: String(shards.length > 0 || single.length > 0),
   runs: [...want].join(" "),
 };
 const lines = Object.entries(out).map(([k, v]) => `${k}=${v}`);

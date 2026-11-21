@@ -20,6 +20,11 @@ if [ -z "$id" ]; then
   exit 1
 fi
 mkdir -p "$dir"
-curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "$dir/rendezvous.zip" "$api/artifacts/$id/zip"
+# An artifact can be listed a moment before its archive can be fetched: try again for a minute.
+for attempt in $(seq 1 12); do
+  if curl -fsSL -H "Authorization: Bearer $GH_TOKEN" -o "$dir/rendezvous.zip" "$api/artifacts/$id/zip"; then break; fi
+  [ "$attempt" = 12 ] && { echo "artifact $id could not be fetched" >&2; exit 1; }
+  sleep 5
+done
 unzip -o -q "$dir/rendezvous.zip" -d "$dir"
 rm "$dir/rendezvous.zip"
