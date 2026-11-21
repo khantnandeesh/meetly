@@ -350,17 +350,27 @@ describe("node: who may subscribe (SPEC §5.3, §7.2, §7.3)", () => {
     assert.equal(stateOf(joiner).parent, "1");
   });
 
-  it("a full relay refuses an active sub with \"full\", and the joiner tries the next", async () => {
+  it("a relay at its fan-out takes a joiner all the same, up to twice it, and caps everyone; a peer watching elsewhere is refused", async () => {
     const { net, peers } = await proofTree({ params: { maxFanout: 2 } });
-    const joiner = net.join("9", "leaf", ["1", "2"]);
-    await net.runAsync(500);
-    assert.deepEqual(
-      acks(net, "9").filter((ack) => !ack.ok).map((ack) => ack.code),
-      ["full", "full", "full", "full"],
-    );
-    assert.deepEqual(peers[1].node.status().children, ["3", "4"]);
-    // Relay 2 is full as well. Nobody is left, so it is the coordinator's turn: the source has a slot.
-    assert.deepEqual([stateOf(joiner).state, stateOf(joiner).parent], ["active", "0"]);
+    const relay = peers[1];
+    // Two joiners with nothing to watch: relay 1 takes both, over its fan-out of two.
+    const joiners = [net.join("8", "leaf", ["1"]), net.join("9", "leaf", ["1"])];
+    await net.runAsync(800);
+    for (const joiner of joiners) assert.deepEqual([stateOf(joiner).state, stateOf(joiner).parent], ["active", "1"]);
+    assert.deepEqual(relay.node.status().children.sort(), ["3", "4", "8", "9"]);
+    assert.equal(relay.node.status().freeSlots, 0);
+    const live = relay.gates.filter((gate) => gate.listeners > 0 && gate.overload);
+    assert.ok(live.length >= 8, `${live.length} gates told of the overload`);
+    // Twice the fan-out is the end of it: the next joiner is refused and goes on to relay 2.
+    const late = net.join("10", "leaf", ["1", "2"]);
+    await net.runAsync(800);
+    assert.ok(acks(net, "10").some((ack) => !ack.ok && ack.code === "full"));
+    assert.equal(stateOf(late).parent, "2");
+    // A peer that is watching (it asks from a frame of its own) is refused, overloaded or not.
+    net.assign("5", [{ stream: 0, stripe: 0, parents: [{ peer: "1", depth: 1, free: 1 }], backups: [] }], "move");
+    await net.runAsync(800);
+    assert.ok(acks(net, "5").some((ack) => !ack.ok && ack.code === "full"));
+    assert.equal(stateOf(peers[5]).parent, "2");
   });
 
   it("a relay holds 2 × maxFanout standby places, and no more", async () => {

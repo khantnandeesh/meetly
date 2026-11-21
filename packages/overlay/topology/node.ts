@@ -79,6 +79,8 @@ export const COLD_RETRY_MS = 500;
 export const BACKUP_RETRY_MS = 2000;
 /** A peer refused as a backup (it is below this one, or full) is not tried again for this long. */
 export const BACKUP_REJECT_MS = 10_000;
+/** A parent takes a peer with nothing to watch over its fan-out, up to this many times it. */
+export const OVER_FANOUT_FACTOR = 2;
 /** One replay a second per child and stream (SPEC §14). */
 export const REPLAY_MIN_INTERVAL_MS = 1000;
 /** A parent spends at most this share of a stream's bitrate on retransmissions to one child (SPEC §4.6). */
@@ -964,7 +966,13 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     if (mode === "standby") {
       if (!wasChild && standbyChildren().length >= 2 * params.maxFanout) return refuse("full");
     } else if (!wasActive && !isRepair && activeChildren().length >= fanout()) {
-      return refuse("full");
+      // A peer with nothing to watch yet (it asks from the latest keyframe: a joiner, or one the
+      // coordinator found no free slot for) is taken in over the fan-out, up to twice it, and
+      // every child is sent one layer fewer until the coordinator moves someone (SPEC §7.5 step 2,
+      // §11.3 rule 8): a picture at a lower frame rate now is better than none until a relay is
+      // promoted, which at a session's start is a probation (D18) away. A peer that is watching
+      // elsewhere (a switch, a move: it asks from a frame) is refused as before.
+      if (message.fromFrame !== FROM_LATEST_KEYFRAME || activeChildren().length >= OVER_FANOUT_FACTOR * fanout()) return refuse("full");
     } else if (!isRepair && message.fromFrame !== FROM_LIVE && existing && now - existing.lastReplayAt < REPLAY_MIN_INTERVAL_MS) {
       return refuse("denied");
     }
