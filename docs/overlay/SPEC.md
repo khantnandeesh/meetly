@@ -780,8 +780,8 @@ both means "cone", different ports "symmetric", a public host address "open". A 
 link so far needed TURN is "relay".
 
 Spare uplink is not known when a peer joins, and nothing a browser reports can be trusted for
-it. After probation the peer sends its parent PROBE packets (§4.7) for one second at 2 × the
-session's bitrate and reads the result from feedback (§11.6). **[D19]**
+it. After probation the peer sends its parent PROBE packets (§4.7) for one second at what a full
+fan-out would cost (§11.6) and reads the result from feedback (§11.6). **[D19]**
 
 **Fan-out** is how many active children a relay takes:
 `min(maxFanout, floor(0.7 × spareUplinkKbps / (1.15 × sessionKbps)))`. The 0.7 leaves room for
@@ -996,6 +996,15 @@ With *B* the stream's full bitrate:
 | **strained** | `bufferedBytes` over 50 ms of *B* · `lossPct` ≥ 3 · `queueDelayMs` ≥ 40 |
 | **ok** | otherwise |
 
+**[D30] A backlog counts once it has stood over a line for 150 ms** (`backlogWindowMs`): every
+`bufferedBytes` sample in that time over 50 ms of *B* for *strained*, over 150 ms of *B* for
+*congested*. A keyframe is several delta frames' worth, handed to the channel at once; on a link
+with room for the stream the backlog it leaves is gone a few frames later, and is not the link
+falling behind. Read sample by sample, every keyframe makes a link under about 4.6 Mbps
+*strained*, rule 5's five seconds of *ok* never come, and a layer once dropped is never given
+back. Rule 6 and the replay budget (§11.5) read the backlog as it is now. *Decided by integrator
+2026-11-21.*
+
 ### 11.3 Layer drop, per child
 
 `LayerGate`, one per child and stream. It answers one question per frame: send this frame to
@@ -1003,9 +1012,23 @@ this child, or not. Always for the whole frame, at its first packet; a frame is 
 part.
 
 1. **Control and audio are always sent.** They are small, and without them nothing else works.
+   A gate is told which kind of stream it serves (`LayerGateOptions.kind`); an audio stream's
+   gate refuses nothing. Told nothing, a gate takes stream 1 for audio and every other stream
+   for video, which is stage 1 (§2). *Decided by integrator 2026-11-21.*
 2. A video frame above the child's cap is not sent. The cap starts at the top layer.
 3. **Down:** when the link is *congested*, the cap drops one temporal layer, at the next frame,
-   at most once every 500 ms.
+   at most once every 500 ms. **[D31] A further drop waits to see what the last one did.** From
+   a drop until the cap next rises, the next drop waits one observation window: the longer of
+   1 s and 2 × the link's reaction time (its round trip, 150 if not yet measured, plus 250 ms:
+   a feedback interval and the backlog's standing window of [D30]). After it, the cap drops
+   again only if the backlog or the loss is still over the line: `lossPct` ≥ 10, or
+   `bufferedBytes` over 150 ms of *B* at every frame for the whole window with its low point no
+   lower than in the window before. Congestion by `queueDelayMs` alone does not drop a second
+   layer: a link that just carries a layer reads *ok* between keyframes and then, for each
+   keyframe's queue, congested by delay. The first drop, and a failed rise's drop back
+   (rule 5), are at the next frame as before. So a child capped at 900 kbps or 1.1 Mbps under a
+   1,200 kbps stream settles on the middle layer, not the base; one at 600 kbps gets its second
+   drop a window after the first, within PLAN C3's 2 s. *Decided by integrator 2026-11-21.*
 4. **Hold:** while *strained*, the cap does not move.
 5. **Up:** after 5 s *ok*, the cap rises one layer. If the link is *congested* again within 3 s,
    the cap drops back and the wait doubles (10, 20 … 60 s); it resets after a rise that holds.
@@ -1044,13 +1067,32 @@ A replay (join, repair) is a burst of up to a GOP. `LayerGate.replayBudget` allo
 keeps `bufferedBytes` under 250 ms of *B*; live media goes first, replay fills what is left. A
 replay to a child whose cap is below the top layer leaves out the layers above the cap.
 
+That is more than rule 6's 200 ms and §11.2's 150 ms, so for 500 ms after the gate last gave a
+replay a budget (`replayGraceMs`) the backlog is taken for the replay's own: a link *congested*
+by backlog alone, with `lossPct` under 10 and `queueDelayMs` under 100, is held as *strained*,
+and rule 6's line is 250 ms of *B*. Loss or path delay still count at once. Without this, every
+join would end with the joiner's first live frames refused and a layer dropped. *Decided by
+integrator 2026-11-21.*
+
 ### 11.6 Measuring spare uplink
 
-`UplinkProbe`: PROBE packets to the parent for 1 s at twice the session's bitrate, on top of
-whatever the peer is already sending. The parent counts them in feedback like anything else and
-discards them. Spare uplink is `deliveredKbps` during the probe, if the link stayed *ok*; if it
-did not, the highest rate before it left *ok*. Run after probation, and again every 5 minutes
-while eligible.
+`UplinkProbe`: PROBE packets to the parent for 1 s, on top of whatever the peer is already
+sending. The parent counts them in feedback like anything else and discards them. Spare uplink
+is `deliveredKbps` during the probe, if the link stayed *ok*; if it did not, the highest rate
+before it left *ok*. Run after probation, and again every 5 minutes while eligible.
+
+- **The probe's target is what a full fan-out costs** (a correction of the "twice the session's
+  bitrate" this section first said): `maxFanout × 1.15 × B / 0.7`, 7,900 kbps for stage 1, so
+  that §8.1's fan-out formula can come out at `maxFanout`. A probe can report no more than its
+  target, and at twice the bitrate (2.4 Mbps) no peer could ever show the 2.76 Mbps that
+  eligibility asks for. The probe never queues more than the link took since its last tick and
+  a few packets, so on a slower link it finds the link's pace rather than flooding it. Probe
+  packets go in the lowest send class. *Decided by integrator 2026-11-21.*
+- **FEEDBACK goes down the link while PROBE packets come up it.** FEEDBACK is otherwise child to
+  parent (§4.5), but the prober needs to hear how its probe fared: a peer receiving PROBE
+  packets on a link sends FEEDBACK on that link every `feedbackMs` for as long as they keep
+  coming (the first interval's count is discarded, so the report starts with the probe), and
+  stops one second after the last. *Decided by integrator 2026-11-21.*
 
 ---
 
@@ -1319,6 +1361,13 @@ Rotating speakers on the overlay. Out of scope.
 | D27 | The source's bitrate follows its own uplink and the audience as a whole, never one viewer | 11.4 |
 | D28 | What the gate's "loss and churn" are | 12.3 |
 | D29 | Light viewers in the harness, with decoding viewers as a check | 13.2 |
+| D30 | A backlog counts once it has stood over a line for 150 ms (integrator, 2026-11-21) | 11.2 |
+| D31 | Rule 3: a further drop waits one observation window, and needs the backlog or the loss still over the line (integrator, 2026-11-21) | 11.3 |
+
+Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
+whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
+(§11.5); the probe's target is a full fan-out's cost, and FEEDBACK goes down a link while PROBE
+packets come up it (§11.6).
 
 Also decided here, with their numbers, because the report gave only the idea: the layer-drop
 rules (§11.3), the jitter buffer's contract (§10), the standby reservation that makes a repair
