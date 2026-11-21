@@ -1,0 +1,417 @@
+/**
+ * `runShard`: this process's share of a swarm. It starts the coordinator if the run has none
+ * yet (shard 0 of a run whose coordinator is not "external"), opens one page per peer in headless
+ * Chromium, has each join at its time, carries out its share of the churn script, collects every
+ * metrics sample, and measures itself: its own event-loop lag, its pages', and the machine's
+ * load, so a run that starved its machine is reported as invalid and not as a slow overlay.
+ *
+ * Playwright is not a dependency of the repository: it is found through NODE_PATH (README).
+ *
+ * Owner: E-harness.
+ */
+import { createRequire } from "node:module";
+import { availableParallelism, loadavg } from "node:os";
+import { dirname, join } from "node:path";
+import { monitorEventLoopDelay } from "node:perf_hooks";
+import { decodeMetricsSample, emptyHistogram, latencyBucket, mergeHistogram, signTicket, type MetricsSample, type PeerId } from "../protocol";
+import { startNodeCoordinator } from "../coordinator/node";
+import type { NodeCoordinator } from "../coordinator/types";
+import { seededRandom } from "./clock";
+import { bundlePage, servePage, type PageServer } from "./page/build";
+import { addLinks } from "./report";
+import { churnSteps, joinAtS, profileOf, shardOf, PROFILES, type ChurnStep } from "./scenarios";
+import { startStandinCoordinator, type StandinCoordinator } from "./standin/coordinator";
+import { probeStubs } from "./stubs";
+import type { ImpairmentCounters, ImpairmentProfile, LinkCounts, PageStartOptions, PageState, PeerPick, ShardResult, SwarmConfig } from "./types";
+
+/* Just enough of Playwright's types for what is used here: it is not installed in the project. */
+type PwPage = {
+  goto(url: string): Promise<unknown>;
+  evaluate<R, A>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R>;
+  exposeFunction(name: string, fn: (...args: never[]) => unknown): Promise<void>;
+  close(options?: { runBeforeUnload?: boolean }): Promise<void>;
+  on(event: "crash" | "pageerror" | "console", listener: (arg: never) => void): void;
+};
+type PwContext = { newPage(): Promise<PwPage> };
+type PwBrowser = { newContext(): Promise<PwContext>; close(): Promise<void> };
+type Playwright = { chromium: { launch(options: { args: string[]; headless?: boolean }): Promise<PwBrowser> } };
+
+/** Playwright, from NODE_PATH, or from beside the `node` that is running (a global install). */
+export function loadPlaywright(): Playwright {
+  const require = createRequire(import.meta.url);
+  const tried: string[] = [];
+  for (const name of ["playwright", join(dirname(process.execPath), "..", "lib", "node_modules", "playwright")]) {
+    try {
+      return require(name) as Playwright;
+    } catch (error) {
+      tried.push(`${name}: ${(error as Error).message.split("\n")[0]}`);
+    }
+  }
+  throw new Error(`Playwright was not found. Install it outside the project and set NODE_PATH (see packages/overlay/harness/README.md).\n${tried.join("\n")}`);
+}
+
+export const CHROMIUM_ARGS = [
+  "--use-fake-device-for-media-stream",
+  "--use-fake-ui-for-media-stream",
+  // Host candidates as addresses, not mDNS names: peers on one machine find each other at once.
+  "--disable-features=WebRtcHideLocalIpsWithMdns",
+  // A page nobody looks at must keep its timers: every peer here is one.
+  "--disable-background-timer-throttling",
+  "--disable-renderer-backgrounding",
+  "--disable-backgrounding-occluded-windows",
+];
+
+type PeerHandle = {
+  index: number;
+  role: "source" | "viewer";
+  page: PwPage;
+  profile: ImpairmentProfile | null;
+  startedAt: number;
+  /** Still running: not killed, not left, not crashed. */
+  alive: boolean;
+  /** How it ended, if the harness ended it. */
+  ended: "killed" | "left" | null;
+  state: PageState | null;
+  links: { peer: PeerId; open: boolean; failed: boolean; turn: boolean; candidates: string | null }[];
+  clockMax: number;
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const SERVER_SECRET = "harness-server-secret";
+
+/** Whom a churn step falls on, among this shard's viewers, by what their pages last said of themselves. */
+export function pickPeer<T extends { index: number; children: number; depth: number }>(peers: T[], pick: PeerPick, seed: number): T | null {
+  const sorted = [...peers].sort((a, b) => a.index - b.index);
+  const relays = sorted.filter((p) => p.children > 0);
+  let pool: T[];
+  switch (pick) {
+    case "any":
+      pool = sorted;
+      break;
+    case "leaf":
+      pool = sorted.filter((p) => p.children === 0);
+      break;
+    case "relay":
+      pool = relays;
+      break;
+    case "deepest-relay": {
+      const depth = Math.max(...relays.map((p) => p.depth));
+      pool = relays.filter((p) => p.depth === depth);
+      break;
+    }
+    case "shallowest-relay": {
+      const depth = Math.min(...relays.map((p) => p.depth));
+      pool = relays.filter((p) => p.depth === depth);
+      break;
+    }
+    case "busiest-relay": {
+      const children = Math.max(...relays.map((p) => p.children));
+      pool = relays.filter((p) => p.children === children);
+      break;
+    }
+  }
+  return pool.length ? pool[Math.floor(seededRandom(seed)() * pool.length)] : null;
+}
+
+/** Runs this process's share of a swarm to the end and returns what its peers measured. */
+export async function runShard(config: SwarmConfig): Promise<ShardResult> {
+  const log = config.log ?? (() => undefined);
+  const mine = (index: number): boolean => shardOf(index, config.shard.count) === config.shard.index;
+  const stubbed = probeStubs();
+  const notes: string[] = [];
+  const startedAt = Date.now();
+  const startAt = config.startAtMs ?? startedAt + 1500;
+  const atS = (): number => (Date.now() - startAt) / 1000;
+
+  /* ------------------------------ the coordinator ------------------------------ */
+
+  const url = new URL(config.coordinatorUrl);
+  const wanted = config.coordinator ?? "auto";
+  const ownsCoordinator = wanted !== "external" && config.shard.index === 0;
+  const realCoordinatorBuilt = !stubbed.includes("coordinator.startNodeCoordinator");
+  if (wanted === "real" && !realCoordinatorBuilt) throw new Error("coordinator: \"real\" was asked for, but startNodeCoordinator is still a stub");
+  const useReal = ownsCoordinator && (wanted === "real" || (wanted === "auto" && realCoordinatorBuilt));
+  const coordinatorOptions = { port: Number(url.port), host: url.hostname, admissionSecret: config.admissionSecret, serverSecret: SERVER_SECRET, params: config.params, seed: config.seed, iceServers: config.iceServers };
+  let coordinator: NodeCoordinator | StandinCoordinator | null = null;
+  if (ownsCoordinator) {
+    coordinator = useReal ? await startNodeCoordinator(coordinatorOptions) : await startStandinCoordinator(coordinatorOptions);
+    log(`coordinator: ${useReal ? "the package's" : "STAND-IN"} at ${coordinator.url}`);
+  }
+
+  /* ------------------------------ the page, the browsers ------------------------------ */
+
+  const playwright = loadPlaywright();
+  let server: PageServer | null = null;
+  const browsers: PwBrowser[] = [];
+  const peers = new Map<number, PeerHandle>();
+  const failed: ShardResult["peersFailed"] = [];
+  const samples: MetricsSample[] = [];
+  const churnLog: NonNullable<ShardResult["churnLog"]> = [];
+  const loads: number[] = [];
+  const pageLag = emptyHistogram();
+  const driverLag = emptyHistogram();
+  let badSamples = 0;
+  let pagesInBrowser = 0;
+  let context: PwContext | null = null;
+  let engine: "real" | "standin" | null = null;
+  let ticketNonce = 0;
+
+  // The driver's own event loop: if it is late, everything it times is late.
+  const loopDelay = monitorEventLoopDelay({ resolution: 10 });
+  loopDelay.enable();
+  let lagDue = performance.now() + 20;
+  const lagTimer = setInterval(() => {
+    const now = performance.now();
+    driverLag[latencyBucket(Math.max(0, now - lagDue))]++;
+    lagDue = Math.max(lagDue + 20, now);
+  }, 20);
+
+  const ticket = (index: number, role: "source" | "viewer"): Promise<string> =>
+    signTicket(
+      { v: 1, room: config.room, identity: `${config.runId}-s${config.shard.index}-p${index}`, name: `peer ${index}`, role, exp: Math.floor(Date.now() / 1000) + 60, nonce: `${config.shard.index}-${index}-${ticketNonce++}-${Math.floor(Math.random() * 1e9).toString(36)}`.padEnd(8, "0") },
+      config.admissionSecret,
+    );
+
+  async function newPage(): Promise<PwPage> {
+    if (!context || pagesInBrowser >= Math.max(1, config.pagesPerBrowser)) {
+      const browser = await playwright.chromium.launch({ args: CHROMIUM_ARGS });
+      browsers.push(browser);
+      context = await browser.newContext();
+      pagesInBrowser = 0;
+    }
+    pagesInBrowser++;
+    return context.newPage();
+  }
+
+  async function startPeer(index: number): Promise<void> {
+    const role = index === 0 ? "source" : "viewer";
+    const profile = profileOf(config, index);
+    try {
+      const page = await newPage();
+      const handle: PeerHandle = { index, role, page, profile, startedAt: Date.now(), alive: true, ended: null, state: null, links: [], clockMax: -1 };
+      page.on("crash", () => {
+        if (!handle.alive) return;
+        handle.alive = false;
+        failed.push({ index, why: "the page crashed" });
+      });
+      page.on("pageerror", (error: Error) => log(`peer ${index}: page error: ${error.message}`));
+      await page.exposeFunction("__overlayTicket", () => ticket(index, role));
+      await page.goto(server!.url);
+      const options: PageStartOptions = {
+        coordinatorUrl: config.coordinatorUrl,
+        room: config.room,
+        ticket: await ticket(index, role),
+        role,
+        decode: role === "viewer" && config.decodeEvery > 0 && (index - 1) % config.decodeEvery === 0,
+        profile,
+        seed: config.seed,
+        engine: config.engine ?? "auto",
+        ice: config.ice,
+        program: config.program,
+        index,
+        shard: config.shard.index,
+      };
+      peers.set(index, handle);
+      await page.evaluate((o) => window.__overlay.start(o), options);
+    } catch (error) {
+      const handle = peers.get(index);
+      if (handle) handle.alive = false;
+      failed.push({ index, why: `did not start: ${(error as Error).message.split("\n")[0].slice(0, 300)}` });
+      log(`peer ${index}: FAILED to start: ${(error as Error).message.split("\n")[0]}`);
+    }
+  }
+
+  /** Takes every live page's samples and state. A page that does not answer is left for the next round. */
+  async function poll(): Promise<void> {
+    loads.push(loadavg()[0]);
+    await Promise.all(
+      [...peers.values()]
+        .filter((p) => p.alive)
+        .map(async (p) => {
+          try {
+            const got = await p.page.evaluate(() => ({ samples: window.__overlay.takeSamples(), state: window.__overlay.state(), links: window.__overlay.linkList() }), null);
+            p.state = got.state;
+            p.links = got.links;
+            engine = got.state.engine;
+            if (got.state.clockUncertaintyMs >= 0) p.clockMax = Math.max(p.clockMax, got.state.clockUncertaintyMs);
+            mergeHistogram(pageLag, got.state.lag);
+            for (const sample of got.samples) {
+              try {
+                samples.push(decodeMetricsSample(JSON.stringify(sample)));
+              } catch (error) {
+                if (badSamples++ === 0) notes.push(`a metrics sample did not fit the schema and was left out: ${(error as Error).message}`);
+              }
+            }
+          } catch {
+            // Closed between the filter and the call (a kill), or busy: nothing to take this time.
+          }
+        }),
+    );
+  }
+
+  async function churn(step: ChurnStep): Promise<void> {
+    const event = step.event;
+    const entry = { atS: Math.round(atS() * 10) / 10, action: event.action, targets: [] as string[] };
+    churnLog.push(entry);
+    if (event.action === "kill-coordinator") {
+      if (!coordinator) return;
+      log(`churn ${entry.atS}s: the coordinator dies for ${event.forS} s`);
+      await coordinator.kill();
+      entry.targets.push("coordinator");
+      setTimeout(() => {
+        void (async () => {
+          if (coordinator && "restart" in coordinator) await coordinator.restart();
+          else coordinator = await startNodeCoordinator(coordinatorOptions);
+          log(`churn: the coordinator is back`);
+        })().catch((error) => notes.push(`the coordinator did not come back: ${String(error)}`));
+      }, event.forS * 1000);
+      return;
+    }
+    if (event.action === "join") {
+      if (step.index === undefined) return;
+      entry.targets.push(`peer ${step.index}`);
+      await startPeer(step.index);
+      return;
+    }
+    // Fresh numbers, so the pick is made on the tree as it is now.
+    await poll();
+    const viewers = [...peers.values()].filter((p) => p.alive && p.role === "viewer" && p.state?.started).map((p) => ({ index: p.index, children: p.state?.children ?? 0, depth: p.state?.depth ?? 255, handle: p }));
+    const target = pickPeer(viewers, event.pick, step.seed);
+    if (!target) {
+      entry.targets.push(`nobody: no "${event.pick}" on this shard`);
+      return;
+    }
+    const peer = target.handle;
+    entry.targets.push(`peer ${peer.index} (${peer.state?.peer ?? "?"}, depth ${target.depth}, ${target.children} children)`);
+    log(`churn ${entry.atS}s: ${event.action} ${entry.targets[0]}`);
+    if (event.action === "kill") {
+      peer.alive = false;
+      peer.ended = "killed";
+      await peer.page.close({ runBeforeUnload: false }).catch(() => undefined);
+    } else if (event.action === "leave") {
+      peer.alive = false;
+      peer.ended = "left";
+      try {
+        const last = await peer.page.evaluate(async () => {
+          await window.__overlay.leave();
+          return window.__overlay.takeSamples();
+        }, null);
+        for (const sample of last) samples.push(sample);
+      } catch {
+        // It was already going.
+      }
+      await peer.page.close().catch(() => undefined);
+    } else if (event.action === "impair") {
+      const profile = config.profiles.find((p) => p.name === event.profile) ?? PROFILES[event.profile] ?? null;
+      peer.profile = profile;
+      await peer.page.evaluate((p) => window.__overlay.setProfile(p), profile).catch(() => undefined);
+    }
+  }
+
+  /* ------------------------------ the run ------------------------------ */
+
+  try {
+    server = await servePage(Number(url.port) + 1 + config.shard.index, await bundlePage());
+    const joins = Array.from({ length: config.peers }, (_, index) => index)
+      .filter(mine)
+      .map((index) => ({ atS: joinAtS(config, index), index }));
+    const steps = churnSteps(config).filter((step) => (step.shard === -1 ? ownsCoordinator : step.shard === config.shard.index));
+    log(`shard ${config.shard.index}/${config.shard.count}: ${joins.length} of ${config.peers} peers, ${steps.length} churn steps, ${config.durationS} s; engine "${config.engine ?? "auto"}"; stubbed: ${stubbed.length ? stubbed.join(", ") : "nothing"}`);
+
+    const running = new Set<Promise<void>>();
+    const run = (work: Promise<void>): void => {
+      running.add(work);
+      void work.finally(() => running.delete(work));
+    };
+    let lastPoll = 0;
+    let polling: Promise<void> | null = null;
+    while (atS() < config.durationS) {
+      const now = atS();
+      while (joins.length && joins[0].atS <= now) run(startPeer(joins.shift()!.index));
+      while (steps.length && steps[0].atS <= now) run(churn(steps.shift()!));
+      if (!polling && Date.now() - lastPoll >= 2000) {
+        lastPoll = Date.now();
+        polling = poll().finally(() => (polling = null));
+      }
+      await sleep(100);
+    }
+    await polling;
+    await Promise.race([Promise.all(running), sleep(5000)]);
+    await poll();
+  } finally {
+    clearInterval(lagTimer);
+    loopDelay.disable();
+    await Promise.all(browsers.map((browser) => browser.close().catch(() => undefined)));
+    await server?.close().catch(() => undefined);
+    await (coordinator as NodeCoordinator | null)?.close().catch(() => undefined);
+  }
+
+  /* ------------------------------ what it all came to ------------------------------ */
+
+  for (const peer of peers.values()) {
+    if (peer.role !== "viewer" || peer.ended || failed.some((f) => f.index === peer.index)) continue;
+    if (peer.state?.error) failed.push({ index: peer.index, why: peer.state.error });
+    else if (!peer.state?.started && Date.now() - peer.startedAt > 10_000) failed.push({ index: peer.index, why: "never rendered a frame" });
+  }
+  const source = peers.get(0);
+  if (source && !source.state?.started && !failed.some((f) => f.index === 0)) failed.push({ index: 0, why: source.state?.error ?? "the source never sent a frame" });
+
+  const local = new Set<PeerId>();
+  for (const peer of peers.values()) if (peer.state?.peer) local.add(peer.state.peer);
+  const links: LinkCounts = { opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0 };
+  const impairment: ImpairmentCounters = { sent: 0, delivered: 0, lost: 0, queueDropped: 0, lateMsSum: 0, lateMsMax: 0 };
+  for (const peer of peers.values()) {
+    const counts: LinkCounts = { opened: 0, failed: 0, turn: 0, candidates: {}, crossShard: 0, crossShardTurn: 0 };
+    for (const link of peer.links) {
+      // Each link has two ends; count it at the end that sorts first, or here if the other end is elsewhere.
+      const elsewhere = !local.has(link.peer);
+      if (!elsewhere && (peer.state?.peer ?? "") > link.peer) continue;
+      if (link.open) counts.opened++;
+      if (link.failed) counts.failed++;
+      if (link.turn) counts.turn++;
+      if (link.candidates) counts.candidates[link.candidates] = (counts.candidates[link.candidates] ?? 0) + 1;
+      if (elsewhere && link.open) {
+        counts.crossShard++;
+        if (link.turn) counts.crossShardTurn++;
+      }
+    }
+    addLinks(links, counts);
+    const i = peer.state?.impairment;
+    if (i) {
+      impairment.sent += i.sent;
+      impairment.delivered += i.delivered;
+      impairment.lost += i.lost;
+      impairment.queueDropped += i.queueDropped;
+      impairment.lateMsSum += i.lateMsSum;
+      impairment.lateMsMax = Math.max(impairment.lateMsMax, i.lateMsMax);
+    }
+  }
+  if (config.shard.count > 1) notes.push("a link between two shards is counted by both, each at its own end");
+  if (ownsCoordinator && !useReal) stubbed.push("harness: the coordinator was the stand-in (harness/standin/coordinator.ts)");
+  if (engine === "standin") stubbed.push("harness: every peer was the stand-in (harness/page/standin.ts)");
+
+  const viewers = [...peers.values()].filter((p) => p.role === "viewer" && p.clockMax >= 0);
+  return {
+    runId: config.runId,
+    shard: config.shard,
+    startedAt,
+    endedAt: Date.now(),
+    peersStarted: peers.size,
+    peersFailed: failed.sort((a, b) => a.index - b.index),
+    samples,
+    host: { cores: availableParallelism(), loadAvg1: loads, maxEventLoopLagMs: loopDelay.max / 1e6, driverLag, pageLag },
+    peers: config.peers,
+    durationS: config.durationS,
+    scenario: config.scenario,
+    seed: config.seed,
+    expect: config.expect,
+    engine: engine ?? undefined,
+    coordinator: wanted === "external" || !ownsCoordinator ? "external" : useReal ? "real" : "standin",
+    stubbed: [...new Set(stubbed)].sort(),
+    clock: { source: source && source.clockMax >= 0 ? source.clockMax : null, viewers: viewers.map((p) => p.clockMax) },
+    links,
+    impairment,
+    churnLog,
+    notes,
+  };
+}

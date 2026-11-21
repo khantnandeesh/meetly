@@ -13,7 +13,7 @@ import { createLayerGate, createLinkEstimator } from "@meetly/overlay/congestion
 import { createCoordinatorCore, ROUTES } from "@meetly/overlay/coordinator/index";
 import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
 import { startNodeCoordinator } from "@meetly/overlay/coordinator/node";
-import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
+import { GATE, GATE_MIX, PROFILES } from "@meetly/overlay/harness/index";
 import { DEFAULT_ENCODING, createJitterBuffer, createPlayer } from "@meetly/overlay/media/index";
 import { createGopCache, createOverlayNode, judgeRelay } from "@meetly/overlay/topology/index";
 import { CHANNELS, createLinkManager, createReassembler } from "@meetly/overlay/transport/index";
@@ -42,7 +42,6 @@ describe("overlay skeleton", () => {
       ["E-congestion", () => createLayerGate({ bitrateKbps: 0, temporalLayers: 1, frameIntervalMs: 33 })],
       ["E-coordinator", () => createCoordinatorCore(undefined as never)],
       ["E-coordinator", () => startNodeCoordinator(undefined as never)],
-      ["E-harness", () => buildReport([])],
     ];
     for (const [owner, call] of stubs) {
       assert.throws(call, (error: unknown) => error instanceof NotImplementedError && error.owner === owner && /not implemented/.test(error.message));
