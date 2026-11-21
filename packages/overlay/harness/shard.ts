@@ -437,6 +437,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     }
   }
   if (config.shard.count > 1) notes.push("a link between two shards is counted by both, each at its own end");
+  const retried = [...peers.values()].filter((p) => (p.state?.connectAttempts ?? 0) > 1).length;
+  if (retried) notes.push(`${retried} viewer${retried === 1 ? "" : "s"} found the coordinator unreachable and tried again; their joins are timed from the first try`);
   if (ownsCoordinator && !useReal) stubbed.push("harness: the coordinator was the stand-in (harness/standin/coordinator.ts)");
   if (engine === "standin") stubbed.push("harness: every peer was the stand-in (harness/page/standin.ts)");
 

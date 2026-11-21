@@ -331,6 +331,8 @@ export type PageState = {
   /** The first frame has been rendered (a viewer), or the program is being sent (the source). */
   started: boolean;
   error: string | null;
+  /** How many times a viewer of the package's engine called `connect()` before it got in. */
+  connectAttempts?: number;
   /** Session clock minus `Date.now()`, now: see `ShardResult.clock.viewersVsWallMs`. Null before the clock is known. */
   sessionMinusWallMs?: number | null;
   /** The session clock's uncertainty now, and at its worst since the first probes. */
