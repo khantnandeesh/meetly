@@ -100,6 +100,13 @@ export type TransportOptions = {
   wrapChannel?: (channel: PacketChannel, info: { peer: PeerId; kind: ChannelKind }) => PacketChannel;
   /** For tests: something that behaves like `RTCPeerConnection`. */
   peerConnection?: (config: RTCConfiguration) => RTCPeerConnection;
+  /**
+   * Above this much in the media channel's own buffer, packets wait in the link's queue, where
+   * their class decides the order. Default 64 kB.
+   */
+  highWaterBytes?: number;
+  /** The most video and replay a link's queue holds before shedding. Default 1 MB. */
+  maxQueueBytes?: number;
 };
 
 export type LinkManagerEvents = {
