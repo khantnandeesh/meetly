@@ -163,7 +163,8 @@ export interface CoordinatorPort {
   report(event: "parent-dead" | "parent-switch" | "backup-lost" | "link-failed" | "child-gone", stream: number, stripe: number, peer: PeerId, next?: PeerId | null): void;
   /** `assign` and `role` messages the coordinator sends unasked. */
   onAssign(listener: (assignments: Assignment[], reason: "join" | "need" | "rebalance" | "move") => void): () => void;
-  onRole(listener: (role: OverlayRole) => void): () => void;
+  /** `fanout`, when given, caps the active children this peer takes as a relay (a provisional relay, SPEC §8.1 [D38]). */
+  onRole(listener: (role: OverlayRole, fanout?: number) => void): () => void;
   onPeerGone(listener: (peer: PeerId) => void): () => void;
 }
 

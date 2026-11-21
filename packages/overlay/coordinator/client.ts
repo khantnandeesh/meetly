@@ -41,7 +41,7 @@ class Client implements CoordinatorClient {
   private readonly listeners: { [K in keyof CoordinatorClientEvents]: Listeners<CoordinatorClientEvents[K]> } = { welcome: new Set(), offline: new Set(), message: new Set(), closed: new Set() };
   private readonly onSignalListeners: Listeners<[from: PeerId, data: SignalData]> = new Set();
   private readonly onAssignListeners: Listeners<[assignments: Assignment[], reason: "join" | "need" | "rebalance" | "move"]> = new Set();
-  private readonly onRoleListeners: Listeners<[role: OverlayRole]> = new Set();
+  private readonly onRoleListeners: Listeners<[role: OverlayRole, fanout?: number]> = new Set();
   private readonly onPeerGoneListeners: Listeners<[peer: PeerId]> = new Set();
 
   private socket: WebSocket | null = null;
@@ -314,7 +314,7 @@ class Client implements CoordinatorClient {
       }
       case "role":
         this.currentGrant = message.grant;
-        for (const listener of [...this.onRoleListeners]) listener(message.role);
+        for (const listener of [...this.onRoleListeners]) listener(message.role, message.fanout);
         break;
       case "grant":
         this.currentGrant = message.grant;
@@ -369,7 +369,7 @@ class Client implements CoordinatorClient {
     return subscribe(this.onAssignListeners, listener);
   }
 
-  onRole(listener: (role: OverlayRole) => void): Unsubscribe {
+  onRole(listener: (role: OverlayRole, fanout?: number) => void): Unsubscribe {
     return subscribe(this.onRoleListeners, listener);
   }
 
