@@ -48,8 +48,10 @@ import type { OverlayConnectOptions, OverlayEvents, OverlaySource, OverlayState,
 const PROBATION_MS = 20_000;
 /** SPEC §11.6: the probe runs again this often while the peer is eligible. */
 const REPROBE_MS = 5 * 60_000;
-/** A probe cut short is tried again after this long. */
-const PROBE_RETRY_MS = 30_000;
+/** A probe cut short (the parent changed under it) is tried again after this long. */
+const PROBE_RETRY_MS = 10_000;
+/** A peer with no parent yet to probe is looked at again this soon: it may be the next relay a waiting subtree needs. */
+const PROBE_WAIT_MS = 2000;
 /**
  * SPEC §8.1, §11.6 (as amended): a full fan-out's cost, maxFanout × 1.15 × B / 0.7, and 10% more.
  * The probe reports no more than its target, and fan-out is that figure's floor: at the target to
@@ -290,6 +292,9 @@ abstract class PeerEngine {
     const node = this.node;
     const welcome = this.welcome;
     if (!node || !welcome || !this.caps || this.state === "closed") return;
+    // Nothing to probe until there is a parent to send the probe to.
+    const stripe = node.status().stripes[0];
+    if (!stripe || stripe.state !== "active" || stripe.parent === null) return this.scheduleProbe(PROBE_WAIT_MS);
     const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.videoKbps(), welcome.params);
     // Only the uplink is unknown: the probe is what finds it. Anything else, and it would be wasted.
     if (verdict.reasons.some((reason) => reason !== "uplink")) return this.scheduleProbe(PROBE_RETRY_MS);
