@@ -100,6 +100,13 @@ export type TransportOptions = {
   wrapChannel?: (channel: PacketChannel, info: { peer: PeerId; kind: ChannelKind }) => PacketChannel;
   /** For tests: something that behaves like `RTCPeerConnection`. */
   peerConnection?: (config: RTCConfiguration) => RTCPeerConnection;
+  /**
+   * Above this much in the media channel's own buffer, packets wait in the link's queue, where
+   * their class decides the order. Default 64 kB.
+   */
+  highWaterBytes?: number;
+  /** The most video and replay a link's queue holds before shedding. Default 1 MB. */
+  maxQueueBytes?: number;
 };
 
 export type LinkManagerEvents = {
@@ -126,11 +133,22 @@ export interface Reassembler {
   /**
    * Fragments that should have arrived by `now` and have not, oldest first, at most `max` items:
    * what to NACK. A gap is "due" once a later packet has arrived and the reordering window has passed.
+   * Each call counts as asking: a fragment is named once, and then `nackRetries` more times.
    */
   missing(now: number, max: number): NackItem[];
   /** Forget frames older than `frameId` on `streamId`: they are past their playout time. */
   expireBefore(streamId: number, frameId: number): void;
-  counters(): { frames: number; duplicates: number; expiredIncomplete: number };
+  /**
+   * A packet that is not live media (a heartbeat, a probe) arrived from `from` with this
+   * `linkSeq`. It lets `missing` tell a frame that was lost from one the sender never sent on
+   * this link (a layer it is shedding): see ./reassembler.ts.
+   */
+  noteLinkPacket(from: PeerId, linkSeq: number): void;
+  /**
+   * `late`: packets of frames already expired. `malformed`: packets that contradict their
+   * frame's other packets, or claim more fragments than `maxFragments`.
+   */
+  counters(): { frames: number; duplicates: number; expiredIncomplete: number; late: number; malformed: number };
 }
 
 export type ReassemblerOptions = {
@@ -139,4 +157,10 @@ export type ReassemblerOptions = {
   reorderMs: number;
   /** The most incomplete frames held per stream. */
   maxPending: number;
+  /** How many more times `missing` names a fragment after the first (SPEC §4.6). Default 1. */
+  nackRetries?: number;
+  /** How long after naming a fragment `missing` may name it again: about a round trip. Default 100 ms. */
+  retryMs?: () => number;
+  /** A frame claiming more fragments than this is dropped, so a peer cannot make this one hold much. Default 4,096. */
+  maxFragments?: number;
 };
