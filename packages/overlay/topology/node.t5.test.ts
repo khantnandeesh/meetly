@@ -115,6 +115,42 @@ describe("node: NACK under the gate mix's bad profile (SPEC §4.6, §12.3)", () 
   }
 });
 
+describe("node: its own stall is not its parent's death (SPEC §7.4)", () => {
+  async function tree() {
+    const net = new SimNet({ backups: true });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    net.join("1", "relay", ["0"]);
+    net.join("2", "relay", ["0"]);
+    await net.runAsync(300);
+    const leaf = net.join("3", "leaf", ["1"], ["2"]);
+    await net.runAsync(2000);
+    return { net, leaf };
+  }
+
+  it("a viewer whose tab is busy for 300 ms keeps its parent, and catches up with nothing lost", async () => {
+    const { net, leaf } = await tree();
+    const from = net.published;
+    // Nothing runs on the viewer for 300 ms; then its late tick runs first, before the packets that queued.
+    net.stall("3", 300);
+    await net.runAsync(2000);
+    assert.deepEqual(repairs(leaf), []);
+    assert.deepEqual([stateOf(leaf).state, stateOf(leaf).parent, stateOf(leaf).backup], ["active", "1", "2"]);
+    assert.deepEqual(missing(leaf, from, net.published - 3), []);
+  });
+
+  it("a parent that really is silent is still found dead in 200–210 ms", async () => {
+    const { net, leaf } = await tree();
+    net.kill("1");
+    await net.runAsync(1500);
+    const [repair] = repairs(leaf) as Extract<MetricsEvent, { t: "repair" }>[];
+    assert.equal(repair.kind, "warm");
+    const silentFor = repair.detected - repair.lastHeard;
+    assert.ok(silentFor >= 200 && silentFor <= 210, `detected after ${silentFor} ms`);
+  });
+});
+
 describe("node: NACK into a backlog (SPEC §4.6, D36)", () => {
   it("a backed-up child is not sent an enhancement layer again; its lost keyframe packet is, once the backlog clears", async () => {
     const net = new SimNet({ backups: false, latencyMs: 5 });

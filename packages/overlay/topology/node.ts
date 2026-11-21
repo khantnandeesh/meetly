@@ -63,6 +63,11 @@ import type { Candidate, NodeStats, NodeStatus, OverlayNode, OverlayNodeEvents, 
 
 /** The detector's period, and the node's only timer (SPEC §7.4). */
 export const TICK_MS = 10;
+/**
+ * A tick this much later than due means this node itself was not running (a busy or throttled
+ * tab): the time it lost is not the others' silence (SPEC §7.4).
+ */
+export const OWN_STALL_MS = 30;
 /** A gap is called a loss after this long at least (SPEC D6). */
 export const REORDER_MS = 10;
 /** SPEC D39: the window follows the parent link's p95 inter-arrival jitter, up to this. */
@@ -1838,8 +1843,34 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ the tick ------------------------------ */
 
+  let lastTickAt = NaN;
+
+  /**
+   * This node was not running for `lostMs`: whatever it did not hear meanwhile may be sitting in
+   * its own queue, behind this very tick. Every silence it measures, and every deadline it set,
+   * moves on by that much, and this tick does nothing more, so the packets that queued are read
+   * before anyone is judged. A parent that really is dead is found on the next ticks, by as much
+   * later as the node was itself away.
+   */
+  function forgiveOwnStall(lostMs: number): void {
+    for (const peer of peers.values()) peer.lastHeardAt += lostMs;
+    waitingSince += lostMs;
+    nextDeadline += lostMs;
+    joinDeadline += lostMs;
+    backupDeadline += lostMs;
+    previousLeftAt += lostMs;
+    if (coldLinkDeadline > 0) coldLinkDeadline += lostMs;
+    if (switching) switching.at += lostMs;
+  }
+
   function tick(): void {
     const now = clock.now();
+    const late = lastTickAt === lastTickAt ? now - lastTickAt - TICK_MS : 0;
+    lastTickAt = now;
+    if (late > OWN_STALL_MS) {
+      forgiveOwnStall(late);
+      return;
+    }
 
     // The failure detector (SPEC §7.4).
     if (parent && (state === "active" || state === "waiting")) {

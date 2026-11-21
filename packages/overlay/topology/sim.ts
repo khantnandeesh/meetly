@@ -206,12 +206,16 @@ class SimLink implements Link {
       this.held += copy.byteLength;
       net.clock.setTimeout(() => (this.held -= copy.byteLength), waitMs);
     }
-    net.clock.setTimeout(() => {
-      if (other.state !== "open" || other.owner.dead) return;
-      other.count.packetsReceived++;
-      other.count.bytesReceived += copy.byteLength;
-      other.events.emit("packet", copy, net.clock.now());
-    }, wire.latencyMs + waitMs + (wire.jitterMs ? net.random() * wire.jitterMs : 0));
+    net.clock.setTimeout(
+      () =>
+        other.owner.deliver(() => {
+          if (other.state !== "open" || other.owner.dead) return;
+          other.count.packetsReceived++;
+          other.count.bytesReceived += copy.byteLength;
+          other.events.emit("packet", copy, net.clock.now());
+        }),
+      wire.latencyMs + waitMs + (wire.jitterMs ? net.random() * wire.jitterMs : 0),
+    );
     return true;
   }
 
@@ -244,11 +248,15 @@ class SimLink implements Link {
     net.messages.push({ at: net.clock.now(), from: this.owner.self, to: this.peer, message: decoded });
     const other = this.other;
     if (!other || this.owner.dead) return;
-    net.clock.setTimeout(() => {
-      if (other.state !== "open" || other.owner.dead) return;
-      other.events.emit("message", decoded);
-      if (decoded.t === "bye") other.shut("remote-bye", false);
-    }, this.wire.latencyMs);
+    net.clock.setTimeout(
+      () =>
+        other.owner.deliver(() => {
+          if (other.state !== "open" || other.owner.dead) return;
+          other.events.emit("message", decoded);
+          if (decoded.t === "bye") other.shut("remote-bye", false);
+        }),
+      this.wire.latencyMs,
+    );
   }
 
   counters(): LinkCounters {
@@ -270,6 +278,35 @@ class SimLink implements Link {
 }
 
 class SimLinks implements LinkManager {
+  /**
+   * A stalled peer (a busy tab: SimNet.stall) runs nothing until `stalledUntil`. What arrives for
+   * it waits here, and its timers that fell due wait in `lateTimers`; at the end the timers run
+   * first, as a browser's queued timer task would, then everything that arrived, in order.
+   */
+  stalledUntil = -Infinity;
+  private held: (() => void)[] = [];
+  private lateTimers = new Set<() => void>();
+
+  deliver(event: () => void): void {
+    if (this.net.clock.now() < this.stalledUntil) this.held.push(event);
+    else event();
+  }
+
+  /** A timer of this peer's fell due. */
+  fire(callback: () => void): void {
+    if (this.net.clock.now() < this.stalledUntil) this.lateTimers.add(callback);
+    else callback();
+  }
+
+  /** The stall is over. */
+  wake(): void {
+    const timers = [...this.lateTimers];
+    const events = this.held.splice(0);
+    this.lateTimers.clear();
+    for (const timer of timers) timer();
+    for (const event of events) event();
+  }
+
   readonly events = new Emitter<LinkManagerEvents>();
   readonly map = new Map<PeerId, SimLink>();
   dead = false;
@@ -441,7 +478,12 @@ export class SimNet {
       links,
       coordinator: port,
       params: this.params,
-      clock: this.clock,
+      // The peer's own timers go through its links, so a stall (`stall`) holds them back.
+      clock: {
+        now: () => this.clock.now(),
+        setTimeout: (callback, ms) => this.clock.setTimeout(() => links.fire(callback), ms),
+        setInterval: (callback, ms) => this.clock.setInterval(() => links.fire(callback), ms),
+      },
       sessionClock: this.sessionClock,
       createLinkEstimator: this.options.createLinkEstimator ?? createBasicEstimator,
       createLayerGate: (gateOptions) => {
@@ -504,6 +546,14 @@ export class SimNet {
   }
 
   /** A tab that is killed: it says nothing more, and nobody is told (SPEC §7.4). */
+  /** The peer's tab is busy for `ms`: it runs nothing, and catches up afterwards (SimLinks.stalledUntil). */
+  stall(id: PeerId, ms: number): void {
+    const links = this.peers.get(id);
+    if (!links) return;
+    links.stalledUntil = this.clock.now() + ms;
+    this.clock.setTimeout(() => links.wake(), ms);
+  }
+
   kill(id: PeerId): void {
     const peer = this.nodes.get(id);
     if (!peer || !peer.alive) return;
