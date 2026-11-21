@@ -136,7 +136,24 @@ export type PlaceOptions = {
   shallowerThan?: number;
   /** Only candidates that would put the peer deeper than this depth: for making room (see `moves`). */
   deeperThan?: number;
+  /** A joiner (welcome, or waiting to be placed): the last free slot may be kept from a dead end. Not for a peer that has lost its parent. */
+  join?: boolean;
+  /**
+   * `exclude` is what a peer asked to avoid in `need`: as a rule its dead parent, and links that
+   * failed. Nothing below those is offered either, since what hangs below a dead peer is cut off.
+   */
+  excludeBelow?: boolean;
+  /** A change of parent the coordinator asks for: parents only, no backups. */
+  move?: boolean;
+  /**
+   * Nobody has a free slot: offer the relays least over their fan-out instead. Only for a peer
+   * that has lost its parent, which sends `repair`, and a `repair` is never refused (SPEC §7.5).
+   */
+  overload?: boolean;
 };
+
+/** A relay with more children than its fan-out, and the children to move away from it (dead ends first). */
+export type Overload = { node: TreeNode; excess: TreeNode[] };
 
 /** A change of parent the coordinator asks for, to keep the tree short (see `TreeMap.moves`). */
 export type Move = { node: TreeNode; kind: "up" | "down"; placement: Placement };
@@ -306,11 +323,26 @@ export class TreeMap {
     return now - node.lastStatusAt > 3 * this.params.statusMs;
   }
 
+  /**
+   * Whether `peer`'s path, as the map has it, reaches the source. One that does not hangs from a
+   * peer that has lost its own parent: offering it would hang the asker from a cut-off branch.
+   */
+  reachesSource(peer: PeerId): boolean {
+    if (this.source === null) return false;
+    const path = this.path(peer);
+    return path[path.length - 1] === this.source;
+  }
+
   /** Whether a joiner may be sent to this peer at all, slots aside. */
   offerable(node: TreeNode, now: number): boolean {
     if (node.role === "leaf" || node.conn === null) return false;
     if (this.isStale(node, now) || node.suspectUntil > now) return false;
-    return node.role === "source" || (node.parent !== null && node.depth !== DEPTH_UNKNOWN);
+    return node.role === "source" || (node.parent !== null && node.depth !== DEPTH_UNKNOWN && this.reachesSource(node.peer));
+  }
+
+  /** How many active children this feeder takes: the source's fan-out, or its verdict's (SPEC §8.1). */
+  fanout(node: TreeNode): number {
+    return node.role === "source" ? this.params.sourceFanout : node.role === "relay" ? node.verdict.fanout : 0;
   }
 
   /**
@@ -367,8 +399,10 @@ export class TreeMap {
       treeFree += free;
       if (peer === joiner.peer || options.exclude.includes(peer)) continue;
       if ((joiner.avoid.get(peer) ?? 0) > now) continue;
-      if (hasSubtree || (!forParent && joiner.parent !== null)) {
+      if (hasSubtree || (!forParent && joiner.parent !== null) || options.excludeBelow === true) {
         const path = this.path(peer);
+        // What the asker excludes is, as a rule, dead (SPEC §7.5): what hangs below it is cut off with it.
+        if (options.excludeBelow === true && options.exclude.some((excluded) => path.includes(excluded))) continue;
         // Never one of its own descendants: that is a loop (SPEC §7.2).
         if (hasSubtree && path.includes(joiner.peer)) continue;
         // A backup that hangs below the parent dies with it (SPEC §7.3).
@@ -387,9 +421,9 @@ export class TreeMap {
     // next peer able to relay would have nowhere to stand, and nobody after it either.
     // And while relays are waiting to come up (`moves`), a few slots are kept free to move through.
     const deadEnd = joiner.role === "leaf" && !joiner.canRelay;
-    const moving = options.shallowerThan !== undefined || options.deeperThan !== undefined;
+    const moving = options.shallowerThan !== undefined || options.deeperThan !== undefined || options.move === true;
     let withheld = false;
-    if (forParent && deadEnd && !moving) {
+    if (forParent && deadEnd && !moving && options.join === true) {
       const spare = this.misplaced > 0 ? Math.max(1, Math.min(this.misplaced, Math.ceil(this.audience() * MOVE_SHARE))) : this.growthPending() ? 0 : 1;
       withheld = treeFree <= spare;
     }
@@ -399,6 +433,12 @@ export class TreeMap {
     // slots near the source stay free for the peers the tree will grow from.
     const deepFirst = deadEnd && this.leafPlacement === "deep" && options.shallowerThan === undefined;
     const order = (a: Ranked, b: Ranked) => a.near - b.near || b.score - a.score || (a.hint.peer < b.hint.peer ? -1 : 1);
+    if (forParent && options.overload === true) {
+      // Everyone is full. The least over its fan-out first, then the shallowest.
+      const over = (candidate: Ranked) => Math.max(this.childrenOf(candidate.node.peer).size, candidate.node.children) - this.fanout(candidate.node);
+      const parents = pool.sort((a, b) => over(a) - over(b) || a.cost - b.cost || order(a, b)).slice(0, 3);
+      return { parents: parents.map((candidate) => ({ ...candidate.hint, free: 0 })), backups: [] };
+    }
     const parents = forParent
       ? pool
           .filter((candidate) => {
@@ -457,6 +497,46 @@ export class TreeMap {
       if (free * 5 >= audience) break;
       out.push(node);
       free += node.verdict.fanout;
+    }
+    return out;
+  }
+
+  /**
+   * Leaves that could be made relays to give `asker` a parent now (SPEC §6.6): eligible by §8.1,
+   * connected to the source, outside the asker's own subtree and not among `exclude`, best
+   * first. Not limited by the fifth-of-the-audience rule: they are wanted because someone has
+   * nowhere to go.
+   */
+  promotableFor(asker: TreeNode, exclude: readonly PeerId[], now: number): TreeNode[] {
+    const out: TreeNode[] = [];
+    for (const node of this.nodes.values()) {
+      if (node === asker || node.role !== "leaf" || !node.canRelay || node.conn === null || node.parent === null || node.depth === DEPTH_UNKNOWN) continue;
+      if (exclude.includes(node.peer) || this.isStale(node, now) || now - node.demotedAt < REPROMOTE_AFTER_MS || node.suspectUntil > now) continue;
+      const path = this.path(node.peer);
+      if (path.includes(asker.peer) || path[path.length - 1] !== this.source || exclude.some((peer) => path.includes(peer))) continue;
+      if (this.judge(node, now).eligible && node.verdict.fanout > 0) out.push(node);
+    }
+    return out.sort((a, b) => a.depth - b.depth || b.verdict.score - a.verdict.score || (a.peer < b.peer ? -1 : 1));
+  }
+
+  /**
+   * Feeders with more children than their fan-out, as their children say (SPEC §7.5: a backup
+   * takes a repair whatever its slots), and which of those children to move: dead ends first,
+   * then those with the smallest subtrees. Each child at most once in `rebalanceMinMs`.
+   */
+  overloaded(now: number): Overload[] {
+    const out: Overload[] = [];
+    for (const peer of this.feeders) {
+      const node = this.nodes.get(peer)!;
+      const kids = [...this.childrenOf(peer)].map((child) => this.nodes.get(child)).filter((kid): kid is TreeNode => kid !== undefined && kid.conn !== null);
+      // Those asked to move lately are on their way: not asked again, and not counted twice.
+      const leaving = kids.filter((kid) => now - kid.lastRebalanceAt < HOLD_MS).length;
+      const excess = kids.length - leaving - this.fanout(node);
+      if (excess <= 0) continue;
+      const movable = kids
+        .filter((kid) => !this.isStale(kid, now) && now - kid.lastRebalanceAt >= this.params.rebalanceMinMs)
+        .sort((a, b) => Number(b.role === "leaf") - Number(a.role === "leaf") || this.childrenOf(a.peer).size - this.childrenOf(b.peer).size || (a.peer < b.peer ? -1 : 1));
+      if (movable.length > 0) out.push({ node, excess: movable.slice(0, excess) });
     }
     return out;
   }
