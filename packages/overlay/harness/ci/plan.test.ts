@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 
 function plan(env: Record<string, string>): Record<string, string> {
-  const text = execFileSync(process.execPath, [join(import.meta.dirname, "plan.mjs")], { env: { PATH: process.env.PATH ?? "", ...env }, encoding: "utf8" });
+  const text = execFileSync(process.execPath, [join(import.meta.dirname, "plan.mjs")], { env: { ...process.env, EVENT: "", COMMIT_MESSAGE: "", RUNS_INPUT: "", GITHUB_OUTPUT: "", ...env }, encoding: "utf8" });
   return Object.fromEntries(text.trim().split("\n").map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]));
 }
 
