@@ -33,9 +33,11 @@ permissions:
   # rendezvous.sh lists this run's artifacts while it is in progress.
   actions: read
 
+# One swarm at a time per branch, and a newer push does not cancel one under way: a push that
+# asks for nothing would otherwise kill a gate run ten minutes in.
 concurrency:
   group: overlay-swarm-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   NODE_VERSION: "22"
