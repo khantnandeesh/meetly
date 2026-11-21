@@ -373,6 +373,19 @@ describe("the gate mix's four networks (C6, simulated): one child of each under 
     });
   }
 
+  it("bad's bursts never come near [D32]'s guard: its 1-s loss is never under 10% for 3 s, or even close", () => {
+    for (const seed of [1, 2, 3]) {
+      const states = run(seed).port("bad").states;
+      let longest = 0;
+      let since: number | null = null;
+      for (const entry of states) {
+        if (entry.lossPct >= 10) longest = Math.max(longest, entry.at - (since ??= entry.at));
+        else since = null;
+      }
+      assert.ok(longest < 1500, `seed ${seed}: ${longest} ms at 10% or more`);
+    }
+  });
+
   it("with loss read to the spec's letter, the bad link, which has room to spare, loses layers to its bursts", () => {
     // Why loss counts only where the link shows a queue (README item 16): a burst of loss on a
     // link with no queue reads as 10% for a second, and a layer goes for nothing; at 3% the link
@@ -380,4 +393,44 @@ describe("the gate mix's four networks (C6, simulated): one child of each under 
     const lost = [1, 3].map((seed) => run(seed, { lossNeedsQueue: false }).port("bad").caps.length - 1);
     assert.ok(lost.every((changes) => changes >= 1), String(lost));
   });
+});
+
+describe("a policer (C6, [D32]): drops what is over its rate, and queues nothing", () => {
+  // A token bucket 300 ms deep: the sender sees no backlog and the receiver no queue, only loss.
+  const policed = (kbps: number) => {
+    const tree = createSimTree({
+      seed: 1,
+      peers: [
+        { id: "src", parent: null },
+        { id: "a", parent: "src", down: { delayMs: 20 } },
+        { id: "p", parent: "src", down: { delayMs: 20 } },
+      ],
+    });
+    tree.run(CAP_AT);
+    tree.setDown("p", { delayMs: 20, policeKbps: kbps, policeBurstMs: 300 });
+    tree.run(CAP_AT + 120_000);
+    const caps = tree.port("p").caps.filter((change) => change.at >= CAP_AT);
+    /** The share of the two minutes the child spent at each layer. */
+    const share = [0, 0, 0];
+    for (let i = 0; i < caps.length; i++) {
+      const to = i + 1 < caps.length ? caps[i + 1].at : CAP_AT + 120_000;
+      share[caps[i].maxTemporal] += (to - caps[i].at) / 120_000;
+    }
+    return { tree, caps, share };
+  };
+
+  for (const [kbps, settles] of [
+    [900, 1],
+    [600, 0],
+  ] as const) {
+    it(`at ${kbps} kbps: loses layers 3 to 4 s after the policer starts, and settles on layer ${settles}`, () => {
+      const { tree, caps, share } = policed(kbps);
+      assert.ok(caps[0].at - CAP_AT >= 3000 && caps[0].at - CAP_AT <= 4500, `first drop ${caps[0].at - CAP_AT} ms after`);
+      assert.equal(caps[0].maxTemporal, 1);
+      // Rule 5 tries the layer above now and then, and the wait doubles each time it fails.
+      assert.ok(share[settles] >= 0.85, `${share.map((part) => part.toFixed(2))} of the time at layers 0, 1, 2`);
+      assert.ok(caps.length <= 12, `${caps.length} changes`);
+      assert.equal(tree.port("a").caps.length, 1, "the sibling is untouched");
+    });
+  }
 });

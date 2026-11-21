@@ -303,6 +303,54 @@ describe("LinkEstimator: loss without a queue (C6)", () => {
   });
 });
 
+describe("LinkEstimator: [D32]'s guard, loss that stays high with no queue", () => {
+  /** Feedback every 100 ms reporting `pct` loss, and the state looked at after each. */
+  const lossy = (estimator: DirectedLinkEstimator, from: number, to: number, pct: number): string[] => {
+    const states: string[] = [];
+    for (let t = from; t < to; t += 100) {
+      estimator.onFeedback(feedback(t, { received: 100 - pct, expected: 100 }), t);
+      states.push(estimator.directed("sent", t).state);
+    }
+    return states;
+  };
+
+  it("makes the link congested once the loss has been at 10% or more for 3 s running", () => {
+    const estimator = createLinkEstimator();
+    const states = lossy(estimator, 0, 3200, 12);
+    assert.deepEqual(new Set(states.slice(0, 30)), new Set(["ok"]), "under 3 s: nothing");
+    assert.equal(states[30], "congested", "at 3 s");
+  });
+
+  it("starts the 3 s again when the loss dips under the line", () => {
+    const estimator = createLinkEstimator();
+    lossy(estimator, 0, 2500, 12);
+    // A second of none brings the one-second loss under 10%, from 2,800 ms.
+    lossy(estimator, 2500, 3500, 0);
+    // Back at 12%, the one-second loss is at 10% from about 4,400 ms: 3 s from then, not before.
+    const states = lossy(estimator, 3500, 7600, 12);
+    assert.ok(states.slice(0, 33).every((state) => state === "ok"), states.join(" "));
+    assert.equal(states[states.length - 1], "congested");
+  });
+
+  it("once fired, reads loss as the table does, queue or none, until it has been under 3% for 60 s", () => {
+    const estimator = createLinkEstimator();
+    lossy(estimator, 0, 3100, 12);
+    // A layer down, the loss is 5%: strained, as §11.2 has it, so the layer does not come back.
+    assert.ok(lossy(estimator, 3100, 20_000, 5).slice(10).every((state) => state === "strained"));
+    // Quiet, and still remembered: 10% at once is congested.
+    lossy(estimator, 20_000, 50_000, 0);
+    assert.equal(lossy(estimator, 50_000, 51_100, 11).pop(), "congested");
+    // 60 s quiet and it is forgotten: 11% with no queue is nothing again.
+    lossy(estimator, 51_100, 112_200, 0);
+    assert.ok(lossy(estimator, 112_200, 113_300, 11).every((state) => state === "ok"));
+  });
+
+  it("is not there with loss read to the spec's letter", () => {
+    const estimator = createLinkEstimator({ tuning: { lossNeedsQueue: false } });
+    assert.equal(lossy(estimator, 0, 200, 12).pop(), "congested");
+  });
+});
+
 describe("LinkEstimator: the state of a link, exactly as SPEC §11.2's table", () => {
   // B is 1,200 kbps: 50 ms of it is 7,500 bytes, 150 ms is 22,500.
   const cases: [name: string, set: (estimator: DirectedLinkEstimator) => void, state: string][] = [

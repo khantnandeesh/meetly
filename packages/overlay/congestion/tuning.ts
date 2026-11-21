@@ -30,6 +30,14 @@ export type EstimatorTuning = {
    * queue (`queueDelayMs` or `bufferedBytes` over the strained line). False is the spec's letter.
    */
   lossNeedsQueue: boolean;
+  /**
+   * [D32]'s guard (integrator, 2026-11-21): with `lossNeedsQueue`, loss at or over this with no
+   * queue, for `policedForMs` running, makes the link congested all the same.
+   */
+  policedLossPct: number;
+  policedForMs: number;
+  /** [D32]: once the guard has fired, loss counts with no queue until it has been under the strained line this long. */
+  policedClearMs: number;
   /** §11.2, strained: `bufferedBytes` over this many ms of B. */
   strainedBufferMs: number;
   strainedLossPct: number;
@@ -49,6 +57,9 @@ export const ESTIMATOR_TUNING: EstimatorTuning = {
   delayFloorMs: 10_000,
   backlogWindowMs: 150,
   lossNeedsQueue: true,
+  policedLossPct: 10,
+  policedForMs: 3000,
+  policedClearMs: 60_000,
   strainedBufferMs: 50,
   strainedLossPct: 3,
   strainedQueueMs: 40,
