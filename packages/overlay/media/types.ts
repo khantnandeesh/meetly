@@ -39,14 +39,36 @@ export interface ProgramSource extends Listenable<ProgramSourceEvents> {
   /** Make the next video frame a keyframe. Limited to one a second. */
   requestKeyframe(): void;
   streams(): StreamConfig[];
+  /** Counters since the source was made. */
+  stats(): ProgramSourceStats;
   stop(): Promise<void>;
 }
+
+export type ProgramSourceStats = {
+  videoFrames: number;
+  keyframes: number;
+  videoBytes: number;
+  /** Camera frames not encoded because the encoder already held two (SPEC §9.2). */
+  skippedBusy: number;
+  /** Camera frames not encoded because the camera runs faster than the stream. */
+  skippedPacing: number;
+  /** The most frames the encoder ever held at once. */
+  maxEncoderFrames: number;
+  /** Audio frames encoded (each is announced `audioCopies` times). */
+  audioFrames: number;
+  audioBytes: number;
+};
 
 export type ProgramSourceOptions = {
   encoding: ProgramEncoding;
   /** Capture times are stamped on this clock. */
   sessionClock: SessionClock;
   clock: Clock;
+  /**
+   * How many times each audio frame is announced (SPEC §9.4): the copies carry the same
+   * `frameId`, one frame apart. 2 unless said otherwise; 1 turns the redundancy off.
+   */
+  audioCopies?: number;
   logger?: Logger;
 };
 

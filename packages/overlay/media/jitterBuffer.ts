@@ -36,7 +36,7 @@ type Entry = {
   late: boolean;
 };
 
-class JitterBufferImpl extends Emitter<JitterBufferEvents> implements JitterBuffer {
+export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements JitterBuffer {
   private readonly streamId: number;
   private readonly audio: boolean;
   private readonly frameUs: number;
@@ -207,6 +207,8 @@ class JitterBufferImpl extends Emitter<JitterBufferEvents> implements JitterBuff
     this.lastPopUs = nowUs;
     const out: PlayoutFrame[] = [];
     if (this.ids.length === 0) return out;
+    // The common case, many times a second: nothing is due yet.
+    if ((this.entries.get(this.ids[0] as number) as Entry).frame.header.captureUs + delayUs > nowUs) return out;
 
     // §10.4: more than D + 100 ms between the newest frame and the playout point means old
     // media is waiting (a replay, or the end of a stall). It is decoded but not shown.
@@ -334,6 +336,11 @@ class JitterBufferImpl extends Emitter<JitterBufferEvents> implements JitterBuff
 
   /* ------------------------------ the rest ------------------------------ */
 
+  /** *D* as it stands, in microseconds: what `pop` adds to a capture time. */
+  delayUs(): number {
+    return Math.round(this.delayMs * 1000);
+  }
+
   oldestWanted(): number | null {
     if (this.maxSeenId < 0) return null;
     if (this.deadGopKeyId !== null) {
@@ -384,6 +391,6 @@ class JitterBufferImpl extends Emitter<JitterBufferEvents> implements JitterBuff
   }
 }
 
-export function createJitterBuffer(options: JitterBufferOptions): JitterBuffer {
+export function createJitterBuffer(options: JitterBufferOptions): JitterBufferImpl {
   return new JitterBufferImpl(options);
 }

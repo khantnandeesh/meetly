@@ -14,7 +14,7 @@ import { createCoordinatorCore, ROUTES } from "@meetly/overlay/coordinator/index
 import { OverlayRoom } from "@meetly/overlay/coordinator/durableObject";
 import { startNodeCoordinator } from "@meetly/overlay/coordinator/node";
 import { GATE, GATE_MIX, PROFILES, buildReport } from "@meetly/overlay/harness/index";
-import { DEFAULT_ENCODING, createPlayer } from "@meetly/overlay/media/index";
+import { DEFAULT_ENCODING } from "@meetly/overlay/media/index";
 import { createGopCache, createOverlayNode, judgeRelay } from "@meetly/overlay/topology/index";
 import { CHANNELS, createLinkManager, createReassembler } from "@meetly/overlay/transport/index";
 
@@ -36,7 +36,6 @@ describe("overlay skeleton", () => {
       ["E-transport+topology", () => createGopCache({ maxMs: 0, maxBytes: 0 })],
       ["E-transport+topology", () => createOverlayNode(undefined as never)],
       ["E-transport+topology", () => judgeRelay(undefined as never, undefined as never, 0, undefined as never)],
-      ["E-media", () => createPlayer(undefined as never)],
       ["E-congestion", () => createLinkEstimator()],
       ["E-congestion", () => createLayerGate({ bitrateKbps: 0, temporalLayers: 1, frameIntervalMs: 33 })],
       ["E-coordinator", () => createCoordinatorCore(undefined as never)],
