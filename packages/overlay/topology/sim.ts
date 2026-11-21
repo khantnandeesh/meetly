@@ -460,8 +460,8 @@ export class SimNet {
     for (const listener of this.listeners.get(to)?.gone ?? []) listener(peer);
   }
 
-  /** The source publishes video at 30 fps and audio at 50, until `stopPublishing`. */
-  publish(source: SimPeer, options: { video?: boolean; audio?: boolean; frameBytes?: (frameId: number) => number } = {}): void {
+  /** The source publishes video at 30 fps (or `fps`) and audio at 50, until `stopPublishing`. */
+  publish(source: SimPeer, options: { video?: boolean; audio?: boolean; fps?: number; frameBytes?: (frameId: number) => number } = {}): void {
     const bytes = options.frameBytes ?? ((frameId) => (frameId % 60 === 0 ? 12_000 : frameId % 4 === 0 ? 5000 : frameId % 2 === 0 ? 3000 : 2000));
     if (options.video !== false) {
       this.stopSource.push(
@@ -469,7 +469,7 @@ export class SimNet {
           if (!source.alive) return;
           const id = this.frameId++;
           source.node.publish(videoFrame(id, Math.round(this.sessionClock.now() * 1000), bytes(id)));
-        }, 1000 / 30),
+        }, 1000 / (options.fps ?? 30)),
       );
     }
     if (options.audio !== false) {

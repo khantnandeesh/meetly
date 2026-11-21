@@ -464,6 +464,18 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   const hint = (peer: Peer): PeerHint => ({ peer: peer.id, depth: peer.depth === DEPTH_UNKNOWN ? 254 : peer.depth, free: peer.full ? 0 : 1 });
 
+  /**
+   * Why `peer`, by its path, cannot be this node's backup (SPEC §7.3): it is below this node, which
+   * would be a loop the moment it was used; or it is below the parent (unless that is the source),
+   * so whatever cuts this node off cuts it off too. Null if it can.
+   */
+  const unfitBackup = (peer: Peer, theirs: PeerId[] | null = peer.path): "loop" | "below-parent" | null => {
+    if (!theirs) return null;
+    if (theirs.includes(self)) return "loop";
+    if (parent && parent !== peer && role !== "source" && myDepth() > 1 && theirs.includes(parent.id)) return "below-parent";
+    return null;
+  };
+
   /* ------------------------------ peers and links ------------------------------ */
 
   const attach = (link: Link, mine: boolean): Peer => {
@@ -984,8 +996,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         return;
       }
       setPath([self, ...theirs]);
-    } else if (peer === backup && theirs.includes(self)) {
-      // A backup below this node would be a loop the moment it was used (SPEC §7.3).
+    } else if (peer === backup && unfitBackup(peer)) {
+      // A backup whose path comes to contain this node or its parent is replaced (SPEC §7.3).
       backupRejects.set(peer.id, now + BACKUP_REJECT_MS);
       backupLost(now, true);
     }
@@ -1035,7 +1047,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     nextDeadline = now + SUB_ACK_TIMEOUT_MS;
     coldLinkDeadline = 0;
     tried.add(peer.id);
-    subscribe(peer, purpose, streams.values(), purpose === "join" ? () => FROM_LATEST_KEYFRAME : after, purpose === "repair", dead);
+    // A repair, warm or cold, says so: a parent does not refuse a `repair` for want of a slot
+    // (SPEC §7.5), which is what lets an orphaned subtree back in when every relay is full.
+    const lost = dead ?? (purpose === "cold" ? repair?.dead : undefined);
+    subscribe(peer, purpose, streams.values(), purpose === "join" ? () => FROM_LATEST_KEYFRAME : after, lost !== undefined, lost);
     if (repair && purpose !== "join") {
       repair.next = peer.id;
       repair.resubscribed = now;
@@ -1050,6 +1065,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const loop = message.ok && (message.path?.includes(self) ?? false);
 
     if (pending.purpose === "standby") {
+      const unfit = message.ok && unfitBackup(peer, message.path ?? null) !== null;
       if (peer === previous && peer !== backupPending) {
         // The parent this node gave up on is alive after all.
         if (message.ok && !loop) {
@@ -1059,11 +1075,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         return;
       }
       if (peer !== backupPending && peer !== backup) return;
-      if (!message.ok || loop) {
+      if (!message.ok || unfit) {
         if (message.code === "no-stream") return;
         if (peer === backupPending) backupPending = null;
         if (peer === backup) backup = null;
-        if (loop) for (const stream of streams.values()) send(peer, { t: "unsub", stream: stream.config.id, stripes: stream.stripes });
+        if (unfit) for (const stream of streams.values()) send(peer, { t: "unsub", stream: stream.config.id, stripes: stream.stripes });
         forgetPending(peer, "standby");
         backupRejects.set(peer.id, now + BACKUP_REJECT_MS);
         release(peer);
@@ -1279,7 +1295,16 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     tried.add(dead.id);
     candidates = dead.alt.filter((alt) => alt.peer !== self && alt.peer !== dead.id);
     const warm = backup;
-    if (warm && warm.link.state === "open" && now - warm.lastHeardAt < params.standbyDeadMs && !(warm.path?.includes(self) ?? false)) {
+    // A backup that is itself cut off (STALLED), or that is below the parent just lost, cannot
+    // carry this node: that is a cold repair, not a wait on someone else's repair.
+    if (
+      warm &&
+      warm.link.state === "open" &&
+      now - warm.lastHeardAt < params.standbyDeadMs &&
+      !warm.stalled &&
+      !(warm.path?.includes(self) ?? false) &&
+      !(warm.path?.includes(dead.id) ?? false)
+    ) {
       // Warm repair: the backup takes over, and nobody else is asked (SPEC §7.5).
       setState("repairing");
       ask(warm, "repair", now, dead.id);
@@ -1594,8 +1619,12 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     }
     if (switching && now - switching.at >= SWITCH_TIMEOUT_MS) cancelSwitch(now);
 
-    // The backup: alive, or replaced (SPEC §7.3).
+    // The backup: alive and still apart from this node's parent, or replaced (SPEC §7.3).
     if (backup && now - backup.lastHeardAt >= params.standbyDeadMs) backupLost(now, true);
+    else if (backup && state === "active" && unfitBackup(backup)) {
+      backupRejects.set(backup.id, now + BACKUP_REJECT_MS);
+      backupLost(now, true);
+    }
     if (backupPending && now >= backupDeadline) {
       const failed = backupPending;
       backupPending = null;
