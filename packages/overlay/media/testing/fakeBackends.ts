@@ -116,6 +116,13 @@ export class FakeAudioBackend implements AudioBackend {
   private changes = 0;
   private cancel: (() => void) | null = null;
   private renderedUntil = 0;
+  /** Until then the audio thread renders nothing; after, it goes on from now, and the time between is lost to the context's clock (an underrun). */
+  private stalledUntil = -Infinity;
+
+  /** The audio thread stops for `ms`, as one starved of the CPU does. */
+  stall(ms: number): void {
+    this.stalledUntil = this.clock.now() + ms;
+  }
 
   constructor(
     private readonly clock: Clock,
@@ -133,6 +140,12 @@ export class FakeAudioBackend implements AudioBackend {
     this.renderedUntil = this.clock.now();
     this.cancel = this.clock.setInterval(() => {
       const blockMs = (QUANTUM * 1000) / SAMPLE_RATE;
+      if (this.clock.now() < this.stalledUntil) return;
+      if (this.stalledUntil > this.renderedUntil) {
+        // Back from a stall: what was not rendered in time is never rendered.
+        this.renderedUntil = this.clock.now();
+        this.stalledUntil = -Infinity;
+      }
       while (this.renderedUntil + blockMs <= this.clock.now() + 1e-9) {
         this.renderedUntil += blockMs;
         const block = new Float32Array(QUANTUM);

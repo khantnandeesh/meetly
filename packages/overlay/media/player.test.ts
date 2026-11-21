@@ -125,6 +125,18 @@ describe("player: video against the sound (§10.5)", () => {
     await t.player.close();
   });
 
+  it("after the audio thread stalls for 120 ms (the context's clock loses that time), video is timed by what is heard again within half a second, not by the clock as it was", async () => {
+    const t = await setup({ seconds: 8 });
+    t.run(t.startMs + 3000);
+    t.backends.audios[0]!.stall(120);
+    const stalledAt = t.now();
+    t.run(t.startMs + 8000);
+    const offsets = avOffsetsMs(t.rendered.filter((r) => r.renderedUs / 1000 > stalledAt + 500));
+    assert.ok(offsets.length > 100, `${offsets.length} frames`);
+    assert.ok(Math.min(...offsets) >= -15 && Math.max(...offsets) <= 45, `offsets ${Math.min(...offsets)}..${Math.max(...offsets)} ms`);
+    await t.player.close();
+  });
+
   it("glass to glass is the path, then D, then the sound's way out (§10.2): about path + D + 15 ms", async () => {
     const t = await setup({ seconds: 5 });
     t.run(t.startMs + 5000);
