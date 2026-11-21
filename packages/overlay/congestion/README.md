@@ -135,19 +135,41 @@ the integrator on 2026-11-21 (§11.2, §11.3, §11.5, §11.6, §8.1); none chang
     - this holds from the first drop until the cap next rises (rule 5). The first drop, and a
       failed rise's drop back, are as the spec says: at the next frame.
 
-    The first drop's reaction time is unchanged.
-16. **(spec, pending: not yet decided by the integrator) Loss counts only where the link shows
-    a queue** (`lossNeedsQueue`): `queueDelayMs` at or over 40, or `bufferedBytes` over 50 ms of
-    *B*. Simulating the gate mix (`slowChild.test.ts`, "the gate mix's four networks") showed
-    the "bad" profile (60 ms, 3% in bursts), which has room to spare, losing a layer to a burst
-    that reads 10% for a second, and then a second, and never getting them back, because 3% loss
-    keeps it *strained* half the time: below the top layer 76–92% of two minutes in two seeds of
-    three. Dropping a layer does not make one packet fewer of random loss lost; NACK (§4.6) is
-    what answers it. Congestion that overflows a queue shows the queue too, so it still counts.
-    What this misses: a policer that drops without queueing. `lossNeedsQueue: false` is §11.2 to
-    the letter. The estimate's `lossPct` is reported as measured either way. A link that needs two drops (600 kbps) gets the
+    The first drop's reaction time is unchanged. A link that needs two drops (600 kbps) gets the
     second one window after the first: at 1.9 s, inside PLAN C3's 2 s. Watching the window lasts
-    up to 1.3 s on a 400 ms round trip.
+    up to 1.3 s on a 400 ms round trip. SPEC [D31].
+16. **(spec, C6, [D32]) Loss counts only where the link shows a queue** (`lossNeedsQueue`):
+    `queueDelayMs` at or over 40, or `bufferedBytes` over 50 ms of *B*. Simulating the gate mix
+    (`slowChild.test.ts`, "the gate mix's four networks") showed the "bad" profile (60 ms, 3% in
+    bursts), which has room to spare, losing a layer to a burst that reads 10% for a second,
+    then a second layer, and never getting them back, because 3% loss keeps it *strained* half
+    the time: below the top layer 76–92% of two minutes in two seeds of three. Dropping a layer
+    does not make one packet fewer of random loss lost; NACK (§4.6) is what answers it.
+    Congestion that overflows a queue shows the queue too, so it still counts. The estimate's
+    `lossPct` is reported as measured either way; `lossNeedsQueue: false` is §11.2 to the letter.
+
+    **The guard, for a policer or a lossy last hop** (the integrator's condition): loss at or
+    over `policedLossPct` with no queue, at every look for `policedForMs` (3 s), makes the link
+    congested all the same. Once it has fired, loss counts as §11.2's table has it, queue or
+    none, until it has been under 3% for `policedClearMs` (60 s, rule 5's longest wait):
+    otherwise the five seconds of *ok* between two firings would give the layer back and the
+    policer take it again, for ever; with it, a failed rise is seen in a second and rule 5's
+    wait doubles.
+
+    *The line is 10%, not the 15% the integrator first named.* Measured, the "bad" profile's
+    one-second loss at its lowest over any 3 s is at most 3.7% (six seeds, five minutes each),
+    and its one-second loss is never at 10% for more than about a second; a policer at 900 kbps
+    under the 1,200 kbps stream (300 ms bucket) has a one-second loss of 17% at its lowest.
+    15% would leave that policer two points from the line; 10% is 2.7 times "bad" and 1.7 times
+    under the policer. With it a 900 kbps policer takes the child to the middle layer 4.2 s
+    after it starts (3 s of the guard, and the second the loss takes to reach 10%) and a 600 kbps
+    one to the base, each with rule 5's back-off probing above;
+    "bad" keeps every layer in every seed.
+
+    What the guard still misses: a policer just under the stream (1.1 Mbps). It drops mostly
+    the large frames' packets, so the packet loss is 6–9% and the guard does not fire, while the
+    keyframes, and so whole GOPs, are lost. NACK (T5) and the harness will say how much of that
+    the real node recovers.
 
 ## What was measured
 

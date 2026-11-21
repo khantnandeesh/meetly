@@ -1040,6 +1040,20 @@ falling behind. Read sample by sample, every keyframe makes a link under about 4
 back. Rule 6 and the replay budget (§11.5) read the backlog as it is now. *Decided by integrator
 2026-11-21.*
 
+**[D32] Loss counts only where the link shows a queue**: `queueDelayMs` ≥ 40, or
+`bufferedBytes` over 50 ms of *B*. Loss on a path with no queue (a lossy radio, the gate mix's
+"bad" bursts) is NACK's to repair (§4.6); dropping a layer does not make one packet fewer of it
+lost, and at 3% it would keep the link *strained*, so a layer once dropped never came back.
+Congestion that overflows a queue shows the queue too. `lossPct` is reported as measured.
+*The guard*: loss at or over 10% with no queue, at every look for 3 s running, is a policer or a
+lossy last hop, and the link is *congested* all the same. Once the guard has fired, loss counts
+as the table above has it, queue or none, until it has been under 3% for 60 s, so that rule 5's
+rises are judged by it and its back-off doubles. The 10% line is set from the gate mix (§12.3):
+"bad" never holds 10% for more than about a second, and its one-second loss at its lowest over
+any 3 s is at most 3.7%; a policer at 900 kbps under the 1,200 kbps stream loses 17% at its
+lowest. (The integrator first named 15%, which leaves that policer two points from the line.)
+Rule 3's second drop (§11.3) reads loss the same way. *Decided by integrator 2026-11-21.*
+
 ### 11.3 Layer drop, per child
 
 `LayerGate`, one per child and stream. It answers one question per frame: send this frame to
@@ -1056,9 +1070,9 @@ part.
    a drop until the cap next rises, the next drop waits one observation window: the longer of
    1 s and 2 × the link's reaction time (its round trip, 150 if not yet measured, plus 250 ms:
    a feedback interval and the backlog's standing window of [D30]). After it, the cap drops
-   again only if the backlog or the loss is still over the line: `lossPct` ≥ 10, or
-   `bufferedBytes` over 150 ms of *B* at every frame for the whole window with its low point no
-   lower than in the window before. Congestion by `queueDelayMs` alone does not drop a second
+   again only if the backlog or the loss is still over the line: `lossPct` ≥ 10, counted as
+   [D32] counts it, or `bufferedBytes` over 150 ms of *B* at every frame for the whole window
+   with its low point no lower than in the window before. Congestion by `queueDelayMs` alone does not drop a second
    layer: a link that just carries a layer reads *ok* between keyframes and then, for each
    keyframe's queue, congested by delay. The first drop, and a failed rise's drop back
    (rule 5), are at the next frame as before. So a child capped at 900 kbps or 1.1 Mbps under a
@@ -1398,6 +1412,7 @@ Rotating speakers on the overlay. Out of scope.
 | D29 | Light viewers in the harness, with decoding viewers as a check | 13.2 |
 | D30 | A backlog counts once it has stood over a line for 150 ms (integrator, 2026-11-21) | 11.2 |
 | D31 | Rule 3: a further drop waits one observation window, and needs the backlog or the loss still over the line (integrator, 2026-11-21) | 11.3 |
+| D32 | Loss counts only where the link shows a queue, with a guard for a policer: 10% for 3 s (integrator, 2026-11-21) | 11.2 |
 | D33 | A frame is played at path + D + audio pipeline; the path followed at once when it grows (integrator, 2026-11-21) | 10.2 |
 | D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |

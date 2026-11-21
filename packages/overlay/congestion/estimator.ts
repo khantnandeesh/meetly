@@ -158,7 +158,16 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
     return rxIntervalMinTransit === null || floor === null ? rxQueueDelay : Math.max(0, rxIntervalMinTransit - floor);
   };
 
-  const stateOf = (lossPct: number, queueDelayMs: number, queueHighForMs: number, now: number): LinkEstimate["state"] => {
+  /**
+   * [D32]'s guard, per direction: since when the loss has been at the policer's line with no
+   * queue (`high`); whether the guard has fired and the link is known to drop without queueing
+   * (`known`); and since when the loss has been under the strained line (`quiet`), which clears it.
+   */
+  type Policer = { high: Sustained; known: boolean; quiet: Sustained };
+  const txPoliced: Policer = { high: new Sustained(), known: false, quiet: new Sustained() };
+  const rxPoliced: Policer = { high: new Sustained(), known: false, quiet: new Sustained() };
+
+  const stateOf = (lossPct: number, queueDelayMs: number, queueHighForMs: number, now: number, policed: Policer): LinkEstimate["state"] => {
     // The state reads the backlog that stands. The estimate's `bufferedBytes`, which rule 6 and
     // the replay budget read, stays the channel's backlog as it is now.
     const standFor = tuning.backlogWindowMs;
@@ -166,7 +175,16 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
     // (a lossy radio, the gate mix's "bad" bursts) is NACK's to repair (§4.6); dropping a layer
     // does not make a single packet fewer of it lost.
     const queued = queueDelayMs >= tuning.strainedQueueMs || buffered > bytesOf(streamKbps, tuning.strainedBufferMs);
-    const loss = tuning.lossNeedsQueue && !queued ? 0 : lossPct;
+    // [D32]'s guard: loss that stays high with no queue is a policer or a lossy last hop, and the
+    // link needs fewer layers whatever the queue says. Bursts on a lossy link do not last this
+    // long. Once it has fired, loss counts as §11.2's table has it, queue or none, until the loss
+    // has been under the strained line for `policedClearMs`: otherwise the five seconds of ok
+    // between two firings would give the layer back, and the policer take it again, for ever.
+    policed.high.update(!queued && lossPct >= tuning.policedLossPct, now);
+    policed.quiet.update(lossPct < tuning.strainedLossPct, now);
+    if (tuning.lossNeedsQueue && policed.high.forMs(now) >= tuning.policedForMs) policed.known = true;
+    else if (policed.known && policed.quiet.forMs(now) >= tuning.policedClearMs) policed.known = false;
+    const loss = tuning.lossNeedsQueue && !queued && !policed.known ? 0 : lossPct;
     if (backlogCongested.forMs(now) >= standFor || loss >= tuning.congestedLossPct || queueHighForMs >= tuning.congestedQueueForMs) return "congested";
     if (backlogStrained.forMs(now) >= standFor || loss >= tuning.strainedLossPct || queueDelayMs >= tuning.strainedQueueMs) return "strained";
     return "ok";
@@ -189,7 +207,7 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
       sendKbps: sendKbps(now),
       deliveredKbps,
       bufferedBytes: buffered,
-      state: stateOf(lossPct, txQueueDelay, txQueueHigh.forMs(now), now),
+      state: stateOf(lossPct, txQueueDelay, txQueueHigh.forMs(now), now, txPoliced),
     };
   };
 
@@ -205,7 +223,7 @@ export function createLinkEstimator(options: LinkEstimatorOptions = {}): Directe
       sendKbps: sendKbps(now),
       deliveredKbps: (rxBytes.sum(now).a * 8) / tuning.windowMs,
       bufferedBytes: buffered,
-      state: stateOf(lossPct, queueDelayMs, rxQueueHigh.forMs(now), now),
+      state: stateOf(lossPct, queueDelayMs, rxQueueHigh.forMs(now), now, rxPoliced),
     };
   };
 

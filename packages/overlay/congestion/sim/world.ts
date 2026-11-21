@@ -147,6 +147,13 @@ export type PipeProfile = {
    * with whatever brings the overall loss to `lossPct`.
    */
   burst?: { enterPct: number; leavePct: number; lossPctInBurst: number };
+  /**
+   * A policer: a token bucket at this rate, `policeBurstMs` of it deep, that drops what is over
+   * the rate instead of queueing it. Nothing waits, so the sender sees no backlog and the
+   * receiver no queue: only loss.
+   */
+  policeKbps?: number;
+  policeBurstMs?: number;
   /** The most the pipe carries; more queues, up to `queueMs`, and then is dropped. */
   kbps?: number;
   queueMs?: number;
@@ -234,8 +241,24 @@ export class SimPipe implements Pipe {
     return this.random() * 100 < (this.inBurst ? burst.lossPctInBurst : goodPct);
   }
 
+  private tokens = 0;
+  private tokensAt = 0;
+
+  /** The policer's verdict on a packet: false if it is over the rate. */
+  private policed(bytes: number): boolean {
+    const kbps = this.profile.policeKbps;
+    if (kbps === undefined) return false;
+    const depth = (kbps * (this.profile.policeBurstMs ?? 50)) / 8;
+    const now = this.world.now;
+    this.tokens = Math.min(depth, this.tokens + ((now - this.tokensAt) * kbps) / 8);
+    this.tokensAt = now;
+    if (this.tokens < bytes) return true;
+    this.tokens -= bytes;
+    return false;
+  }
+
   private fly(packet: Uint8Array): void {
-    if (this.loses()) {
+    if (this.policed(packet.byteLength) || this.loses()) {
       this.lost++;
       return;
     }

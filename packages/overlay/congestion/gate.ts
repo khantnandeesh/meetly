@@ -137,9 +137,11 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
             backlog.reduce((least, sample) => (sample.at > from && sample.at <= to ? Math.min(least, sample.bytes) : least), Infinity);
           const stoodOver = overSince !== null && now - overSince >= hold;
           const fell = low(now - hold, now) < low(now - 2 * hold, now - hold);
-          // Loss counts where the link shows a queue, as in the estimator (C6, README item 16).
+          // Loss counts where the link shows a queue, as in the estimator ([D32]). Congested with
+          // loss over the line and no queue at all is a link the estimator knows drops without queueing (its guard): that counts too.
           const queued = estimate.queueDelayMs >= ESTIMATOR_TUNING.strainedQueueMs || estimate.bufferedBytes > strainedBytes;
-          drop = (estimate.lossPct >= CONGESTED_LOSS_PCT && queued) || (stoodOver && !fell);
+          const policed = !queued && estimate.lossPct >= CONGESTED_LOSS_PCT;
+          drop = (estimate.lossPct >= CONGESTED_LOSS_PCT && queued) || policed || (stoodOver && !fell);
         }
         if (drop) {
           watching = true;
