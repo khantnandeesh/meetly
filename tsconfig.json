@@ -19,7 +19,9 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@meetly/overlay": ["./packages/overlay/index.ts"],
+      "@meetly/overlay/*": ["./packages/overlay/*"]
     }
   },
   "include": [

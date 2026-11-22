@@ -1,0 +1,20 @@
+// The overlay's coordinator: its own Worker, `meetly-overlay`, apart from the app's (SPEC §6.7,
+// D13). One Durable Object class, OverlayRoom, one object per session (idFromName(room)), with
+// SQLite storage and hibernatable WebSockets.
+//
+// Not deployed from this repository: PLAN §7 step 8 does that, after the gate. Locally (the
+// contract suite does this itself, see ./contract.worker.test.ts):
+//   wrangler dev -c packages/overlay/coordinator/wrangler.jsonc --ip 127.0.0.1 --port 4261 \
+//     --inspector-port 4262 --var OVERLAY_ADMISSION_SECRET:… --var OVERLAY_SERVER_SECRET:…
+// In production both secrets are set with `wrangler secret put`, never written here.
+{
+  "name": "meetly-overlay",
+  "main": "durableObject.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [{ "name": "OVERLAY_ROOM", "class_name": "OverlayRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["OverlayRoom"] }],
+  "observability": { "enabled": true }
+}

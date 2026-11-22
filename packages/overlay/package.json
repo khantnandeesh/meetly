@@ -1,0 +1,11 @@
+{
+  "name": "@meetly/overlay",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A self-healing peer-relay overlay for webinar audiences. Not a workspace: it shares the repository's node_modules and is checked and tested from the root (npm run overlay:check, npm run test:overlay).",
+  "exports": {
+    ".": "./index.ts",
+    "./*": "./*.ts"
+  }
+}
