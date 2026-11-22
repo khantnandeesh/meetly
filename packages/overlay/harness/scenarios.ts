@@ -274,7 +274,8 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
       const churnS = options.churnS ?? (name === "gate" ? 600 : 120);
       // Each kill orphans a relay's children: about three repairs a kill once the tree is full.
       const minRepairs = name === "gate" ? 100 : Math.max(5, Math.floor(churnS / 10));
-      return { ...config, churn: gateChurn(from, churnS), durationS: from + churnS + 8, expect: { peers, minRepairs } };
+      // Half a minute after the last churn, so its last joiners have the time a viewer is given (shard.ts).
+      return { ...config, churn: gateChurn(from, churnS), durationS: from + churnS + 35, expect: { peers, minRepairs } };
     }
   }
 }

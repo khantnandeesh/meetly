@@ -151,10 +151,10 @@ describe("harness report", () => {
     // A machine was starved: event-loop lag over 50 ms at p99, on one shard only.
     const starved = goodRun();
     starved[1].host.pageLag = hist([...Array.from({ length: 97 }, () => 5), 80, 80, 80]);
-    assert.deepEqual(failing(starved), ["event-loop lag p99 on the worst shard (ms)", "runners over the health bar (load 4, lag p99 20 ms)"]);
+    assert.deepEqual(failing(starved), ["timer lag p99 on the worst runner (ms)"]);
     const unmeasured = goodRun();
     unmeasured[0].host = { cores: 4, loadAvg1: [], maxEventLoopLagMs: 0 };
-    assert.deepEqual(failing(unmeasured), ["event-loop lag p99 on the worst shard (ms)", "runners over the health bar (load 4, lag p99 20 ms)"]);
+    assert.deepEqual(failing(unmeasured), ["timer lag p99 on the worst runner (ms)"]);
 
     // Clocks: the sum of uncertainties at p95 is not under 20 ms; or nobody measured them.
     const loose = goodRun();
@@ -244,21 +244,21 @@ describe("harness report", () => {
     assert.match(renderReport(report), /Clocks apart, measured p95/);
   });
 
-  it("holds every runner to the health bar, naming the one that fails it", () => {
+  it("judges a runner by its timer lag and only reports its load (D42)", () => {
     const busy = goodRun();
-    busy[1].host.loadAvg1Settled = [3.2, 4.4];
+    busy[1].host.loadAvg1Settled = [3.2, 8.8];
     let report = buildReport(busy);
-    assert.deepEqual(report.gate.validity.filter((v) => !v.pass).map((v) => [v.name, v.value]), [["runners over the health bar (load 4, lag p99 20 ms)", 1]]);
-    assert.ok(report.gate.notes.some((note) => /^shard 1: over the health bar \(load 4\.4 against 4/.test(note)));
-    // Launching the browsers is not the run: a load seen only before the swarm filled is not held against it.
-    const launching = goodRun();
-    launching[0].host.loadAvg1 = [9, 3];
-    launching[0].host.loadAvg1Settled = [3];
-    assert.equal(buildReport(launching).gate.valid, true);
+    assert.equal(report.gate.valid, true, "a loaded runner whose timers kept time is not starved");
+    assert.ok(report.gate.notes.some((note) => /reported and not judged \(D42\): shard 1 at 8\.8/.test(note)));
     const late = goodRun();
     late[0].host.pageLag = hist([...Array.from({ length: 98 }, () => 5), 25, 25]);
     report = buildReport(late);
-    assert.deepEqual(report.gate.validity.filter((v) => !v.pass).map((v) => v.name), ["runners over the health bar (load 4, lag p99 20 ms)"]);
+    assert.deepEqual(report.gate.validity.filter((v) => !v.pass).map((v) => [v.name, v.value]), [["timer lag p99 on the worst runner (ms)", 30]]);
+    assert.ok(report.gate.notes.some((note) => /^shard 0: starved: timer lag p99 30 ms against 20 \(D42\)/.test(note)));
+    // 20 at p99 (a bucket of 10 to 20 ms) passes.
+    const edge = goodRun();
+    edge[0].host.pageLag = hist([...Array.from({ length: 98 }, () => 5), 15, 15]);
+    assert.equal(buildReport(edge).gate.valid, true);
   });
 
   it("judges the clocks as measured against wall clocks when every shard can be read so", () => {
@@ -297,6 +297,16 @@ describe("harness report", () => {
     const report = buildReport(results);
     assert.deepEqual([report.streamKbps.n, report.streamKbps.p50, report.streamKbps.max], [2, 1150, 1180]);
     assert.match(renderReport(report), /depth 1 received it: p50 1150 kbps/);
+  });
+
+  it("counts a viewer still joining at the end at the time it had waited, and not as a failure", () => {
+    const results = goodRun();
+    results[1].unfinishedJoins = [12_000, 25_000];
+    const report = buildReport(results);
+    assert.equal(report.joinMs.n, 122);
+    assert.equal(report.joinMs.max, Infinity, "25 s is past the last bucket edge");
+    assert.equal(report.gate.validity.find((v) => v.name === "peers that failed to start")?.value, 0);
+    assert.ok(report.gate.notes.some((note) => /^2 viewers were still joining when the run ended/.test(note)));
   });
 
   it("says where joins' time went", () => {
@@ -344,7 +354,7 @@ describe("harness report", () => {
       sizes.runs.map((r) => [r.peers, r.valid, r.lagP99Ms]),
       [[30, true, 10], [45, true, 20], [60, false, 90]],
     );
-    assert.deepEqual(sizes.runs[2].why, ["event-loop lag p99 on the worst shard (ms)", "runners over the health bar (load 4, lag p99 20 ms)"]);
+    assert.deepEqual(sizes.runs[2].why, ["timer lag p99 on the worst runner (ms)"]);
     assert.match(renderSizes(sizes), /Largest valid run: 45 peers/);
     assert.equal(largestValid([buildReport(at(60, 90))]).peers, null);
   });
