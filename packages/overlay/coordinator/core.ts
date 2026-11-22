@@ -783,6 +783,14 @@ class Core implements CoordinatorCore {
     for (const node of this.map.graduating(now)) await this.setRole(fx, node, "relay", now, false);
     // The fifth-of-the-audience rule makes full relays only: a provisional one is made when someone has nowhere to go (`promoteFor`).
     for (const entry of this.map.promotable(now, false)) await this.setRole(fx, entry.node, "relay", now, entry.provisional);
+    // [D50] A relay holds to the fan-out it was told: when its verdict's changes (a new probe), it is told again.
+    for (const node of this.map.nodes.values()) {
+      if (node.role !== "relay" || node.conn === null) continue;
+      const told = this.toldFanout.get(node.peer);
+      const fanout = this.map.fanout(node);
+      // A verdict of none is a relay on its way to demotion: that, not a role, says so.
+      if (told !== undefined && fanout >= 1 && told !== fanout) await this.setRole(fx, node, "relay", now, node.provisional);
+    }
 
     if (this.o.moves !== false && this.streams.length > 0) {
       const budget = Math.max(1, Math.ceil(this.map.audience() * MOVE_SHARE));
@@ -858,11 +866,17 @@ class Core implements CoordinatorCore {
     if (conn) this.attach(fx, conn, node);
   }
 
+  /** [D50] The fan-out each relay was last told in `role`. */
+  private readonly toldFanout = new Map<PeerId, number>();
+
   private async setRole(fx: Effect[], node: TreeNode, role: OverlayRole, now: number, provisional = false): Promise<void> {
     this.map.setRole(node, role, now, provisional);
-    // SPEC §8.1 [D38]: a provisional relay is told its fan-out; a `role relay` without one confirms a full relay.
+    // SPEC §8.1 [D38], [D50]: every relay is told its fan-out, provisional or full, and holds to it.
     const grant = await this.grantFor(node, now);
-    this.send(fx, node.conn, { t: "role", role, grant, ...(node.provisional ? { fanout: this.map.fanout(node) } : {}) });
+    const fanout = role === "relay" ? this.map.fanout(node) : 0;
+    if (role === "relay") this.toldFanout.set(node.peer, fanout);
+    else this.toldFanout.delete(node.peer);
+    this.send(fx, node.conn, { t: "role", role, grant, ...(fanout >= 1 ? { fanout: Math.min(64, fanout) } : {}) });
     this.reattach(fx, node);
   }
 

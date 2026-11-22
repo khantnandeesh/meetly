@@ -2178,7 +2178,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     if (role === "source" || to === "source") return;
     const nextCap = to === "relay" && cap !== undefined ? cap : null;
     if (to === role && nextCap === fanoutCap) return;
-    // A provisional relay confirmed past probation is sent role relay again, without a cap.
+    // [D50] Every relay is told its fan-out; one told none (an older coordinator) keeps maxFanout.
     fanoutCap = nextCap;
     if (to === role) {
       checkOverload();

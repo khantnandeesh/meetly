@@ -71,14 +71,15 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.equal(swarm.offeredBeyondFree, 0);
   });
 
-  it("the smoke's tree (7 peers, fan-outs 2): a full relay whose verdict says one child keeps the two its node takes", async () => {
-    // A full relay's `role` carries no fan-out: its node takes `maxFanout`, and says so in its
-    // free slots, which placement offers. Relief by the verdict (here 1: a probe short of its
-    // target, or sized by the video where the verdict is by the session) moved its second child
-    // to a sibling, a level down; the swarm smoke test's kill then orphaned one viewer, not two.
+  it("the smoke's tree (7 peers, fan-outs 2): relays whose probe shows two children each take two, as the smoke needs", async () => {
+    // [D50] The probe is sized by the session's bitrate, as the verdict is, so a probe that
+    // reaches its target shows the fan-out it was sized for; every relay is told its fan-out and
+    // its node holds to it. (Before D50 a probe sized by the video gave a verdict of 1, while the
+    // node took two: relief by the verdict then moved a child a level down.)
     for (let seed = 1; seed <= 3; seed++) {
       const params = { ...DEFAULT_PARAMS, sourceFanout: 2, maxFanout: 2, probationMs: 3000 };
-      const swarm = new Swarm(new Rig({ random: seeded(seed), params }), undefined, { probeAt: ({ placedAt }) => placedAt + 1300, linkMs: 100, probedUplinkKbps: 3000 });
+      // What a probe sized for two children at the session's 1,232 kbps finds, on an uplink that has it: 1.1 x 2 x 1.15 x 1,232 / 0.7.
+      const swarm = new Swarm(new Rig({ random: seeded(seed), params }), undefined, { probeAt: ({ placedAt }) => placedAt + 1300, linkMs: 100, probedUplinkKbps: 4454 });
       await swarm.addSource();
       for (let t = 0, joined = 0; t < 35_000; t += 100) {
         while (joined < 6 && 2000 + joined * 500 <= t) {

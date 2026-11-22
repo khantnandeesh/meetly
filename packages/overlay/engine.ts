@@ -251,10 +251,14 @@ abstract class PeerEngine {
       this.sendStatus();
       // NAT type, once the ICE servers are known. A session offering none is one network (the
       // harness on one machine, a LAN): every peer's host candidates reach every other's.
+      this.natPending = !this.options.capabilities?.nat;
       void (welcome.ice.length === 0 ? Promise.resolve<Capabilities["nat"]>("open") : probeNat(welcome.ice)).then((nat) => {
+        this.natPending = false;
         if (!this.caps || this.options.capabilities?.nat) return;
         this.caps = { ...this.caps, nat };
         this.sendStatus();
+        // A short probe that was waiting for the NAT type runs now (`maybeProbe`).
+        if (this.probePhase === "short" && this.hadParent && !this.probeRunning) this.scheduleProbe(0);
       });
       // The short probe as soon as there is a parent (D38); the full one after probation.
       if (welcome.role !== "source") this.scheduleProbe(PROBE_WAIT_MS);
@@ -293,13 +297,24 @@ abstract class PeerEngine {
   }
   protected lastUp: NodeStats["up"] = null;
 
-  private videoKbps(): number {
-    for (const stream of this.streams.values()) if (stream.kind === "video") return stream.bitrateKbps;
-    return DEFAULT_ENCODING.video.bitrateKbps;
+  /**
+   * [D50] The B a relay is sized by: the session's streams together, as the coordinator's
+   * fan-out formula takes it (video and audio), so that the probe proves what the verdict asks.
+   */
+  private sessionKbps(): number {
+    let total = 0;
+    for (const stream of this.streams.values()) total += stream.bitrateKbps;
+    return total > 0 ? total : DEFAULT_ENCODING.video.bitrateKbps + DEFAULT_ENCODING.audio.bitrateKbps;
   }
 
   private hadParent = false;
   private probeRunning = false;
+  /**
+   * `probeNat` has not answered yet (it takes up to its 3 s timeout). A joiner linked sooner than
+   * that would otherwise find "nat" against it and put the short probe off by PROBE_RETRY_MS:
+   * at a session's start, nearly every joiner (the gate's: all linked under 2.7 s after welcome).
+   */
+  private natPending = false;
 
   private probeOnFirstParent(): void {
     if (this.hadParent || this.welcome?.role === "source") return;
@@ -329,16 +344,18 @@ abstract class PeerEngine {
     // Nothing to probe until there is a parent to send the probe to.
     const stripe = node.status().stripes[0];
     if (!stripe || stripe.state !== "active" || stripe.parent === null) return this.scheduleProbe(PROBE_WAIT_MS);
-    const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.videoKbps(), welcome.params);
+    const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.sessionKbps(), welcome.params);
     // Only the uplink is unknown (and, for the short probe, probation not over): the probe is what
     // finds the one, and the other passes by itself. Anything else, and it would be wasted.
     const allowed = this.probePhase === "short" ? ["uplink", "probation"] : ["uplink"];
+    // The NAT type is on its way: its answer starts the probe (`connect`), not a retry 10 s on.
+    if (this.natPending && verdict.reasons.every((reason) => allowed.includes(reason) || reason === "nat")) return;
     if (verdict.reasons.some((reason) => !allowed.includes(reason))) return this.scheduleProbe(PROBE_RETRY_MS);
     const short = this.probePhase === "short";
     this.probeRunning = true;
     node.runProbe(
       createUplinkProbe({
-        targetKbps: probeTargetKbps(welcome.params, this.videoKbps(), short ? SHORT_PROBE.fanout : welcome.params.maxFanout),
+        targetKbps: probeTargetKbps(welcome.params, this.sessionKbps(), short ? SHORT_PROBE.fanout : welcome.params.maxFanout),
         durationMs: short ? SHORT_PROBE.durationMs : 1000,
       }),
     );

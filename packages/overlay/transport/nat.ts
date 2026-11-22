@@ -11,6 +11,13 @@ import type { Capabilities, IceServer } from "../protocol";
 export type GatheredCandidate = { type: string; address: string; port: number; relatedAddress?: string | null; relatedPort?: number | null; protocol?: string };
 
 const PROBE_TIMEOUT_MS = 3000;
+/**
+ * [D48] After the first server-reflexive candidate, how long a different mapping of the same
+ * socket (from the other STUN server) is waited for before the answer is "cone". A browser
+ * reports one candidate per distinct mapping, so a cone NAT never shows a second one: without
+ * this the probe would run to the end of gathering, or to its 3 s timeout.
+ */
+export const NAT_SRFLX_GRACE_MS = 300;
 
 function isPrivateAddress(address: string): boolean {
   if (address.endsWith(".local")) return true; // mDNS: Chromium hides the host address
@@ -47,6 +54,15 @@ export function classifyNat(candidates: readonly GatheredCandidate[], stunServer
   return "cone";
 }
 
+/**
+ * [D48] A verdict before gathering ends, if what has come already decides it: a public host
+ * address is "open", one socket mapped two ways is "symmetric". Otherwise null: wait.
+ */
+export function earlyNat(candidates: readonly GatheredCandidate[], stunServers: number): Capabilities["nat"] | null {
+  const verdict = classifyNat(candidates, stunServers);
+  return verdict === "open" || verdict === "symmetric" ? verdict : null;
+}
+
 export async function probeNat(ice: IceServer[]): Promise<Capabilities["nat"]> {
   const stun = ice.flatMap((server) => server.urls).filter((url) => url.startsWith("stun:"));
   if (typeof RTCPeerConnection === "undefined") return "unknown";
@@ -55,10 +71,17 @@ export async function probeNat(ice: IceServer[]): Promise<Capabilities["nat"]> {
   try {
     pc.createDataChannel("probe");
     const done = new Promise<void>((resolve) => {
+      let grace = false;
       pc.onicecandidate = (event) => {
         const c = event.candidate;
         if (!c) return resolve();
         if (c.type && c.address && c.port !== null) gathered.push({ type: c.type, address: c.address, port: c.port, relatedAddress: c.relatedAddress, relatedPort: c.relatedPort, protocol: c.protocol ?? undefined });
+        // [D48] Answer as soon as the candidates decide it, not at the end of gathering.
+        if (earlyNat(gathered, stun.length) !== null) return resolve();
+        if (c.type === "srflx" && !grace) {
+          grace = true;
+          globalThis.setTimeout(resolve, NAT_SRFLX_GRACE_MS);
+        }
       };
       // The one place the engine waits on wall time without a `Clock`: a one-off, before a session exists.
       globalThis.setTimeout(resolve, PROBE_TIMEOUT_MS);

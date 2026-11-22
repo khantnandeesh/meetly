@@ -100,7 +100,8 @@ describe("coordinator: provisional relays (D38)", () => {
     const last = of(promoted[0].heard, "role").at(-1)!;
     assert.equal(last.role, "relay");
     assert.deepEqual(scope(last.grant), ["view", "relay"]);
-    assert.equal(last.fanout, undefined, "a role relay without a fan-out confirms a full relay");
+    // [D50] A full relay is told its fan-out too: its verdict's, which its node holds to.
+    assert.ok(last.fanout !== undefined && last.fanout >= 1, "a full relay's role says its fan-out");
     assert.equal(s.rig.core.snapshot().peers.find((peer) => peer.peer === promoted[0].peer)?.role, "relay");
   });
 

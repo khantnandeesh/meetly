@@ -633,13 +633,11 @@ export class TreeMap {
       // Those asked to move lately are on their way: not asked again, and not counted twice.
       const leaving = kids.filter((kid) => now - kid.lastRebalanceAt < HOLD_MS).length;
       // What its node takes before it is over its fan-out (D37), or what it last said it can take
-      // if that is more and it still had room then. A full relay's node takes `maxFanout`, whatever
-      // its verdict (a `role` relay carries no fan-out), and placement offers what the node says
-      // is free: relief by the verdict undid placement. In the smoke's tree (7 peers, fan-outs 2) a
-      // relay whose verdict was 1 (the probe is sized by the video, the verdict by the session's
-      // bitrate) was "relieved" of a child it carried well, which went a level down.
-      const nodeFanout = node.role === "relay" && !node.provisional ? Math.max(this.fanout(node), this.params.maxFanout) : this.fanout(node);
-      const capacity = node.free > 0 ? Math.max(nodeFanout, node.children + node.free) : nodeFanout;
+      // if that is more and it still had room then. [D50] Every relay is told its fan-out in
+      // `role` and its node holds to it, so the verdict and the node agree: relief by the
+      // verdict is relief by what the node takes. (Before D50 a full relay was told none, and its
+      // node took `maxFanout`.)
+      const capacity = node.free > 0 ? Math.max(this.fanout(node), node.children + node.free) : this.fanout(node);
       const excess = kids.length - leaving - capacity;
       if (excess <= 0) continue;
       const movable = kids
