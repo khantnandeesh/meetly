@@ -250,6 +250,13 @@ rewritten by each sender for each receiver.
 always one packet. `writeHopFields` rewrites the per-hop section in place: `RTCDataChannel.send`
 copies its argument, so a relay uses one buffer for all its children in turn.
 
+**[D43] Keyframes are paced** (decided by integrator 2026-11-21). A keyframe bigger than two
+frame intervals of *B* is not handed to a child's channel in one burst: its packets are spread
+evenly so that the last leaves two frame intervals after its own (three intervals from its
+first packet: 100 ms at 30 fps). What arrives for that child behind it (a later frame) waits
+its turn, so frames leave in order; audio, control, retransmissions and replays do not wait.
+Each child is paced on its own, at every hop, from when the keyframe reaches that relay.
+
 ### 4.3 What a stream is
 
 A stream is described by a `StreamConfig` (JSON; from the coordinator in `welcome`, and again
@@ -907,6 +914,12 @@ frames are DISCARDABLE. The source sets `refDelta` accordingly; no receiver deri
 The encoder is never allowed a queue: if it has two frames waiting, the next is skipped, as in
 the proof.
 
+**[D43] A keyframe may be up to 500 ms of *B*** (decided by integrator 2026-11-21). A stage's
+keyframe is several times a delta frame; the source lets it be, and lowers its size (downscales)
+only for keyframes beyond 500 ms of *B*, not for the encoder's ordinary overshoot. Every relay
+paces such a keyframe to each child (§4.2, below), and rules 3 and 6 of §11.3 read what of it
+the link has yet to absorb as the keyframe's, not as a backlog.
+
 ### 9.3 Keyframes
 
 **[D24] Stage 1 has no keyframe requests.** A keyframe comes every 2 s regardless. A joiner or a
@@ -1128,7 +1141,17 @@ part.
 5. **Up:** after 5 s *ok*, the cap rises one layer. If the link is *congested* again within 3 s,
    the cap drops back and the wait doubles (10, 20 … 60 s); it resets after a rise that holds.
 6. **No stale video:** whatever the cap, a video frame is not sent if `bufferedBytes` is already
-   over 200 ms of *B*.
+   over 200 ms of *B*. **[D43]** While a paced keyframe (§4.2) is in flight the line is
+   max(200 ms of *B*, the keyframe's remainder): what of the keyframe the link has yet to absorb,
+   which is how far the backlog (channel and pacing queue) stands over the one the keyframe
+   found, never more than the keyframe itself. Once its pacing is done the remainder never
+   rises again (a backlog that grows back is the link's), and it ends when the backlog is back
+   where it was, or after 4 × the keyframe's own time at *B*. *Decided by integrator 2026-11-21.*
+   By the same token, for rule 3 a link *congested* with `lossPct` under 10 and `bufferedBytes`
+   less the remainder under 150 ms of *B* is held as *strained*: at 1.1 × *B* a 300 ms keyframe
+   keeps the queue delay over 100 ms for 700 ms, and the backlog over 150 ms of *B* for 300 ms,
+   both of which would otherwise drop a layer. *Proposed by the integration engineer, to meet
+   D43's own test; for the integrator to ratify.*
 7. **Starved:** a link *congested* for 1 s with the cap already at the base layer cannot carry
    the stream at all. The gate then sends only whole GOPs it can start cleanly (it resumes at a
    keyframe), announces `starved`, and the parent tells the child (`layers`, reason
@@ -1474,6 +1497,7 @@ Rotating speakers on the overlay. Out of scope.
 | D39 | The reordering window is max(10 ms, p95 inter-arrival jitter), at most 60 ms (integrator, 2026-11-21) | 4.6 |
 | D40 | The gate's clocks are judged as measured against chrony-synced wall clocks, the §4.1 bound only where a shard has no chrony (decided by integrator 2026-11-21) | 12.3 |
 | D41 | The provisional probe lasts 1 s, at the fan-out-2 target (integrator, 2026-11-21) | 8.1 |
+| D43 | Keyframes up to 500 ms of B; paced over their own interval and two more; rule 6 (and rule 3) read the paced remainder as the keyframe's (integrator, 2026-11-21) | 9.2, 4.2, 11.3 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
