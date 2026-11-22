@@ -15,6 +15,11 @@ on:
     branches:
       - cloudflare-deploy
   workflow_dispatch:
+    inputs:
+      skip_tests:
+        description: "Deploy without the CI tests (the Workers build still has to succeed). For betas the founder ships ahead of their tests."
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,12 +38,16 @@ jobs:
   checks:
     name: CI
     # Only the Workers branch holds wrangler.jsonc; a run started from any other branch does nothing.
-    if: github.ref == 'refs/heads/cloudflare-deploy'
+    if: github.ref == 'refs/heads/cloudflare-deploy' && !inputs.skip_tests
     uses: ./.github/workflows/ci.yml
 
   deploy:
     name: Deploy to Cloudflare
     needs: checks
+    # Runs after the checks pass, or without them when the run was started by hand with skip_tests.
+    if: >-
+      always() && github.ref == 'refs/heads/cloudflare-deploy' &&
+      (needs.checks.result == 'success' || (inputs.skip_tests && needs.checks.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment:
