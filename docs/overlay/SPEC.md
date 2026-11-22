@@ -1192,6 +1192,25 @@ and rule 6's line is 250 ms of *B*. Loss or path delay still count at once. With
 join would end with the joiner's first live frames refused and a layer dropped. *Decided by
 integrator 2026-11-21.*
 
+**Replays reach the child ahead of its live video.** *Proposed by the integration engineer
+2026-11-22, for the integrator to ratify; in the code on overlay-integration.* Three amendments,
+from the first valid gate run (44970866134), where 41 of the 117 joins that took over 1.2 s from
+first packet to first frame, and most repairs that froze over 600 ms, ended in the jitter buffer
+giving the GOP up (§10.3) and waiting for the next keyframe:
+
+- *Per child, live video waits behind its replay.* "Live media goes first" stays true of the
+  channel as a whole, but for the child being replayed to, its own live frames are sent after its
+  replay, in order, within the same budget. Live frames that overtake the replay need frames not
+  there and long past due, so §10.3 gives the GOP up at once (150 ms past due has already gone)
+  and the replay is wasted. Audio, control and retransmissions do not wait.
+- *A replay a relay is being sent is a replay for its children.* What a relay receives marked
+  `Replay` (its own repair) goes to each child through that child's replay budget and grace, not
+  as live: handed over as it comes it is a burst on every child's channel at once.
+- *A joiner's replay is thinned.* For a join (`fromFrame` −1), what is more than 500 ms behind
+  the newest frame goes as the keyframe and the base layer only: the joiner only decodes it, and
+  no later frame needs a frame above the base layer (§9.2). The replay is smaller and the first
+  frame sooner; the jitter buffer counts a few of the frames left out as lost.
+
 ### 11.6 Measuring spare uplink
 
 `UplinkProbe`: PROBE packets to the parent for 1 s, on top of whatever the peer is already
