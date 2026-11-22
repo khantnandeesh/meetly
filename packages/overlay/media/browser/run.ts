@@ -43,8 +43,8 @@ export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
     check: (r) => [
       ["video bitrate within 15% of the target", Math.abs(n(r.videoKbps) - r.targetKbps) <= 0.15 * r.targetKbps, `${r.videoKbps} of ${r.targetKbps} kbps`],
       [
-        "a keyframe every 60 frames (sooner when frames were held back for the bitrate: at least every 2 s)",
-        r.keyGapMax !== null && r.keyGapMax <= 60 && (r.skippedRate > 0 || r.keyGapMin === 60),
+        "a keyframe every 60 frames, or every 2 s if that comes first (frames held back for the bitrate, a camera short of 30 fps)",
+        r.keyGapMax !== null && r.keyGapMax <= 60 && n(r.keyGapMin) >= 30,
         `gaps ${r.keyGapMin}..${r.keyGapMax} over ${r.keyframes} keyframes; ${r.skippedRate} frames held back for the bitrate`,
       ],
       ["every header obeys §9.2", r.headerProblems.length === 0, r.headerProblems.join("; ") || `${r.frames} frames`],
