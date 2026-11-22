@@ -215,6 +215,13 @@ export class DecodeTracker {
   }
   /** When, on the local clock, frames became decodable: the times a player could have shown them. */
   readonly shown: { at: number; id: number }[] = [];
+  /** The newest frame such that it and every frame from the newest decodable base-layer frame to it are decodable. */
+  wholeThrough(): number {
+    let id = this.lastBase;
+    while (this.decodable.has(id + 1)) id++;
+    return id;
+  }
+
   /** When each whole frame arrived, decodable or not. */
   private arrived: { at: number; id: number }[] = [];
 
@@ -1256,7 +1263,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /** Sends as much of a child's pending replay as the gate allows: behind live media (SPEC §11.5). */
   function pumpReplay(peer: Peer, now: number): void {
-    for (const sub of peer.subs.values()) {
+    // Audio first: a few hundred bytes, and playable only while it is still ahead of playout.
+    const subs = [...peer.subs].sort(([a], [b]) => Number(streams.get(b)?.audio ?? false) - Number(streams.get(a)?.audio ?? false));
+    for (const [, sub] of subs) {
       if (sub.replay.length === 0) continue;
       if (sub.mode !== "active") {
         sub.replay = [];
@@ -1377,7 +1386,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /** Sends `sub` (or `repair`) for each stream to `peer`, and remembers what the answers are for. */
   function subscribe(peer: Peer, purpose: Purpose, which: Iterable<StreamCtx>, fromFrame: (stream: StreamCtx) => number, asRepair: boolean, dead?: PeerId): void {
-    for (const stream of which) {
+    // Audio first: its replay is a few hundred bytes, and the parent pumps each replay as its
+    // `sub` arrives, so audio asked for after video would wait behind the video's whole replay.
+    for (const stream of [...which].sort((a, b) => Number(b.audio) - Number(a.audio))) {
       const id = (subSeq = (subSeq + 1) >>> 0);
       pendingSubs.set(id, { peer: peer.id, stream: stream.config.id, purpose });
       if (asRepair && dead !== undefined) send(peer, { t: "repair", id, stream: stream.config.id, stripes: stream.stripes, fromFrame: fromFrame(stream), dead });
@@ -1395,8 +1406,12 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     }
   }
 
-  /** "Everything after X": the newest frame this node could decode (SPEC §7.5). */
-  const after = (stream: StreamCtx) => (stream.tracker.lastBase >= 0 ? stream.tracker.lastBase : FROM_LATEST_KEYFRAME);
+  /**
+   * "Everything after X" (SPEC §7.5): the newest frame up to which this node holds every frame
+   * whole and decodable. Not just the newest base-layer frame: the layer-1 and layer-2 frames
+   * after it that it already has would be replayed again, ahead of what it lacks.
+   */
+  const after = (stream: StreamCtx) => (stream.tracker.lastBase >= 0 ? stream.tracker.wholeThrough() : FROM_LATEST_KEYFRAME);
 
   const forgetPending = (peer: Peer, purpose?: Purpose) => {
     for (const [id, pending] of pendingSubs) if (pending.peer === peer.id && (purpose === undefined || pending.purpose === purpose)) pendingSubs.delete(id);

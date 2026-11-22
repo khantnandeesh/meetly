@@ -70,6 +70,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const join = emptyHistogram();
   const repair = emptyHistogram();
   const glass = emptyHistogram();
+  const catchUpAge = emptyHistogram();
   const glassDecoding = emptyHistogram();
   const glassLight = emptyHistogram();
   const freeze = emptyHistogram();
@@ -114,6 +115,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
       frames.dropped += s.video.dropped;
       frames.lost += s.video.lost;
       mergeHistogram(glass, s.video.glassToGlass);
+      if (s.video.catchUp) mergeHistogram(catchUpAge, s.video.catchUp.age);
       if (decodersKnown) mergeHistogram(decoders.has(s.peer) ? glassDecoding : glassLight, s.video.glassToGlass);
       let depth = byDepth.get(s.depth);
       if (!depth) byDepth.set(s.depth, (depth = emptyHistogram()));
@@ -299,6 +301,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     glassToGlassMs,
     glassToGlassDecoding: decodingQ,
     glassToGlassLight: lightQ,
+    catchUpAgeMs: histogramQuantiles(catchUpAge),
     honesty,
     clockByShard,
     measuredClockMs,
@@ -360,6 +363,7 @@ export function renderReport(report: SwarmReport): string {
   for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) if (q.n > 0) lines.push(row(`Latency at depth ${depth === "255" ? "unknown" : depth}`, q, ""));
   if (report.glassToGlassDecoding.n) lines.push(row("Latency, decoding viewers (D29)", report.glassToGlassDecoding, ""));
   if (report.glassToGlassLight.n) lines.push(row("Latency, light viewers (D29)", report.glassToGlassLight, ""));
+  if (report.catchUpAgeMs?.n) lines.push(row("Catch-up frames' age (D46: shown while a replay plays forward; not in the latency above)", report.catchUpAgeMs, ""));
   if (report.streamKbps.n) lines.push("", `The stream as viewers at depth 1 received it: p50 ${Math.round(report.streamKbps.p50 ?? 0)} kbps, p95 ${Math.round(report.streamKbps.p95 ?? 0)} kbps, over ${report.streamKbps.n} samples (retransmissions and replays included).`);
   const jp = report.joinPhasesMs;
   if (jp.welcome.n) {

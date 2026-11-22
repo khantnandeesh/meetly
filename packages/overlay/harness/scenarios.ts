@@ -234,7 +234,9 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     case "proof-tree": {
       const config = { ...base, peers: 7, params: proofTree, decodeEvery: name === "smoke" ? 1 : 3, program: CAMERA };
       const at = settledS(config);
-      return { ...config, churn: [{ atS: at, action: "kill", pick: "relay", count: 1 }], durationS: at + 6, expect: { peers: 7, minRepairs: 2 } };
+      // The busiest relay: placement (D37, D38) does not always make the proof's even tree, and a
+      // relay picked at random may have one leaf child, one repair where the check wants two.
+      return { ...config, churn: [{ atS: at, action: "kill", pick: "busiest-relay", count: 1 }], durationS: at + 6, expect: { peers: 7, minRepairs: 2 } };
     }
     case "chain-kill": {
       // A fan-out of one makes a chain; the last relay takes the leaves that are left.

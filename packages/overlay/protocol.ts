@@ -1111,6 +1111,12 @@ const metricsSample = object({
       /** Gaps between rendered frames. */
       frameGap: histogram,
       maxTemporal: int(0, 15),
+      /**
+       * [D46] Frames shown while a replay was played forward ([D45]): old by design, and already
+       * in the freeze and repair measures, so not in `glassToGlass`. Their count, and their age
+       * (capture to render) as a histogram.
+       */
+      catchUp: optional(object({ frames: int(0, 0xffffffff), age: histogram })),
     }),
   ),
   audio: optional(

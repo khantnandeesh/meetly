@@ -441,6 +441,9 @@ class ViewerEngine extends PeerEngine {
   private player: Player | null = null;
   private readonly decode: boolean;
   private glassToGlass = emptyHistogram();
+  /** [D46] Frames shown during a [D45] catch-up: counted apart from the latency. */
+  private catchUpAge = emptyHistogram();
+  private catchUpFrames = 0;
   private frameGap = emptyHistogram();
   private audioGlassToGlass = emptyHistogram();
   private lastRenderedUs: number | null = null;
@@ -462,8 +465,11 @@ class ViewerEngine extends PeerEngine {
     node.on("frame", (frame) => player.push(frame));
     // §10.2: D follows the link to the parent: congestion's estimate of what arrives.
     node.on("uplink", (estimate) => player.setLinkHints({ jitterMs: estimate.jitterMs, rttMs: estimate.rttMs, lossPct: estimate.lossPct }));
-    player.on("rendered", (_stream, _frameId, captureUs, renderedUs) => {
-      this.glassToGlass[latencyBucket((renderedUs - captureUs) / 1000)]++;
+    player.on("rendered", (_stream, _frameId, captureUs, renderedUs, catchUp) => {
+      if (catchUp) {
+        this.catchUpFrames++;
+        this.catchUpAge[latencyBucket((renderedUs - captureUs) / 1000)]++;
+      } else this.glassToGlass[latencyBucket((renderedUs - captureUs) / 1000)]++;
       if (this.lastRenderedUs !== null) this.frameGap[latencyBucket((renderedUs - this.lastRenderedUs) / 1000)]++;
       this.lastRenderedUs = renderedUs;
     });
@@ -508,7 +514,10 @@ class ViewerEngine extends PeerEngine {
         glassToGlass: this.glassToGlass,
         frameGap: this.frameGap,
         maxTemporal,
+        ...(this.catchUpFrames > 0 ? { catchUp: { frames: this.catchUpFrames, age: this.catchUpAge } } : {}),
       };
+      this.catchUpFrames = 0;
+      this.catchUpAge = emptyHistogram();
       this.counted.rendered = video.rendered;
       this.counted.dropped = video.dropped;
       this.counted.lost = video.lost;

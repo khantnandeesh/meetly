@@ -308,6 +308,8 @@ export type SwarmReport = {
   /** Latency of the viewers that decoded for real, and of the light ones (D29). */
   glassToGlassDecoding: Quantiles;
   glassToGlassLight: Quantiles;
+  /** [D46] Frames shown while a replay was played forward: not in the latency, counted here, with their age. Absent from older reports. */
+  catchUpAgeMs?: Quantiles;
   /**
    * Whether the instrument can be believed, beyond SPEC §12.3's validity: light viewers agree with
    * decoding ones (D29). A failure here is a note on every number, not a verdict.

@@ -145,7 +145,8 @@ describe("node: failure detection and warm repair (SPEC §7.4, §7.5)", () => {
       assert.equal(peer.node.status().depth, 2);
       assert.deepEqual(peer.node.status().path, [peer.id, "2", "0"]);
     }
-    // The repair asked the backup for everything after the newest base-layer frame it had.
+    // The repair asked the backup for everything after the newest base-layer frame it had, and
+    // the frames after that as far as it had every one (SPEC §7.5 step 1).
     const asked = net.messages.slice(before).filter((m) => m.from === "3" && m.message.t === "repair");
     assert.equal(asked.length, 2);
     for (const m of asked) {
@@ -153,7 +154,9 @@ describe("node: failure detection and warm repair (SPEC §7.4, §7.5)", () => {
       assert.equal(m.to, "2");
       assert.equal(message.dead, "1");
       const had = peers[3].frames.filter((f) => f.header.streamId === message.stream && f.completeAt < m.at);
-      const newest = message.stream === 0 ? Math.max(...had.filter((f) => f.header.temporal === 0).map((f) => f.header.frameId)) : Math.max(...had.map((f) => f.header.frameId));
+      let newest = message.stream === 0 ? Math.max(...had.filter((f) => f.header.temporal === 0).map((f) => f.header.frameId)) : Math.max(...had.map((f) => f.header.frameId));
+      const ids = new Set(had.map((f) => f.header.frameId));
+      if (message.stream === 0) while (ids.has(newest + 1)) newest++;
       assert.equal(message.fromFrame, newest);
     }
     // Nothing went to the coordinator before the backup had said yes.

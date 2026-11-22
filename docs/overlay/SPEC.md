@@ -729,7 +729,11 @@ the old parent, if it turns out to be alive, becomes the new backup.
 
 1. `repair { stream, stripes, fromFrame: X, dead }` to the backup, where *X* is the newest frame
    of the stream that this peer holds whole and decodable (for video, the newest base-layer
-   frame decoded; for audio, the newest frame received).
+   frame decoded, and then the frames after it as far as every one is decodable: the layer-1
+   and layer-2 frames it already has are not replayed again ahead of what it lacks; for audio,
+   the newest frame received). Audio's `repair` (and `sub`) goes first: the parent starts each
+   replay as its message arrives, and audio's few hundred bytes behind a video replay would
+   come too late to be played. A parent's replays to one child likewise go audio first.
 2. The backup answers `sub-ack ok` and replays from its GOP cache everything after *X*, then
    continues live. **It does not refuse for want of a slot**: if it is over its fan-out, it
    accepts, sets its children's layer caps to shed the top temporal layer (`reason:
@@ -1256,7 +1260,8 @@ not the session, so samples add up. Defined in `protocol.ts`:
 
 ```
 peer, seq, at, intervalMs, role, depth, playoutDelayMs
-video?  { rendered, dropped, lost, glassToGlass: histogram, frameGap: histogram, maxTemporal }
+video?  { rendered, dropped, lost, glassToGlass: histogram, frameGap: histogram, maxTemporal,
+          catchUp?: { frames, age: histogram } }
 audio?  { playedMs, concealedMs, underruns, glassToGlass: histogram, avOffsetMs }
 up?     { parent, rttMs, lossPct, queueDelayMs, rxKbps, nacksSent, retransmitsReceived,
           duplicates, turn }
@@ -1288,7 +1293,10 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
   playout time. (The display adds up to one refresh after that; the camera up to one frame
   before capture. Neither is measured; both are the same for any transport.)
 - **Glass-to-glass latency** of a rendered frame: render time − `captureUs`, both on the session
-  clock.
+  clock. **[D46]** A frame shown while a replay is played forward ([D45], §10.3) is old by design,
+  and its cost is already in the freeze and repair measures: it is not in `glassToGlass`. It is
+  counted in `video.catchUp` instead, with its age (capture to render) as a histogram, and the
+  harness reports both, so nothing is hidden. *Decided by integrator 2026-11-22.*
 - **Freeze:** a gap of more than 200 ms between two rendered frames.
 - **Repair time** of one lost parent, at one peer: the longest gap between two rendered frames
   from the last packet heard from the lost parent until one second after the first packet from
@@ -1537,6 +1545,7 @@ Rotating speakers on the overlay. Out of scope.
 | D43 | Keyframes up to 500 ms of B; paced over their own interval and two more; rule 6 (and rule 3) read the paced remainder as the keyframe's (integrator, 2026-11-21; remainder and rule 3, 2026-11-22) | 9.2, 4.2, 11.3 |
 | D44 | Per child, live video waits behind its replay (integrator, 2026-11-22) | 11.5 |
 | D45 | A replay is played forward: a missing frame waited for from when playout reached it while the replay can catch up, the newest frame shown every 100 ms (integrator, 2026-11-22) | 10.3 |
+| D46 | Frames shown during a [D45] catch-up are not in glass-to-glass latency; counted apart, with their age (integrator, 2026-11-22) | 12.1, 12.2 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
