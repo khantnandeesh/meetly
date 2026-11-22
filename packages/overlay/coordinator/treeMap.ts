@@ -13,6 +13,7 @@ import type { Capabilities, OverlayParams, OverlayRole, PeerHint, PeerId } from 
 import type { Candidate, Observed, RelayVerdict } from "../topology/types";
 import type { ConnId, PeerRecord } from "./types";
 import { PROVISIONAL_FANOUT } from "../topology/index";
+import { relayFanout } from "../topology/scoring";
 import type { Scoring } from "./scoring";
 
 /** A place offered to a joiner is held for it this long, unless its `status` settles it sooner. */
@@ -24,6 +25,8 @@ export const FORGET_MS = 30_000;
 /** SPEC §8.1: a relay must have been failing for this long before it is demoted. */
 export const DEMOTE_AFTER_MS = 10_000;
 export { PROVISIONAL_FANOUT };
+/** [D49] The most children the source takes while it is the only relay. */
+export const SOURCE_ALONE_FANOUT = 6;
 /** D38: a provisional relay that misbehaves this long is made a leaf again, sooner than a full one. */
 export const PROVISIONAL_DEMOTE_AFTER_MS = 3_000;
 /** A relay being made a leaf gives its children this long to move away first (make-before-break). */
@@ -374,9 +377,26 @@ export class TreeMap {
     return node.role === "source" || (node.parent !== null && node.depth !== DEPTH_UNKNOWN && this.reachesSource(node.peer));
   }
 
+  /**
+   * [D49] The source's fan-out: `sourceFanout`, and while it is the only relay of the session, up
+   * to SOURCE_ALONE_FANOUT if its probe showed the uplink for them (the fan-out formula, §8.1).
+   */
+  sourceFanout(node: TreeNode): number {
+    const base = this.params.sourceFanout;
+    const uplink = node.caps.uplinkKbps;
+    if (uplink === null || uplink === undefined || !this.sourceAlone()) return base;
+    return Math.max(base, relayFanout(uplink, this.streamKbps(), this.params.sourceAloneFanout ?? SOURCE_ALONE_FANOUT));
+  }
+
+  /** No relay, full or provisional, is connected: the source feeds everyone it can. */
+  sourceAlone(): boolean {
+    for (const node of this.nodes.values()) if (node.role === "relay" && node.conn !== null) return false;
+    return true;
+  }
+
   /** How many active children this feeder takes: the source's fan-out, or its verdict's (SPEC §8.1). */
   fanout(node: TreeNode): number {
-    if (node.role === "source") return this.params.sourceFanout;
+    if (node.role === "source") return this.sourceFanout(node);
     if (node.role !== "relay") return 0;
     return node.provisional ? Math.min(PROVISIONAL_FANOUT, this.params.maxFanout) : node.verdict.fanout;
   }

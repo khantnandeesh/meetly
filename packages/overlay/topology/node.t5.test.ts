@@ -297,6 +297,38 @@ describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
     return { probe, views };
   }
 
+  it("D49: the source probes its uplink toward its first child, and takes the fan-out the coordinator sets", async () => {
+    const net = new SimNet({ seed: 7, backups: false, params: { sourceFanout: 2, maxFanout: 2 } });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    // No child: nothing to probe toward.
+    const results: (number | null)[] = [];
+    source.node.on("probe", (spare) => results.push(spare));
+    source.node.runProbe(fakeProbe(2, 500).probe);
+    assert.deepEqual(results, [null]);
+    const first = net.join("1", "leaf", ["0"]);
+    await net.runAsync(1000);
+    const toChild = (source.links.get("1") as unknown as { sentByType: Map<number, Map<string, number>> }).sentByType;
+    source.node.runProbe(fakeProbe(2, 500).probe);
+    await net.runAsync(1500);
+    assert.equal(results.length, 2);
+    assert.ok(results[1] !== null && results[1] > 0, `found ${results[1]}`);
+    assert.ok((toChild.get(PacketType.Probe)?.get("replay") ?? 0) > 0, "PROBE went to the child, in the lowest class");
+    // Told six while it is alone, it takes more than its sourceFanout of two, without overload.
+    assert.equal(source.node.status().freeSlots, 1);
+    net.setRole("0", "source", 6);
+    assert.equal(source.node.status().freeSlots, 5);
+    for (const id of ["2", "3", "4"]) net.join(id, "leaf", ["0"]);
+    await net.runAsync(1500);
+    assert.equal(source.node.status().children.length, 4);
+    assert.ok(first.video.size > 0);
+    assert.deepEqual(source.metrics.filter((m) => m.t === "layer" && (m as { reason: string }).reason === "overload"), []);
+    // And back to two when it is no longer alone.
+    net.setRole("0", "source", 2);
+    assert.equal(source.node.status().freeSlots, 0);
+  });
+
   it("sends PROBE packets to the parent in the lowest class, hears FEEDBACK back while they come, and reports the result", async () => {
     const made: ({ bitrateKbps: number } | undefined)[] = [];
     const heard = new Map<LinkEstimator, number>();
@@ -350,7 +382,7 @@ describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
     assert.deepEqual(missing(relay, Math.min(...relay.video), net.published - 3), []);
   });
 
-  it("a probe with no parent, or cut short by a change of parent, reports null", async () => {
+  it("a probe with nobody to go to, or cut short by a change of parent, reports null", async () => {
     const net = new SimNet({ backups: true });
     const source = net.join("0", "source", []);
     net.publish(source);
@@ -361,9 +393,11 @@ describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
     const leaf = net.join("3", "leaf", ["1"], ["2"]);
     await net.runAsync(1500);
     const results: (number | null)[] = [];
-    source.node.on("probe", (spare) => results.push(spare));
+    // A leaf with no parent yet has nobody to probe toward (the source, D49, probes toward a child).
+    const orphan = net.join("4", "leaf", []);
+    orphan.node.on("probe", (spare) => results.push(spare));
     leaf.node.on("probe", (spare) => results.push(spare));
-    source.node.runProbe(fakeProbe(1, 1000).probe);
+    orphan.node.runProbe(fakeProbe(1, 1000).probe);
     leaf.node.runProbe(fakeProbe(1, 1000).probe);
     await net.runAsync(100);
     net.kill("1");

@@ -785,6 +785,16 @@ class Core implements CoordinatorCore {
     for (const entry of this.map.promotable(now, false)) await this.setRole(fx, entry.node, "relay", now, entry.provisional);
     // [D50] A relay holds to the fan-out it was told: when its verdict's changes (a new probe), it is told again.
     for (const node of this.map.nodes.values()) {
+      if (node.role === "source" && node.conn !== null) {
+        // [D49] The source is told its fan-out when it is not `sourceFanout`, and when it goes back.
+        const fanout = Math.min(64, this.map.fanout(node));
+        const told = this.toldFanout.get(node.peer) ?? this.o.params.sourceFanout;
+        if (fanout !== told) {
+          this.toldFanout.set(node.peer, fanout);
+          this.send(fx, node.conn, { t: "role", role: "source", grant: await this.grantFor(node, now), fanout });
+        }
+        continue;
+      }
       if (node.role !== "relay" || node.conn === null) continue;
       const told = this.toldFanout.get(node.peer);
       const fanout = this.map.fanout(node);

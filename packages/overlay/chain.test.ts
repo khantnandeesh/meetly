@@ -79,7 +79,7 @@ describe("a chain forms through promotion (SPEC §6.6, §8.1)", () => {
   }
 
   before(async () => {
-    server = await startNodeCoordinator({ port: PORT, admissionSecret: ADMISSION_SECRET, serverSecret: SERVER_SECRET, params: { sourceFanout: 1, maxFanout: 1, probationMs: 1000 }, storage: new Map(), seed: 5 });
+    server = await startNodeCoordinator({ port: PORT, admissionSecret: ADMISSION_SECRET, serverSecret: SERVER_SECRET, params: { sourceFanout: 1, maxFanout: 1, sourceAloneFanout: 1, probationMs: 1000 }, storage: new Map(), seed: 5 });
   });
   after(async () => {
     for (const stop of stops) stop();

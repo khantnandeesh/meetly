@@ -41,7 +41,8 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.equal(shape.waiting, 0, "everyone has a parent");
     assert.ok(shape.maxDepth <= bound(200), `depth ${shape.maxDepth}`);
     assert.equal(swarm.offeredBeyondFree, 0);
-    assert.ok(apart >= 0.95, `first backup clear of first parent for ${(apart * 100).toFixed(1)}%`);
+    // D49 puts up to six on the source at the start, and a depth-1 peer's backup can never be clear of the source.
+    assert.ok(apart >= 0.93, `first backup clear of first parent for ${(apart * 100).toFixed(1)}%`);
     // The coordinator's map is what the peers said: the same tree.
     const records = new Map(swarm.rig.core.snapshot().peers.map((peer) => [peer.peer, peer]));
     for (const peer of swarm.peers.values()) {
@@ -71,13 +72,37 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.equal(swarm.offeredBeyondFree, 0);
   });
 
+  it("D49: while it is the only relay, the source with the uplink for six is told six; once a relay appears, its own again", async () => {
+    // Viewers that can never relay: the source stays alone. 50 Mbps at the session's 1,232 kbps is room for 24.
+    const params = { ...DEFAULT_PARAMS, sourceFanout: 3, maxFanout: 4, probationMs: 3000 };
+    const swarm = new Swarm(new Rig({ random: seeded(5), params }), undefined, { linkMs: 50, probedUplinkKbps: 20_000 });
+    await swarm.addSource();
+    for (let i = 0; i < 4; i++) {
+      await swarm.addViewer(false);
+      await swarm.step(500);
+    }
+    await swarm.step(3000);
+    assert.equal(swarm.source!.grantFanout, 6, "told six while alone");
+    assert.ok(swarm.source!.kids.size >= 4, `${swarm.source!.kids.size} on the source`);
+    // Viewers that can relay: once one is a relay, the source is told its own fan-out again.
+    for (let i = 0; i < 10; i++) {
+      await swarm.addViewer(true);
+      await swarm.step(500);
+    }
+    await swarm.step(20_000);
+    // The source is told within a housekeeping round of the first relay.
+    await swarm.step(3000);
+    assert.ok(swarm.shape().relays > 0, "a relay was made");
+    assert.equal(swarm.source!.grantFanout, 3, "back to sourceFanout");
+  });
+
   it("the smoke's tree (7 peers, fan-outs 2): relays whose probe shows two children each take two, as the smoke needs", async () => {
     // [D50] The probe is sized by the session's bitrate, as the verdict is, so a probe that
     // reaches its target shows the fan-out it was sized for; every relay is told its fan-out and
     // its node holds to it. (Before D50 a probe sized by the video gave a verdict of 1, while the
     // node took two: relief by the verdict then moved a child a level down.)
     for (let seed = 1; seed <= 3; seed++) {
-      const params = { ...DEFAULT_PARAMS, sourceFanout: 2, maxFanout: 2, probationMs: 3000 };
+      const params = { ...DEFAULT_PARAMS, sourceFanout: 2, maxFanout: 2, sourceAloneFanout: 2, probationMs: 3000 };
       // What a probe sized for two children at the session's 1,232 kbps finds, on an uplink that has it: 1.1 x 2 x 1.15 x 1,232 / 0.7.
       const swarm = new Swarm(new Rig({ random: seeded(seed), params }), undefined, { probeAt: ({ placedAt }) => placedAt + 1300, linkMs: 100, probedUplinkKbps: 4454 });
       await swarm.addSource();

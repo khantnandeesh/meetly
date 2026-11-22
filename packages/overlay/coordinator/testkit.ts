@@ -399,7 +399,8 @@ export class Swarm {
   }
 
   private fanout(peer: SimPeer): number {
-    if (peer.role === "source") return this.rig.options.params.sourceFanout;
+    // [D49] The source takes what the coordinator last told it, as the node does.
+    if (peer.role === "source") return peer.grantFanout ?? this.rig.options.params.sourceFanout;
     if (peer.role !== "relay") return 0;
     return peer.grantFanout ?? this.rig.options.params.maxFanout;
   }

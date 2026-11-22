@@ -72,6 +72,8 @@ const SHORT_PROBE = { fanout: 2, durationMs: 1000 };
  * for the provisional relays, and each one opened a second sooner is a layer of the tree sooner.
  */
 const PROBE_AFTER_PARENT_MS = 200;
+/** [D49] While it is the only relay the source may take up to six: its probe, toward its first child, is sized for them. */
+const SOURCE_ALONE_FANOUT = 6;
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /** The source applies SPEC §11.4's uplink rule once a second. */
@@ -317,11 +319,29 @@ abstract class PeerEngine {
   private natPending = false;
 
   private probeOnFirstParent(): void {
-    if (this.hadParent || this.welcome?.role === "source") return;
+    if (this.welcome?.role === "source") return this.probeSourceOnFirstChild();
+    if (this.hadParent) return;
     const stripe = this.node?.status().stripes[0];
     if (!stripe || stripe.state !== "active" || stripe.parent === null) return;
     this.hadParent = true;
     if (this.probePhase === "short" && !this.probeRunning) this.scheduleProbe(PROBE_AFTER_PARENT_MS);
+  }
+
+  /**
+   * [D49] The source's uplink, once it has a child to probe toward: the coordinator gives it up
+   * to SOURCE_ALONE_FANOUT children while it is the only relay, if this shows the room for them.
+   */
+  private probeSourceOnFirstChild(): void {
+    const node = this.node;
+    const welcome = this.welcome;
+    if (this.hadParent || !node || !welcome || this.probeRunning || this.options.capabilities?.uplinkKbps != null) return;
+    if (node.status().children.length === 0) return;
+    const most = welcome.params.sourceAloneFanout ?? SOURCE_ALONE_FANOUT;
+    if (most <= welcome.params.sourceFanout) return;
+    this.hadParent = true;
+    this.probePhase = "full";
+    this.probeRunning = true;
+    node.runProbe(createUplinkProbe({ targetKbps: probeTargetKbps(welcome.params, this.sessionKbps(), most), durationMs: 1000 }));
   }
 
   private scheduleProbe(afterMs: number): void {
@@ -363,6 +383,15 @@ abstract class PeerEngine {
 
   private onProbe(spare: number | null): void {
     this.probeRunning = false;
+    if (this.welcome?.role === "source") {
+      // [D49] Once: what it found, or (cut short) another try at the next change of status.
+      if (spare === null) this.hadParent = false;
+      else if (this.caps) {
+        this.caps = { ...this.caps, uplinkKbps: Math.round(spare) };
+        this.sendStatus();
+      }
+      return;
+    }
     if (spare === null) return this.scheduleProbe(this.probePhase === "short" ? PROBE_WAIT_MS : PROBE_RETRY_MS);
     if (this.caps) this.caps = { ...this.caps, uplinkKbps: Math.round(spare) };
     this.sendStatus();

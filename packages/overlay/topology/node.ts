@@ -491,7 +491,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   /** What the player says of its playout, for FEEDBACK. */
   const playout = { delayMs: 0, bufferMs: 0 };
   /** A probe of the link to the parent, while it runs (`runProbe`). */
-  let probing: { probe: UplinkProbe; parent: Peer } | null = null;
+  /** The probe under way, and who it goes to: the parent, or (the source, D49) its first child. */
+  let probing: { probe: UplinkProbe; to: Peer } | null = null;
   let lastStatus = "";
 
   /* stats */
@@ -564,7 +565,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /** What the coordinator capped this relay's fan-out at (a provisional relay, SPEC §8.1 [D38]), if it did. */
   let fanoutCap: number | null = null;
-  const fanout = () => (role === "source" ? params.sourceFanout : role === "relay" ? Math.min(params.maxFanout, fanoutCap ?? Infinity) : 0);
+  /** [D49] The source's fan-out as the coordinator last set it (up to 6 while it is the only relay), or null for `sourceFanout`. */
+  let sourceFanout: number | null = null;
+  const fanout = () => (role === "source" ? (sourceFanout ?? params.sourceFanout) : role === "relay" ? Math.min(params.maxFanout, fanoutCap ?? Infinity) : 0);
   const isActiveChild = (peer: Peer) => {
     for (const sub of peer.subs.values()) if (sub.mode === "active") return true;
     return false;
@@ -1062,15 +1065,16 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   /** Runs a probe handed to `runProbe`: what it asks for, to the parent, in the lowest class. */
   function runProbe(now: number): void {
     if (!probing) return;
-    const { probe } = probing;
-    if (parent !== probing.parent || !parent || parent.link.state !== "open") {
+    const { probe, to } = probing;
+    const gone = role === "source" ? !peers.has(to.id) || to.subs.size === 0 : parent !== to;
+    if (gone || to.link.state !== "open") {
       probing = null;
       events.emit("probe", null);
       return;
     }
-    parent.estimator.onBuffered(parent.link.bufferedAmount, now);
-    const view = parent.estimator.directed ? parent.estimator.directed("sent", now) : parent.estimator.estimate(now);
-    for (const size of probe.next(view, now)) sendPacket(parent, encodeProbe({ linkSeq: 0, sendMs: 0, size }), "replay", now);
+    to.estimator.onBuffered(to.link.bufferedAmount, now);
+    const view = to.estimator.directed ? to.estimator.directed("sent", now) : to.estimator.estimate(now);
+    for (const size of probe.next(view, now)) sendPacket(to, encodeProbe({ linkSeq: 0, sendMs: 0, size }), "replay", now);
     if (probe.spareKbps !== null) {
       probing = null;
       events.emit("probe", probe.spareKbps);
@@ -2175,7 +2179,16 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   }
 
   function onRole(to: OverlayRole, cap?: number): void {
-    if (role === "source" || to === "source") return;
+    if (role === "source") {
+      // [D49] The source's own fan-out: raised while it is the only relay, back when it is not.
+      if (to === "source" && cap !== undefined && cap !== sourceFanout) {
+        sourceFanout = cap;
+        checkOverload();
+        changed();
+      }
+      return;
+    }
+    if (to === "source") return;
     const nextCap = to === "relay" && cap !== undefined ? cap : null;
     if (to === role && nextCap === fanoutCap) return;
     // [D50] Every relay is told its fan-out; one told none (an older coordinator) keeps maxFanout.
@@ -2297,12 +2310,15 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     takeStats,
 
     runProbe(probe) {
-      if (role === "source" || !parent || state !== "active") {
+      // [D49] The source has no parent: it probes its uplink toward its first active child, which
+      // reports what arrives in its FEEDBACK as any child does.
+      const to = role === "source" ? (activeChildren()[0] ?? null) : state === "active" ? parent : null;
+      if (!to) {
         events.emit("probe", null);
         return;
       }
       if (probing) events.emit("probe", null);
-      probing = { probe, parent };
+      probing = { probe, to };
     },
 
     async stop() {

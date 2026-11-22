@@ -243,7 +243,8 @@ describe("coordinator: provisional relays (D38)", () => {
       const skipped = await run(false, perSecond);
       const waited = await run(true, perSecond);
       console.log(`      ${perSecond.toFixed(1)} joining a second, welcome to linked: probe put off p50 ${skipped.p50} s, p95 ${skipped.p95} s; probe waiting for the NAT type p50 ${waited.p50} s, p95 ${waited.p95} s`);
-      assert.ok(skipped.p95 >= 4, `the gate's ${skipped.p95} s`);
+      // The probe put off is the slower (D49's source fan-out has made both faster than the gate's 4 s).
+      assert.ok(skipped.p95 > waited.p95, `put off ${skipped.p95} s, waiting ${waited.p95} s`);
       assert.ok(waited.p95 <= 3.6, `p95 ${waited.p95} s`);
     }
   });

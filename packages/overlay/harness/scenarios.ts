@@ -228,7 +228,8 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
   // package's coordinator nobody below the source could relay before it, and these kill a relay a
   // few seconds after the tree fills. The gate scenarios keep the 20 s of production.
   const short = { probationMs: 3000 };
-  const proofTree = { sourceFanout: 2, maxFanout: 2, ...short };
+  // D49's source-alone fan-out kept at the source's own: these scenarios are about the proof's tree.
+  const proofTree = { sourceFanout: 2, maxFanout: 2, sourceAloneFanout: 2, ...short };
   switch (name) {
     case "smoke":
     case "proof-tree": {
@@ -240,7 +241,7 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     }
     case "chain-kill": {
       // A fan-out of one makes a chain; the last relay takes the leaves that are left.
-      const config = { ...base, peers: 5, params: { sourceFanout: 1, maxFanout: 1, ...short } };
+      const config = { ...base, peers: 5, params: { sourceFanout: 1, maxFanout: 1, sourceAloneFanout: 1, ...short } };
       const at = settledS(config);
       return { ...config, churn: [{ atS: at, action: "kill", pick: "shallowest-relay", count: 1 }], durationS: at + 6, expect: { peers: 5, minRepairs: 1 } };
     }
@@ -250,7 +251,7 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
       // kbps stream, on the source's link to it only; 15 s later it has 3 Mbps, room for every layer.
       // A real encode padded to 1,200 kbps (the package's encoder fed moving noise; the stand-in
       // pads too), so that 900 kbps really is under the stream.
-      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: GATE_PROGRAM };
+      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, sourceAloneFanout: 3, ...short }, program: GATE_PROGRAM };
       const at = settledS(config);
       return {
         ...config,
