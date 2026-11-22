@@ -62,6 +62,12 @@ export const SCALE_UP_MAX_MS = 60_000;
 export const SCALE_UP_FACTOR = 0.9;
 /** A size is not changed again sooner than this. */
 export const SCALE_HOLD_MS = 2500;
+/**
+ * For this long after the picture is made bigger, frames are let through only into this share of
+ * the usual room: what frames of the new size cost is a guess until some have come out.
+ */
+export const TRY_MS = 2500;
+export const TRY_GATE = 0.88;
 /** Room is kept for a keyframe due this soon, so that it is not late for want of it. */
 export const KEY_RESERVE_MS = 600;
 
@@ -88,6 +94,8 @@ export class VideoRateController {
   private raisedAt = -Infinity;
   private counters = { offered: 0, skipped: 0, scaleChanges: 0 };
   private keySeenAtLevel = false;
+  /** Until then the picture is at a size just tried bigger. */
+  private tryingUntil = -Infinity;
   /** Keyframes out so far, and how many of them had been acted on: each is acted on once. */
   private keysSeen = 0;
   private keyActedOn = 0;
@@ -141,7 +149,7 @@ export class VideoRateController {
     const expected = this.expectedBytes(key, temporal);
     const pending = this.inFlight.reduce((sum, bytes) => sum + bytes, 0);
     const reserved = !key && untilKeyMs <= KEY_RESERVE_MS ? this.expectedBytes(true, 0) : 0;
-    const gate = this.windowCapBytes() / (RATE_WINDOW_ALLOWANCE / RATE_GATE_MARGIN);
+    const gate = (this.windowCapBytes() / (RATE_WINDOW_ALLOWANCE / RATE_GATE_MARGIN)) * (now < this.tryingUntil ? TRY_GATE : 1);
     // A frame bigger than the whole window at this size: the picture must get smaller, now.
     if (expected > gate && this.level < SCALE_LEVELS.length - 1) {
       this.offered.push({ at: now, skipped: true });
@@ -180,10 +188,9 @@ export class VideoRateController {
     }
     else {
       const layer = Math.min(temporal, this.layerBytes.length - 1);
-      // Delta frames come thirty a second, and an error in one is made good by the next: their
-      // running mean, not the worst of them, or frames that would have fitted are held back.
-      const old = this.layerBytes[layer] ?? null;
-      this.layerBytes[layer] = old === null ? bytes : 0.7 * old + 0.3 * bytes;
+      // Up at once with a bigger frame (the picture got harder, or bigger: frames let through on a
+      // low guess are what takes a window over), down halfway with each smaller one.
+      this.layerBytes[layer] = remember(this.layerBytes[layer] ?? null);
     }
   }
 
@@ -275,6 +282,7 @@ export class VideoRateController {
     if (this.keyBytes !== null) this.keyBytes *= ratio;
     for (let i = 0; i < this.layerBytes.length; i++) if (this.layerBytes[i] !== null) this.layerBytes[i] = (this.layerBytes[i] as number) * ratio;
     this.keySeenAtLevel = false;
+    this.tryingUntil = level < this.level ? now + TRY_MS : -Infinity;
     this.level = level;
     this.levelAt = now;
     this.counters.scaleChanges++;
