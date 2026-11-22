@@ -21,13 +21,13 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { Rig, Swarm, seeded } from "./testkit";
+import { Rig, Swarm, type SwarmOptions, seeded } from "./testkit";
 
-type Result = { overFive: number; maxDepth: number; p95Depth: number; eventsMedian: number; eventsP95: number; waitingMax: number; relays: number; deepening: number; swaps: number; relief: number };
+type Result = { overFive: number; maxDepth: number; p95Depth: number; eventsMedian: number; eventsP95: number; waitingMax: number; relays: number; deepening: number; swaps: number; relief: number; demotions: number; nodeSwitches: number };
 
-async function churn(share: number, replaceKilled: boolean, seed: number): Promise<Result> {
+async function churn(share: number, replaceKilled: boolean, seed: number, options: SwarmOptions = {}): Promise<Result> {
   const random = seeded(seed * 7 + 1);
-  const swarm = new Swarm(new Rig({ random: seeded(seed) }), undefined, { probeAfterMs: 2_000 });
+  const swarm = new Swarm(new Rig({ random: seeded(seed) }), undefined, { probeAfterMs: 2_000, ...options });
   const capable = () => random() < share;
   await swarm.addSource();
   for (let joined = 0; joined < 199; ) {
@@ -68,6 +68,8 @@ async function churn(share: number, replaceKilled: boolean, seed: number): Promi
     deepening: swarm.deepeningMoves,
     swaps: swarm.deadEndSwaps,
     relief: swarm.reliefDown,
+    demotions: swarm.demotions,
+    nodeSwitches: swarm.nodeSwitches,
   };
 }
 
@@ -89,4 +91,17 @@ describe("coordinator: the tree's depth under the gate's churn (SPEC §6.6, §12
       assert.ok(result.eventsMedian <= 5, `median ${result.eventsMedian} events per kill`);
     });
   }
+
+  it("the gate's mix: 15% on bad networks (their own loss, as their parents' children report it), nodes rebalancing on round trips (SPEC §7.6): few demotions, no deepening", { timeout: 120_000 }, async () => {
+    // The gate's two 200-peer runs made 85 and 109 relays leaves (one every 7 s), when a relay
+    // was demoted for half of its children losing over 5%: a provisional relay with one child on
+    // "bad". Its children were moved wherever there was room, relays with subtrees among them.
+    // Here, with half: 90-146 demotions in 10 minutes, 70-104 moves deeper (seeds 1-3); with
+    // more than half and two at least: 7-9, and 2-6.
+    const result = await churn(0.95, false, 1, { badNetworks: { share: 0.15, odds: 0.6, random: seeded(17) }, nodeRebalance: { perHopMs: 30, random: seeded(13) } });
+    console.log(`      ${result.demotions} demotions, ${result.deepening} moves deeper, ${result.nodeSwitches} switches by the nodes' own cost rule; ${result.overFive} s of 600 deeper than 5, p95 ${result.p95Depth}, deepest ${result.maxDepth}`);
+    assert.ok(result.demotions <= 20, `${result.demotions} demotions`);
+    assert.ok(result.deepening <= 10, `${result.deepening} deepening moves`);
+    assert.ok(result.p95Depth <= 5, `p95 depth ${result.p95Depth}`);
+  });
 });

@@ -244,6 +244,13 @@ export type SimPeer = {
   backupAskedAt: number;
   /** Asking the coordinator for a parent: a cold repair (whom it lost), or a join none of whose offers would have it; since when. */
   lost: { dead: PeerId | null; at: number } | null;
+  /** For `nodeRebalance`: this peer's one-way delay and runner, its streak of better comparisons, and when it last changed parent. */
+  oneWayMs?: number;
+  runner?: number;
+  streak?: number;
+  switchedAt?: number;
+  /** For `badNetworks`: this peer's link loses packets. */
+  bad?: boolean;
 };
 
 export type SwarmOptions = {
@@ -253,11 +260,36 @@ export type SwarmOptions = {
    */
   probeAfterMs?: number;
   /**
+   * When a peer able to relay has its uplink measured, from when it joined and when it first had
+   * a parent, if not `probeAfterMs` after the second (the engine's timers, for `engineProbe`).
+   */
+  probeAt?: (peer: { joinedAt: number; placedAt: number }) => number;
+  /**
+   * What a joiner's first link takes, offer to media (the gate's p50 is about 0.5 s): added to
+   * each `joinWaits` entry. The placement itself is immediate.
+   */
+  linkMs?: number;
+  /**
    * Whether a peer takes a backup offered in an `assign` "rebalance" that has no free slot, only
    * a standby place (SPEC §7.3: that is all a backup needs). False is topology's node as built
    * (d9eb663), which takes only one that says `free > 0`.
    */
   standbyBackups?: boolean;
+  /**
+   * The node's own rebalancing (SPEC §7.6), with round trips: each peer gets a network (the
+   * gate's mix, `GATE_MIX`: one-way 15, 30 or 60 ms, or 30 for "slow") and a runner of 20; a
+   * link's round trip is the two ends' one-way delays plus 2 ms on one runner, 10 across. Every
+   * 10 s a peer compares its parent's cost (§8.3: rtt + `perHopMs` × depth) with its backup's,
+   * and switches to the backup if it is 20% and 20 ms cheaper three comparisons running, 30 s
+   * after its last switch. Off when absent: the simulator then has no round trips at all.
+   */
+  nodeRebalance?: { perHopMs: number; random: () => number };
+  /**
+   * Viewers on a bad network (the gate's "bad", 15%: 3% loss with bursts): in each `status` such
+   * a peer says a loss over `CHILD_LOSS_PCT` with odds `odds`, else 2%. Its own link, not its
+   * parent's: it is what a relay's children report of it (SPEC §8.1, demotion). Off when absent.
+   */
+  badNetworks?: { share: number; odds: number; random: () => number };
 };
 
 /** What a peer does with what the coordinator says, as topology's node does (SPEC §7). */
@@ -298,7 +330,16 @@ export class Swarm {
   private needId = 1;
   private readonly pending = new Map<number, Pending>();
   private readonly probeAfterMs: number;
+  private readonly probeAt: SwarmOptions["probeAt"];
+  private readonly linkMs: number;
   private readonly standbyBackups: boolean;
+  private readonly nodeRebalance: SwarmOptions["nodeRebalance"];
+  private readonly badNetworks: SwarmOptions["badNetworks"];
+  /** Switches the peers made by their own cost rule, and how many of them took the peer deeper. */
+  nodeSwitches = 0;
+  nodeSwitchesDeeper = 0;
+  /** Relays made leaves (SPEC §8.1). */
+  demotions = 0;
 
   constructor(
     public rig: Rig,
@@ -306,7 +347,51 @@ export class Swarm {
     options: SwarmOptions = {},
   ) {
     this.probeAfterMs = options.probeAfterMs ?? 21_000;
+    this.probeAt = options.probeAt;
+    this.linkMs = options.linkMs ?? 0;
     this.standbyBackups = options.standbyBackups ?? false;
+    this.nodeRebalance = options.nodeRebalance;
+    this.badNetworks = options.badNetworks;
+  }
+
+  private network(peer: SimPeer): void {
+    if (this.badNetworks && peer.role !== "source") peer.bad = this.badNetworks.random() < this.badNetworks.share;
+    const random = this.nodeRebalance?.random;
+    if (!random) return;
+    const draw = random();
+    peer.oneWayMs = draw < 0.5 ? 15 : draw < 0.8 ? 30 : draw < 0.95 ? 60 : 30;
+    peer.runner = Math.floor(random() * 20);
+    peer.streak = 0;
+    peer.switchedAt = -Infinity;
+  }
+
+  private rtt(a: SimPeer, b: SimPeer): number {
+    return (a.oneWayMs ?? 0) + (b.oneWayMs ?? 0) + (a.runner === b.runner ? 2 : 10);
+  }
+
+  /** SPEC §7.6 as topology's node runs it, once every 10 s per peer. */
+  private async rebalanceOwn(peer: SimPeer): Promise<void> {
+    const rule = this.nodeRebalance;
+    if (!rule || peer.parent === null || peer.backup === null || peer.role === "source") return;
+    const parent = this.peers.get(peer.parent);
+    const backup = this.peers.get(peer.backup);
+    if (!parent || !backup || !backup.alive || backup.role === "leaf" || this.path(backup.peer).includes(peer.peer)) return;
+    const cost = (x: SimPeer) => this.rtt(peer, x) + rule.perHopMs * x.depth;
+    const now = cost(parent);
+    const then = cost(backup);
+    const better = then <= now * 0.8 && now - then >= 20;
+    peer.streak = better ? (peer.streak ?? 0) + 1 : 0;
+    if ((peer.streak ?? 0) < 3 || this.rig.now - (peer.switchedAt ?? -Infinity) < this.rig.options.params.rebalanceMinMs) return;
+    // A full backup refuses a switch (a `sub` from FROM_LIVE, not a repair).
+    if (backup.kids.size >= this.fanout(backup)) return;
+    peer.streak = 0;
+    this.nodeSwitches++;
+    if (backup.depth + 1 > peer.depth) this.nodeSwitchesDeeper++;
+    const old = peer.parent;
+    this.attach(peer, backup);
+    peer.backup = old;
+    peer.switchedAt = this.rig.now;
+    await this.say(peer, { t: "report", event: "parent-switch", stream: 0, stripe: 0, peer: old, next: backup.peer });
   }
 
   private fanout(peer: SimPeer): number {
@@ -330,6 +415,7 @@ export class Swarm {
   async addSource(): Promise<SimPeer> {
     const { conn, peer, welcome } = await this.rig.join("host", "source", relayCaps({ uplinkKbps: 50_000 }));
     const sim: SimPeer = { conn, peer, identity: "host", grant: welcome.grant, stuck: false, capable: true, role: "source", grantFanout: null, caps: relayCaps({ uplinkKbps: 50_000 }), parent: null, backup: null, depth: 0, kids: new Set(), joinedAt: this.rig.now, placedAt: this.rig.now, statusAt: 0, dirty: true, alive: true, backupAskedAt: 0, lost: null };
+    this.network(sim);
     this.peers.set(peer, sim);
     this.source = sim;
     await this.rig.say(conn, { t: "streams", streams: this.streams });
@@ -346,6 +432,7 @@ export class Swarm {
     const welcome = answers.find((message): message is ServerMessageOf<"welcome"> => message.t === "welcome");
     this.rig.inbox.set(conn, answers.filter((message) => message !== welcome));
     const sim: SimPeer = { conn, peer: welcome?.peer ?? `(waiting ${identity})`, identity, grant: welcome?.grant ?? "", stuck: welcome !== undefined && welcome.streams.length === 0, capable, role: "leaf", grantFanout: null, caps, parent: null, backup: null, depth: 255, kids: new Set(), joinedAt: this.rig.now, placedAt: null, statusAt: 0, dirty: false, alive: true, backupAskedAt: 0, lost: null };
+    this.network(sim);
     if (welcome) {
       this.peers.set(sim.peer, sim);
       this.onAssign(sim, welcome.assign, "join");
@@ -425,7 +512,7 @@ export class Swarm {
     parent.kids.add(peer.peer);
     parent.dirty = true;
     if (peer.backup === parent.peer) peer.backup = null;
-    if (peer.placedAt === null) this.joinWaits.push(this.rig.now - peer.joinedAt);
+    if (peer.placedAt === null) this.joinWaits.push(this.rig.now - peer.joinedAt + this.linkMs);
     peer.placedAt ??= this.rig.now;
     peer.lost = null;
     this.redepth(peer, parent.depth + 1);
@@ -542,7 +629,11 @@ export class Swarm {
     const backup = first.backups.map((hint) => this.peers.get(hint.peer)).find((candidate) => candidate && candidate.alive && candidate !== parent && candidate !== peer);
     this.attach(peer, parent);
     // After a move the old parent becomes the backup, as topology's node does (SPEC §7.6).
-    if (reason === "move") peer.backup = old;
+    if (reason === "move") {
+      peer.backup = old;
+      peer.switchedAt = this.rig.now;
+      peer.streak = 0;
+    }
     else if (backup) peer.backup = backup.peer;
   }
 
@@ -551,7 +642,12 @@ export class Swarm {
     peer.statusAt = this.rig.now;
     const free = Math.max(0, this.fanout(peer) - peer.kids.size);
     const links = peer.parent === null && peer.role !== "source" ? [] : this.streams.map((stream) => ({ stream: stream.id, stripe: 0, parent: peer.parent, backup: peer.backup }));
-    await this.say(peer, { t: "status", depth: peer.parent === null && peer.role !== "source" ? 255 : peer.depth, links, children: peer.kids.size, standby: 0, free, caps: peer.caps, lossPct: 0, rttMs: 20 });
+    await this.say(peer, { t: "status", depth: peer.parent === null && peer.role !== "source" ? 255 : peer.depth, links, children: peer.kids.size, standby: 0, free, caps: peer.caps, lossPct: this.lossOf(peer), rttMs: 20 });
+  }
+
+  private lossOf(peer: SimPeer): number {
+    if (!peer.bad || !this.badNetworks || peer.parent === null) return 0;
+    return this.badNetworks.random() < this.badNetworks.odds ? 8 : 2;
   }
 
   /** Reads what the coordinator sent, acts on it, and says what changed, until nothing more is said. */
@@ -585,7 +681,10 @@ export class Swarm {
           else if (message.t === "grant") peer.grant = message.grant;
           else if (message.t === "role") {
             peer.grant = message.grant;
-            if (peer.role === "relay" && message.role === "leaf") demoted.push(peer);
+            if (peer.role === "relay" && message.role === "leaf") {
+              demoted.push(peer);
+              this.demotions++;
+            }
             peer.role = message.role;
             peer.grantFanout = message.fanout ?? null;
             peer.dirty = true;
@@ -609,11 +708,22 @@ export class Swarm {
 
   /** One second passes. */
   async second(): Promise<void> {
-    await this.rig.advance(1000);
+    await this.step(1000);
+  }
+
+  /**
+   * `ms` pass (a second, or a part of one for a finer clock: what peers do once a second, a cold
+   * repair asking again, is done when a second is crossed).
+   */
+  async step(ms: number): Promise<void> {
+    const before = this.rig.now;
+    await this.rig.advance(ms);
+    const crossed = (unit: number) => Math.floor(this.rig.now / unit) !== Math.floor(before / unit);
+    if (this.nodeRebalance && crossed(10_000)) for (const peer of [...this.peers.values()]) if (peer.alive) await this.rebalanceOwn(peer);
     for (const peer of this.peers.values()) {
       if (!peer.alive) continue;
       // SPEC §8.1: a peer able to relay, in the tree, measures its spare uplink (D19, D38).
-      if (peer.capable && peer.role === "leaf" && peer.placedAt !== null && peer.caps.uplinkKbps === null && this.rig.now - peer.placedAt >= this.probeAfterMs) {
+      if (peer.capable && peer.role === "leaf" && peer.placedAt !== null && peer.caps.uplinkKbps === null && this.rig.now >= (this.probeAt ? this.probeAt({ joinedAt: peer.joinedAt, placedAt: peer.placedAt }) : peer.placedAt + this.probeAfterMs)) {
         peer.caps = relayCaps({ uplinkKbps: 20_000 });
         peer.dirty = true;
       }
@@ -627,7 +737,7 @@ export class Swarm {
           this.rejoins++;
           // It starts over (SPEC §7.5, "rejoining"): as far as the coordinator goes, it asks again from scratch.
           peer.lost = { dead: null, at: this.rig.now };
-        } else await this.need(peer, "cold", peer.lost.dead);
+        } else if (crossed(1000)) await this.need(peer, "cold", peer.lost.dead);
       }
       // A backup that is gone, or never was, is asked for (SPEC §7.3). A child of the source has none to have.
       const backup = peer.backup !== null ? this.peers.get(peer.backup) : undefined;

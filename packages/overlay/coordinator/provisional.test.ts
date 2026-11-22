@@ -201,4 +201,49 @@ describe("coordinator: provisional relays (D38)", () => {
     assert.ok(withProvisional.p95 <= 4, `p95 ${withProvisional.p95} s`);
     assert.ok(without.p95 >= 15, "without D38 they wait out probation");
   });
+
+  it("the gate's session start with the engine's timers: the probe put off 10 s for want of the NAT type is what the joiners wait for (simulated, 100 ms steps)", { timeout: 120_000 }, async () => {
+    // The engine at c0df0fa: the short probe 0.2 s after the first link; a peer whose NAT type
+    // (`probeNat`, up to 3 s) is not known by then finds "nat" against it and tries again in
+    // 10 s. The gate's two runs: every joiner of the first 40 s promoted within 5 s of its link
+    // had linked 2.7 s or more after its welcome, and none that linked sooner was. With the probe
+    // waiting for the NAT type instead, the first relays come a probe after the NAT type.
+    const NAT_MS = 3000;
+    const LINK_MS = 500;
+    const run = async (waitsForNat: boolean, perSecond: number) => {
+      const probeAt = ({ joinedAt, placedAt }: { joinedAt: number; placedAt: number }) => {
+        let start = placedAt + LINK_MS + 200;
+        if (waitsForNat) start = Math.max(start, joinedAt + NAT_MS);
+        else while (start < joinedAt + NAT_MS) start += 10_000;
+        return start + 1000;
+      };
+      const waits: number[] = [];
+      for (let seed = 1; seed <= 3; seed++) {
+        const random = seeded(seed);
+        const swarm = new Swarm(new Rig({ random: seeded(seed) }), undefined, { probeAt, linkMs: LINK_MS });
+        await swarm.addSource();
+        // The gate's mix: "bad" (15%, lossy) and "slow" (5%, too little uplink) never relay.
+        for (let t = 0, joined = 0; joined < 199; t += 100) {
+          while (joined < 199 && 2000 + (joined * 1000) / perSecond <= t) {
+            await swarm.addViewer(random() < 0.8);
+            joined++;
+          }
+          await swarm.step(100);
+        }
+        for (let s = 0; s < 40; s++) await swarm.second();
+        assert.equal(swarm.shape().waiting, 0);
+        assert.ok(swarm.shape().maxDepth <= 5);
+        waits.push(...swarm.joinWaits);
+      }
+      waits.sort((a, b) => a - b);
+      return { p50: waits[Math.floor(waits.length / 2)] / 1000, p95: waits[Math.floor(waits.length * 0.95)] / 1000 };
+    };
+    for (const perSecond of [4, 200 / 30]) {
+      const skipped = await run(false, perSecond);
+      const waited = await run(true, perSecond);
+      console.log(`      ${perSecond.toFixed(1)} joining a second, welcome to linked: probe put off p50 ${skipped.p50} s, p95 ${skipped.p95} s; probe waiting for the NAT type p50 ${waited.p50} s, p95 ${waited.p95} s`);
+      assert.ok(skipped.p95 >= 4, `the gate's ${skipped.p95} s`);
+      assert.ok(waited.p95 <= 3.6, `p95 ${waited.p95} s`);
+    }
+  });
 });

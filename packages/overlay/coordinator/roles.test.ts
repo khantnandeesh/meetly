@@ -122,8 +122,8 @@ describe("coordinator: promotion (SPEC §6.6, §8.1)", () => {
 });
 
 describe("coordinator: demotion (SPEC §8.1)", () => {
-  /** A relay with three children; `lossy` of them report `lossPct` from it in their metrics. */
-  async function demotionCase(lossy: number, lossPct: number, seconds: number) {
+  /** A relay with `children` children (three); `lossy` of them report `lossPct` from it in their metrics. */
+  async function demotionCase(lossy: number, lossPct: number, seconds: number, children = 3) {
     const s = await session();
     const relay = await s.join("relay", true);
     s.everyone.push(relay);
@@ -138,11 +138,11 @@ describe("coordinator: demotion (SPEC §8.1)", () => {
     });
     assert.deepEqual(roles(relay), ["relay"]);
     const kids: Joined[] = [];
-    for (let i = 0; i < 3; i++) kids.push(await s.join(`kid-${i}`, false));
+    for (let i = 0; i < children; i++) kids.push(await s.join(`kid-${i}`, false));
     s.everyone.push(...kids);
     const report = async () => {
       await s.say(s.source, status(null, 0, 0, { children: 1 }));
-      await s.say(relay, status(s.source.peer, 1, 1, { children: 3 }));
+      await s.say(relay, status(s.source.peer, 1, Math.max(0, 4 - children), { children }));
       for (const kid of kids) await s.say(kid, status(relay.peer, 2, 0, { caps: leafCaps() }));
     };
     const metrics = async () => {
@@ -172,6 +172,15 @@ describe("coordinator: demotion (SPEC §8.1)", () => {
   it("does not demote for loss under 5%, nor for one child of three with a bad line of its own", async () => {
     assert.equal((await demotionCase(3, 4.5, 20)).demotedAfter, null);
     assert.equal((await demotionCase(1, 30, 20)).demotedAfter, null);
+  });
+
+  it("takes more than half of the children, and two at least: not one of two, nor two of four; two of three, yes", async () => {
+    // One of two is a provisional relay's lot whenever one child is on a bad network (the gate's
+    // "bad", 15%): demoted for it, the relay's children were moved, and the tree churned.
+    assert.equal((await demotionCase(1, 30, 20, 2)).demotedAfter, null);
+    assert.equal((await demotionCase(2, 30, 20, 4)).demotedAfter, null);
+    assert.ok((await demotionCase(2, 30, 20, 3)).demotedAfter !== null);
+    assert.ok((await demotionCase(2, 30, 20, 2)).demotedAfter !== null);
   });
 
   it("demotes a relay that stops being eligible itself (here: its tab hidden) for 10 s", async () => {

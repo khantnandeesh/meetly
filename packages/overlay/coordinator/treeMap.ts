@@ -649,7 +649,10 @@ export class TreeMap {
   /**
    * Relays to make leaves again (SPEC §8.1): no longer eligible, or their children have been
    * losing more than 5% for 10 s. One child with a bad line of its own is not the relay's
-   * doing, so it takes at least half of the children that report.
+   * doing, so it takes more than half of the children that report, and two of them at least:
+   * with half, a provisional relay (two children) one of whose children is on a bad network was
+   * demoted 3 s on, its children moved, and the tree churned (the gate: 85 to 109 demotions in a
+   * run of 200 peers, 15% of them on "bad").
    */
   demotable(now: number): TreeNode[] {
     const out: TreeNode[] = [];
@@ -670,7 +673,7 @@ export class TreeMap {
       if (node.demotingSince !== null) continue;
       // A provisional relay is not yet eligible in full: only what it does wrong besides that counts (D38).
       const ineligible = node.provisional ? !this.judge(node, now).eligible && !this.provisionallyEligible(node, now) : !this.judge(node, now).eligible;
-      const failing = ineligible || (reporting > 0 && lossy * 2 >= reporting);
+      const failing = ineligible || (lossy >= 2 && lossy * 2 > reporting);
       if (!failing) node.ineligibleSince = null;
       else if (node.ineligibleSince === null) node.ineligibleSince = now;
       if (failing && now - node.ineligibleSince! >= (node.provisional ? PROVISIONAL_DEMOTE_AFTER_MS : DEMOTE_AFTER_MS)) out.push(node);
