@@ -25,6 +25,14 @@
 	// RealtimeKit REST call, and at most 30, so it stays far inside the 3,500 per five minutes.
 	"triggers": { "crons": ["* * * * *"] },
 	"upload_source_maps": true,
+	// Live (beta)'s coordinator (packages/overlay/coordinator/durableObject.ts, exported from
+	// custom-worker.ts): one object per stream, with SQLite storage and hibernatable WebSockets.
+	// It needs two secrets, OVERLAY_ADMISSION_SECRET and OVERLAY_SERVER_SECRET (see
+	// src/lib/live/server.ts); until both are set, Live says it isn't set up.
+	"durable_objects": {
+		"bindings": [{ "name": "OVERLAY_ROOM", "class_name": "OverlayRoom" }]
+	},
+	"migrations": [{ "tag": "live-beta-v1", "new_sqlite_classes": ["OverlayRoom"] }],
 
 	// Non-secret configuration goes in "vars"; secrets are set with `wrangler secret put <NAME>`
 	// (never in this file). Both are read as process.env.<NAME> in route handlers.
