@@ -82,6 +82,7 @@ jobs:
           run rate '{"content":"fine","seconds":30}'
           run rate '{"content":"noise","seconds":30}'
           run rate '{"content":"camera","seconds":30}'
+          run rate '{"content":"stage","seconds":30}'
           {
             echo '### Media browser runs'
             echo '```'
