@@ -119,7 +119,34 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
 
-## The whole engine (H6): a laid-out gate, 20 runners
+## The whole engine (H6): the latest gate, with D37–D39
+
+[44964101029](https://github.com/khantnandeesh/meetly/actions/runs/44964101029), `gate
+integration`: overlay-integration at 39ae7d3, its newest green head, with D37 (overload), D38
+(provisional relays) and D39 (adaptive reordering). The coordinator is the package's Node entry
+point (`startNodeCoordinator`), on shard 0, behind a Cloudflare quick tunnel; not wrangler.
+Laid out over 20 runners: the coordinator on shard 0, the source on shard 1, 199 viewers over the 14
+runners left, after **4 AWS-hosted runners (shards 5, 11, 17, 19) were excluded** for their
+symmetric NAT. It covers cone-NAT peers only: no TURN was offered, so viewers who need it (about
+15–22% of real audiences) are untested.
+
+**Invalid**: 13 of the 14 viewer runners were over the health bar, at load 4.54–8.82 with 14 peers
+each (shard 2 at 2.69, the coordinator's at 0.51 and the source's at 1.74 passed; timer lag p99
+was 10–20 ms everywhere), and 6 late joiners never rendered. Everything else held: 200 of the run's
+peers ran, 4,995 repairs, clocks 12.7 ms as measured (77.9 ms by the §4.1 bound), light and
+decoding viewers 10 ms apart.
+
+| Measure (ms) | p50 | p95 | p99 | Gate | The run before, without D37–D39 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Join (313) | 2,500 | over 10,000 | over 10,000 | 3,000 | 3,500 / over 10,000 |
+| Repair (4,995: 624 warm, 35 cold, 4,336 wait) | 340 | 3,500 | 6,500 | 500 | 1,650 / 7,500 |
+| Glass-to-glass latency | 400 | 700 | 850 | 500 | 410 / 700 |
+| Freezes (10,151) | 370 | 4,000 | 7,000 | | 1,550 / 7,000 |
+
+Joins: connect() to welcome p50 369 ms; welcome to a parent linked p50 569 ms, p95 25.6 s; first
+packet to first frame p50 957 ms, p95 4.9 s. Frames lost: 308,018 (871,661 before).
+
+## The whole engine (H6): a laid-out gate, 20 runners, before D37–D39
 
 [44960914556](https://github.com/khantnandeesh/meetly/actions/runs/44960914556) (attempt 1),
 `gate integration`: overlay-integration at d9eb663, the newest commit whose CI had passed when the
