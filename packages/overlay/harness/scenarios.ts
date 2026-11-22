@@ -272,8 +272,7 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     case "gate": {
       const peers = options.peers ?? (name === "gate" ? 200 : 30);
       // Most viewers light, one in `decodeEvery` decoding as the check on them (D29, SPEC §13.2).
-      // D53 experiment (to revert): the gate with D49 off, the source's fan-out its own 3 throughout.
-      const config = { ...base, peers, params: { sourceAloneFanout: 3 }, mix: GATE_MIX, joinPerS: name === "gate" ? 4 : 3, decodeEvery: name === "gate" ? 20 : 8, pagesPerBrowser: 12, program: GATE_PROGRAM };
+      const config = { ...base, peers, mix: GATE_MIX, joinPerS: name === "gate" ? 4 : 3, decodeEvery: name === "gate" ? 20 : 8, pagesPerBrowser: 12, program: GATE_PROGRAM };
       const from = fillS(config) + 5;
       const churnS = options.churnS ?? (name === "gate" ? 600 : 120);
       // Each kill orphans a relay's children: about three repairs a kill once the tree is full.
