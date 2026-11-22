@@ -88,6 +88,8 @@ export type PlayoutFrame = {
   dueUs: number;
   /** Decode it, but do not show it: it is late, or only needed by a later frame. */
   decodeOnly: boolean;
+  /** [D46] Shown while a replay is played forward ([D45]): old by design, not the stream's latency. */
+  catchUp?: boolean;
 };
 
 export type JitterBufferStats = {
@@ -144,7 +146,7 @@ export type PlayerStats = {
 
 export type PlayerEvents = {
   /** A video frame reached the screen: its capture time and when it was shown, both session microseconds. */
-  rendered: [streamId: number, frameId: number, captureUs: number, renderedUs: number];
+  rendered: [streamId: number, frameId: number, captureUs: number, renderedUs: number, catchUp: boolean];
   /** The first video frame reached the screen. */
   firstFrame: [];
   /** Rendering stopped for longer than the freeze threshold (SPEC §12.2), and has now resumed. */
