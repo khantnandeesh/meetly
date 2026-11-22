@@ -10,15 +10,14 @@ import { LATENCY_BUCKETS, emptyHistogram, histogramQuantile, latencyBucket, merg
 import { GATE, type GateCheck, type ImpairmentCounters, type LinkCounts, type Quantiles, type ReportOptions, type ShardResult, type SwarmReport } from "./types";
 
 /** The gate's limits on the run itself (SPEC §12.3). */
-export const VALIDITY = { minRepairs: 100, lagP99Ms: 50, clockSumP95Ms: 20 } as const;
+export const VALIDITY = { minRepairs: 100, lagP99Ms: 20, clockSumP95Ms: 20 } as const;
 
 /**
- * The harness's own bar for each runner, stricter than SPEC §12.3's 50 ms: a runner whose load
- * (1 min, once the swarm has filled) reaches 4 on its 4 vCPUs, or whose timers run more than
- * 20 ms late at p99, makes the run invalid and is named. Lag is read on 10 ms buckets by their
- * upper edge, so "20" is a p99 between 10 and 20 ms.
+ * D42: a runner is starved when its timers run more than 20 ms late at p99 (each 20 ms timer
+ * against the moment it was set for, read on 10 ms buckets by their upper edge, so "20" passes).
+ * Load is reported for every runner and judges nothing; at `loadNoteAt` a note says so.
  */
-export const HEALTH = { loadMax: 4, lagP99Ms: 20 } as const;
+export const HEALTH = { lagP99Ms: 20, loadNoteAt: 4 } as const;
 
 /**
  * D29: light viewers must agree with decoding ones to within the decode time. PLAN M5 puts that
@@ -95,6 +94,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
 
   const seen = new Set<string>();
   const shardNotes = new Map<string, number[]>();
+  let unfinished = 0;
   const streamKbps: number[] = [];
   const joinPhases = { welcome: [] as number[], linked: [] as number[], firstPacket: [] as number[], firstFrame: [] as number[] };
   const decoders = new Set<string>();
@@ -146,6 +146,9 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     indexes.add(shard.shard.index);
     if (first && shard.runId !== first.runId) notes.push(`shard ${shard.shard.index} is of run "${shard.runId}", not "${first.runId}"`);
     for (const s of shard.samples) sample(s);
+    // Still joining at the end: at least this long, so counted as this long.
+    for (const waited of shard.unfinishedJoins ?? []) join[latencyBucket(waited)]++;
+    unfinished += shard.unfinishedJoins?.length ?? 0;
     peersStarted += shard.peersStarted;
     for (const f of shard.peersFailed) failed.push({ shard: shard.shard.index, index: f.index, why: f.why });
     for (const name of shard.stubbed ?? []) stubbed.add(name);
@@ -190,6 +193,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const shardCount = first?.shard.count ?? 0;
   const laidOut = shards.some((shard) => shard.peersOfRun !== undefined && shard.role !== undefined && shard.role !== "all") || excluded.length > 0;
   const ran = shards.reduce((n, shard) => n + (shard.peersOfRun ?? 0), 0);
+  if (unfinished) notes.push(`${unfinished} viewer${unfinished === 1 ? " was" : "s were"} still joining when the run ended: each join counted as the time it had waited, a lower bound`);
   for (const e of excluded) notes.push(`shard ${e.shard}: excluded before it started a peer: ${e.why}`);
   // Without TURN, the run says nothing about viewers who would need it.
   const turnOffered = shards.length > 0 && shards.every((shard) => shard.ice === "turn");
@@ -244,8 +248,12 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   if (measuredClockMs !== null) for (const c of clockByShard) if (c.measuredP95 !== null && c.measuredP95 !== undefined && c.measuredP95 + (c.ntpBoundMs ?? 0) > VALIDITY.clockSumP95Ms) notes.push(`shard ${c.shard}: its viewers' clocks were measured ${c.measuredP95} ms from the source's at p95: its latencies cannot be trusted`);
 
   // The health bar, runner by runner.
-  const unhealthy = hosts.filter((h) => (h.loadSettledMax ?? h.loadAvg1Max) >= HEALTH.loadMax || h.lagP99Ms === null || h.lagP99Ms > HEALTH.lagP99Ms);
-  for (const h of unhealthy) notes.push(`shard ${h.shard}: over the health bar (load ${Math.round((h.loadSettledMax ?? h.loadAvg1Max) * 100) / 100} against ${HEALTH.loadMax}, timer lag p99 ${h.lagP99Ms ?? "unmeasured"} ms against ${HEALTH.lagP99Ms}): this runner was not keeping up`);
+  // D42: timer lag judges a runner; its load is only reported.
+  for (const h of hosts.filter((h) => h.lagP99Ms === null || h.lagP99Ms > HEALTH.lagP99Ms))
+    notes.push(`shard ${h.shard}: starved: timer lag p99 ${h.lagP99Ms ?? "unmeasured"} ms against ${HEALTH.lagP99Ms} (D42)`);
+  const loaded = hosts.filter((h) => (h.loadSettledMax ?? h.loadAvg1Max) >= HEALTH.loadNoteAt);
+  if (loaded.length)
+    notes.push(`load ${HEALTH.loadNoteAt} or more once filled, reported and not judged (D42): ${loaded.map((h) => `shard ${h.shard} at ${Math.round((h.loadSettledMax ?? h.loadAvg1Max) * 100) / 100}`).join(", ")}`);
 
   const joinMs = histogramQuantiles(join);
   const repairMs = histogramQuantiles(repair);
@@ -262,9 +270,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     atLeast("shards that reported, of the run's", results.length ? indexes.size : null, shardCount || 1),
     atLeast("repair events, at least", repairMs.n, wantRepairs),
     below("peers that failed to start", failed.length, 0),
-    below("event-loop lag p99 on the worst shard (ms)", lagMissing ? null : worstLagP99, VALIDITY.lagP99Ms),
+    below("timer lag p99 on the worst runner (ms)", lagMissing ? null : worstLagP99, VALIDITY.lagP99Ms),
     clockCheck,
-    below(`runners over the health bar (load ${HEALTH.loadMax}, lag p99 ${HEALTH.lagP99Ms} ms)`, results.length ? unhealthy.length : null, 0),
   ];
   const decodingQ = histogramQuantiles(glassDecoding);
   const lightQ = histogramQuantiles(glassLight);

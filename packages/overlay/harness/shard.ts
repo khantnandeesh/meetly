@@ -109,6 +109,8 @@ export function ntpBoundMs(text: string): number | null {
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const SERVER_SECRET = "harness-server-secret";
+/** A viewer that has not rendered when the run ends, and joined less than this long before, is still joining, not failed. */
+export const STILL_JOINING_MS = 30_000;
 
 /** Whom a churn step falls on, among this shard's viewers, by what their pages last said of themselves. */
 export function pickPeer<T extends { index: number; children: number; depth: number }>(peers: T[], pick: PeerPick, seed: number): T | null {
@@ -418,10 +420,17 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
 
   /* ------------------------------ what it all came to ------------------------------ */
 
+  const unfinishedJoins: number[] = [];
   for (const peer of peers.values()) {
     if (peer.role !== "viewer" || peer.ended || failed.some((f) => f.index === peer.index)) continue;
     if (peer.state?.error) failed.push({ index: peer.index, why: peer.state.error });
-    else if (!peer.state?.started && Date.now() - peer.startedAt > 10_000) failed.push({ index: peer.index, why: "never rendered a frame" });
+    else if (!peer.state?.started) {
+      // A viewer that had half a minute and rendered nothing failed. One that joined later is
+      // still joining: its join time is at least what it has waited, and counts as that.
+      const waited = Date.now() - peer.startedAt;
+      if (waited > STILL_JOINING_MS) failed.push({ index: peer.index, why: `never rendered a frame in ${Math.round(waited / 1000)} s${peer.state?.parent ? "" : ", and never had a parent"}` });
+      else unfinishedJoins.push(waited);
+    }
   }
   const source = peers.get(0);
   if (source && !source.state?.started && !failed.some((f) => f.index === 0)) failed.push({ index: 0, why: source.state?.error ?? "the source never sent a frame" });
@@ -494,6 +503,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     },
     links,
     tree: [...peers.values()].filter((p) => p.state?.peer).map((p) => ({ peer: p.state!.peer as PeerId, parent: p.state!.parent, index: p.index })),
+    unfinishedJoins,
     decoders: [...peers.values()].filter((p) => p.decode && p.state?.peer).map((p) => p.state!.peer as PeerId),
     impairment,
     churnLog,

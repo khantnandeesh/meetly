@@ -218,6 +218,8 @@ export type ShardResult = {
   };
   /** Links the shard's peers opened, and how: what ICE chose. */
   links?: LinkCounts;
+  /** Viewers still joining when the run ended (under 30 s in): how long each had waited, a lower bound on its join time. */
+  unfinishedJoins?: number[];
   /** The viewers that decoded for real (D29); every other viewer ran the light player. */
   decoders?: PeerId[];
   impairment?: ImpairmentCounters;
