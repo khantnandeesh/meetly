@@ -1,15 +1,23 @@
 "use client";
 
-import { branches, type LiveBranch, type LiveNode, type LiveTree } from "@/lib/live/tree";
+import type { CSSProperties } from "react";
+import { layoutTree, type LiveTree, type PlacedNode } from "@/lib/live/tree";
 import { Card } from "./shared";
 
+/** A node's radius, in the drawing's own units. */
+const R = 15;
+/** Below this many pixels a column, the drawing stops shrinking and scrolls inside the card instead. */
+const MIN_COLUMN_PX = 46;
+
 /**
- * "Who's connected": the overlay's tree as the coordinator last heard it. The host at the top,
- * each viewer under the browser it gets the stream from, with its depth and how many it passes
- * the stream on to. Plain nested lists; the connecting lines are their borders.
+ * "Who's connected": the overlay's tree as the coordinator last heard it, drawn as a graph. The
+ * host at the top; each viewer below the browser it gets the stream from, joined to it by a line.
+ * Relays are filled, leaves are rings, "You" is ringed in the accent colour. Depth and child count
+ * are in each node's tooltip; a relay shows how many it passes the stream on to. Nodes glide to
+ * their new place when the tree changes. Plain SVG (layout: `layoutTree` in src/lib/live/tree.ts).
  */
 export function WhoIsConnected({ tree, ownKey }: { tree: LiveTree | null; ownKey: string | null }) {
-  const { roots, waiting } = branches(tree?.nodes ?? []);
+  const layout = layoutTree(tree?.nodes ?? []);
   return (
     <Card className="flex min-w-0 flex-col gap-4">
       <div className="flex items-baseline justify-between gap-3">
@@ -25,67 +33,89 @@ export function WhoIsConnected({ tree, ownKey }: { tree: LiveTree | null; ownKey
       ) : tree.nodes.length === 0 ? (
         <p className="text-sm text-muted">{tree.ended ? "The stream has ended." : "Nobody is connected yet."}</p>
       ) : (
-        <div className="-mx-1 overflow-x-auto px-1" data-testid="live-tree">
-          <ul className="flex flex-col gap-1.5">
-            {roots.map((node) => (
-              <Branch key={node.key} node={node} ownKey={ownKey} />
+        <div className="scroll-quiet -mx-2 overflow-x-auto rounded-2xl bg-bg/40 px-2 py-1" data-testid="live-tree">
+          <svg
+            viewBox={`0 0 ${layout.width} ${layout.height}`}
+            className="mx-auto block h-auto w-full"
+            style={{ minWidth: layout.columns * MIN_COLUMN_PX, maxWidth: layout.width * 1.15 }}
+            role="img"
+            aria-label={`The stream's tree: ${tree.nodes.map((n) => n.label).join(", ")}`}
+          >
+            <g>
+              {layout.edges.map((edge) => {
+                // From below the parent's name (and its "You"), to the top of the child's circle.
+                const from = edge.y1 + R + 38;
+                const mid = (from + edge.y2 - R) / 2;
+                const d = `path("M ${edge.x1} ${from} C ${edge.x1} ${mid}, ${edge.x2} ${mid}, ${edge.x2} ${edge.y2 - R}")`;
+                return <path key={edge.key} className="fill-none stroke-border-strong" strokeWidth={1.5} style={{ d, transition: "d var(--dur-slow) var(--ease-move)" } as CSSProperties} />;
+              })}
+            </g>
+            {layout.nodes.map((node) => (
+              <Node key={node.key} node={node} own={node.key === ownKey} />
             ))}
-          </ul>
-          {waiting.length > 0 && (
-            <div className="mt-4 flex flex-col gap-1.5">
-              <p className="eyebrow">Finding a place</p>
-              <ul className="flex flex-col gap-1.5">
-                {waiting.map((node) => (
-                  <li key={node.key}>
-                    <Row node={node} ownKey={ownKey} />
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+          </svg>
         </div>
       )}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-xs text-muted">
+        <Legend>
+          <circle cx="7" cy="7" r="5.5" className="fill-accent" />
+        </Legend>
+        <span className="-ml-3">Host</span>
+        <Legend>
+          <circle cx="7" cy="7" r="5.5" className="fill-muted" />
+        </Legend>
+        <span className="-ml-3">Passes it on</span>
+        <Legend>
+          <circle cx="7" cy="7" r="5" className="fill-surface-3 stroke-muted" strokeWidth={1.5} />
+        </Legend>
+        <span className="-ml-3">Watches only</span>
+      </div>
       <p className="text-xs leading-relaxed text-faint">
-        Each viewer gets the stream from the browser above it and may pass it on to the ones below. Names are made up for this page.
+        Each viewer gets the stream from the one above it and may pass it on to the ones below. Names are made up for this page.
       </p>
     </Card>
   );
 }
 
-function Branch({ node, ownKey }: { node: LiveBranch; ownKey: string | null }) {
+function Legend({ children }: { children: React.ReactNode }) {
   return (
-    <li className="flex flex-col gap-1.5">
-      <Row node={node} ownKey={ownKey} />
-      {node.below.length > 0 && (
-        <ul className="ml-3 flex flex-col gap-1.5 border-l border-border-strong pl-3 sm:ml-4 sm:pl-4">
-          {node.below.map((child) => (
-            <Branch key={child.key} node={child} ownKey={ownKey} />
-          ))}
-        </ul>
-      )}
-    </li>
+    <svg viewBox="0 0 14 14" className="size-3.5 shrink-0" aria-hidden="true">
+      {children}
+    </svg>
   );
 }
 
-function Row({ node, ownKey }: { node: LiveNode; ownKey: string | null }) {
-  const own = node.key === ownKey;
+function Node({ node, own }: { node: PlacedNode; own: boolean }) {
+  const relay = !node.source && node.children > 0;
   const children = `${node.children} ${node.children === 1 ? "child" : "children"}`;
+  const depth = node.depth === null ? "depth not known yet" : `depth ${node.depth}`;
+  const fill = node.source ? "fill-accent" : relay ? "fill-muted" : "fill-surface-3";
+  const stroke = node.waiting ? "stroke-faint" : relay || node.source ? "stroke-transparent" : "stroke-muted";
   return (
-    <div
-      className={`flex min-h-11 min-w-0 flex-wrap items-center gap-x-2.5 gap-y-0.5 rounded-xl px-3 py-2 ${own ? "bg-surface-3 ring-1 ring-accent/50 ring-inset" : "bg-surface-2"}`}
+    <g
+      style={{ transform: `translate(${node.x}px, ${node.y}px)`, transition: "transform var(--dur-slow) var(--ease-move)" }}
       data-testid="tree-node"
       data-label={node.label}
       data-depth={node.depth ?? ""}
       data-children={node.children}
       data-own={own ? "true" : undefined}
     >
-      <span className={`size-2 shrink-0 rounded-full ${node.source ? "bg-accent" : "bg-muted"}`} aria-hidden="true" />
-      <span className="font-medium">{node.label}</span>
-      {own && <span className="rounded-md bg-accent px-1.5 text-xs leading-5 font-semibold text-accent-ink">You</span>}
-      <span className="ml-auto text-xs text-muted tabular-nums">
-        {node.source ? "Source · " : ""}
-        {node.depth === null ? "Depth …" : `Depth ${node.depth}`} · {children}
-      </span>
-    </div>
+      <title>{`${node.label}${own ? " (you)" : ""}: ${node.source ? "the source, " : ""}${node.waiting ? "finding a place, " : ""}${depth}, ${children}`}</title>
+      {own && <circle r={R + 5} className="fill-none stroke-accent" strokeWidth={2.5} />}
+      <circle r={R} className={`${fill} ${stroke}`} strokeWidth={1.75} strokeDasharray={node.waiting ? "3 3" : undefined} />
+      {(node.source || relay) && (
+        <text textAnchor="middle" dominantBaseline="central" className={`${node.source ? "fill-accent-ink" : "fill-bg"} text-[11px] font-semibold tabular-nums`}>
+          {node.children}
+        </text>
+      )}
+      <text y={R + 15} textAnchor="middle" className={`${own ? "fill-accent" : "fill-text"} text-[11.5px] font-medium`}>
+        {node.label}
+      </text>
+      {own && (
+        <text y={R + 29} textAnchor="middle" className="fill-accent text-[10.5px] font-semibold tracking-wide uppercase">
+          You
+        </text>
+      )}
+    </g>
   );
 }

@@ -103,3 +103,50 @@ export function branches(nodes: LiveNode[]): { roots: LiveBranch[]; waiting: Liv
   for (const node of byKey.values()) if (!seen.has(node.key) && !waiting.includes(node)) waiting.push(node);
   return { roots, waiting };
 }
+
+export type PlacedNode = LiveNode & { x: number; y: number; waiting: boolean };
+export type PlacedEdge = { key: string; x1: number; y1: number; x2: number; y2: number };
+export type TreeLayout = { nodes: PlacedNode[]; edges: PlacedEdge[]; width: number; height: number; columns: number };
+
+/**
+ * A layered, top-down layout for drawing the tree as a graph: one row per depth, the source at
+ * the top. Leaves take the next free column, left to right; a parent sits centred over its
+ * children. Viewers still finding a place get a row of their own at the bottom, with no edge.
+ * Coordinates are in the SVG's own units; the drawing scales them to fit.
+ */
+export function layoutTree(nodes: LiveNode[], spacing = { column: 76, row: 92, pad: 44 }): TreeLayout {
+  const { roots, waiting } = branches(nodes);
+  const placed: PlacedNode[] = [];
+  const edges: PlacedEdge[] = [];
+  const at = (column: number, row: number) => ({ x: spacing.pad + column * spacing.column, y: spacing.pad + row * spacing.row });
+  let next = 0;
+  let deepest = -1;
+  const place = (branch: LiveBranch, row: number): number => {
+    deepest = Math.max(deepest, row);
+    let column: number;
+    if (branch.below.length === 0) column = next++;
+    else {
+      const columns = branch.below.map((child) => place(child, row + 1));
+      column = (columns[0] + columns[columns.length - 1]) / 2;
+    }
+    placed.push({ key: branch.key, label: branch.label, source: branch.source, parent: branch.parent, depth: branch.depth, children: branch.children, ...at(column, row), waiting: false });
+    return column;
+  };
+  roots.forEach((root) => place(root, 0));
+  const waitingRow = deepest + 1;
+  waiting.forEach((node, index) => placed.push({ ...node, ...at(index, waitingRow), waiting: true }));
+  const byKey = new Map(placed.map((node) => [node.key, node]));
+  for (const node of placed) {
+    const parent = !node.waiting && node.parent !== null ? byKey.get(node.parent) : undefined;
+    if (parent) edges.push({ key: `${parent.key}-${node.key}`, x1: parent.x, y1: parent.y, x2: node.x, y2: node.y });
+  }
+  const columns = Math.max(1, next, waiting.length);
+  const rows = waiting.length > 0 ? waitingRow + 1 : Math.max(1, deepest + 1);
+  return {
+    nodes: placed,
+    edges,
+    columns,
+    width: spacing.pad * 2 + (columns - 1) * spacing.column,
+    height: spacing.pad * 2 + (rows - 1) * spacing.row + 18,
+  };
+}

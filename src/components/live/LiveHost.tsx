@@ -18,7 +18,7 @@ type Phase =
 function mediaMessage(error: unknown): string {
   const name = error instanceof Error ? error.name : "";
   if (name === "NotAllowedError" || name === "SecurityError") return "Camera and microphone are blocked. Allow them in your browser's site settings, then try again.";
-  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera or microphone was found.";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera was found. Going live needs a camera; a microphone is optional.";
   if (name === "NotReadableError" || name === "AbortError") return "Your camera or microphone is in use by another app.";
   return "Couldn't open your camera and microphone.";
 }
@@ -34,6 +34,8 @@ export function LiveHost() {
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [peer, setPeer] = useState<string | null>(null);
+  /** The camera works but no microphone could be had: the stream goes out silent. */
+  const [noMicrophone, setNoMicrophone] = useState(false);
   const preview = useRef<HTMLVideoElement>(null);
   const source = useRef<OverlaySource | null>(null);
   const hostKey = useRef<string | null>(null);
@@ -44,16 +46,31 @@ export function LiveHost() {
 
   const askForMedia = useCallback(async () => {
     setPhase({ t: "asking" });
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
-      setMedia(stream);
-      setPhase({ t: "ready" });
-    } catch (e) {
-      setPhase({ t: "no-media", message: mediaMessage(e) });
+    setNoMicrophone(false);
+    // Camera and microphone together first. Asked for together, a device that lacks either one
+    // fails outright (NotFoundError), so a missing device is tried around: plainly, then the camera
+    // alone. Never the microphone alone: the overlay's program needs a picture (ProgramInput.video).
+    const attempts: MediaStreamConstraints[] = [
+      { video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }, audio: { echoCancellation: true, noiseSuppression: true } },
+      { video: true, audio: true },
+      { video: true },
+    ];
+    let failure: unknown = null;
+    for (const constraints of attempts) {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        setNoMicrophone(stream.getAudioTracks().length === 0);
+        setMedia(stream);
+        setPhase({ t: "ready" });
+        return;
+      } catch (e) {
+        failure = e;
+        const name = e instanceof Error ? e.name : "";
+        // Only a missing device is worth another try; a refusal or a busy device is not.
+        if (name !== "NotFoundError" && name !== "OverconstrainedError") break;
+      }
     }
+    setPhase({ t: "no-media", message: mediaMessage(failure) });
   }, []);
 
   useEffect(() => {
@@ -181,6 +198,12 @@ export function LiveHost() {
               </span>
             )}
           </div>
+
+          {noMicrophone && media && phase.t !== "ended" && (
+            <p className="text-sm text-muted" data-testid="no-microphone">
+              Broadcasting without a microphone
+            </p>
+          )}
 
           {error && (
             <p className="flex items-start gap-2 text-sm text-danger-text" role="alert">
