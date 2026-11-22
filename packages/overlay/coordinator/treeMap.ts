@@ -216,7 +216,8 @@ export class TreeMap {
     this.params = options.params;
     this.scoring = options.scoring;
     this.streamKbps = options.streamKbps;
-    this.leafPlacement = options.leafPlacement ?? "deep";
+    // D54: every joiner, dead end or not, under the shallowest feeder with room.
+    this.leafPlacement = options.leafPlacement ?? "shallow";
   }
 
   /* ------------------------------ who is here ------------------------------ */
