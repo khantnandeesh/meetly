@@ -1264,7 +1264,7 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
 | --- | --- | --- |
 | `join` | `start`, `welcome`, `linked`, `firstPacket`, `firstFrame`, `turn` | once per join |
 | `repair` | `stream`, `stripe`, `dead`, `next`, `kind` (warm \| cold \| wait), `lastHeard`, `detected`, `resubscribed`, `firstPacket`, `freezeMs`, `framesLost`, `usedCoordinator` | once per lost parent |
-| `switch` | `stream`, `stripe`, `from`, `to`, `at`, `freezeMs` | a voluntary change of parent |
+| `switch` | `stream`, `stripe`, `from`, `to`, `at`, `freezeMs`, `reason?` | a voluntary change of parent; `reason`: `move` (the coordinator's), `rebalance` (the node's own, §7.6), `starved` (§11.3) |
 | `layer` | `stream`, `peer`, `at`, `maxTemporal`, `reason` | a cap changed |
 | `freeze` | `stream`, `at`, `ms` | rendering stopped, for any reason |
 | `error` | `at`, `where`, `message` | |

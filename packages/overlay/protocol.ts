@@ -1073,7 +1073,12 @@ const metricsEvent = tagged({
     usedCoordinator: bool,
   },
   /** A voluntary change of parent. */
-  switch: { stream: streamId, stripe: stripeIndex, from: peerId, to: peerId, at: sessionMs, freezeMs: durationMs },
+  /**
+   * `reason`: "move", the coordinator asked (`assign` "move"); "rebalance", the node's own cost
+   * rule (SPEC §7.6); "starved", its parent could not carry the stream (§11.3 rule 7). Absent from
+   * a peer that does not say.
+   */
+  switch: { stream: streamId, stripe: stripeIndex, from: peerId, to: peerId, at: sessionMs, freezeMs: durationMs, reason: optional(oneOf("move", "rebalance", "starved")) },
   /** The layers flowing on a link changed. */
   layer: { stream: streamId, peer: peerId, at: sessionMs, maxTemporal: int(0, 15), reason: oneOf("congestion", "cpu", "viewport", "overload", "restore") },
   /** Rendering stopped for longer than the freeze threshold (SPEC §12), for any reason. */

@@ -455,13 +455,13 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   let starvedSince: number | null = null;
   let lastSwitchAt = 0;
   let compareAt = 0;
-  let switching: { to: Peer; at: number; acked: boolean; move: boolean } | null = null;
+  let switching: { to: Peer; at: number; acked: boolean; move: boolean; starved?: boolean } | null = null;
   /** The coordinator said "move": parents to try, in order, and the one whose link is opening. */
   let moveTo: PeerId[] = [];
   let moveLinking: Peer | null = null;
   let repair: RepairRecord | null = null;
   const finishing: { record: RepairRecord; at: number }[] = [];
-  const switchesFinishing: { from: PeerId; to: PeerId; at: number; until: number }[] = [];
+  const switchesFinishing: { from: PeerId; to: PeerId; at: number; until: number; reason: "move" | "rebalance" | "starved" }[] = [];
   let uplinkAt = 0;
   /** What the player says of its playout, for FEEDBACK. */
   const playout = { delayMs: 0, bufferMs: 0 };
@@ -1800,7 +1800,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     }
     if (!go) return;
     // Make before break: ask the new parent first, and leave the old one when its media arrives (SPEC §7.6).
-    switching = { to: backup, at: now, acked: false, move: false };
+    switching = { to: backup, at: now, acked: false, move: false, starved: !!starved };
     subscribe(backup, "switch", streams.values(), after, false);
   }
 
@@ -1809,6 +1809,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const to = switching.to;
     const from = parent;
     const startedAt = switching.at;
+    const reason = switching.move ? "move" : switching.starved ? "starved" : "rebalance";
     switching = null;
     parent = to;
     if (backup === to) backup = null;
@@ -1830,7 +1831,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     moveTo = [];
     moveLinking = null;
     startStandby(from, now);
-    switchesFinishing.push({ from: from.id, to: to.id, at: startedAt, until: now + REPAIR_WINDOW_MS });
+    switchesFinishing.push({ from: from.id, to: to.id, at: startedAt, until: now + REPAIR_WINDOW_MS, reason });
     coordinator.report("parent-switch", primaryId(), 0, from.id, to.id);
     changed();
   }
@@ -1946,7 +1947,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       const done = switchesFinishing.shift()!;
       const stream = primary();
       const measured = stream ? stream.tracker.gap(done.at, done.until) : { freezeMs: 0, lost: 0 };
-      metric({ t: "switch", stream: stream?.config.id ?? 0, stripe: 0, from: done.from, to: done.to, at: session(done.at), freezeMs: Math.min(3_600_000, measured.freezeMs) });
+      metric({ t: "switch", stream: stream?.config.id ?? 0, stripe: 0, from: done.from, to: done.to, at: session(done.at), freezeMs: Math.min(3_600_000, measured.freezeMs), reason: done.reason });
     }
   }
 
