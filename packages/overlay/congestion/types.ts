@@ -60,9 +60,11 @@ export type LayerGateEvents = {
 export interface LayerGate extends Listenable<LayerGateEvents> {
   /**
    * Whether to send the frame whose first packet has `header`. Called once per frame, with the
-   * link's estimate and `bufferedAmount` at that moment.
+   * link's estimate and `bufferedAmount` at that moment. `pacedBytes` (D43, decided by the
+   * integrator 2026-11-21): what of a keyframe the relay is pacing to this child has not left yet,
+   * held or in the channel; rule 6 reads a backlog up to that much as the keyframe's, not as stale.
    */
-  admit(header: MediaHeader, frameBytes: number, estimate: LinkEstimate, now: number): boolean;
+  admit(header: MediaHeader, frameBytes: number, estimate: LinkEstimate, now: number, pacedBytes?: number): boolean;
   /** The child asked for no more than this. */
   setWanted(cap: LayerCap): void;
   /** This relay has more children than slots (after a repair): cap everyone until rebalanced. */
