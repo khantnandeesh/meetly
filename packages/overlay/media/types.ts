@@ -52,6 +52,13 @@ export type ProgramSourceStats = {
   skippedBusy: number;
   /** Camera frames not encoded because the camera runs faster than the stream. */
   skippedPacing: number;
+  /** Camera frames not encoded because they would not have fitted in the stream's bitrate (./rateControl.ts). */
+  skippedRate: number;
+  /** What the encoder itself is asked for now, which is less than the stream's bitrate when it overshoots. */
+  encoderKbps?: number;
+  /** The size encoded at now: smaller than the program's when that is the only way to hold the bitrate. */
+  width?: number;
+  height?: number;
   /** The most frames the encoder ever held at once. */
   maxEncoderFrames: number;
   /** Audio frames encoded (each is announced `audioCopies` times). */

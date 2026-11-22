@@ -77,6 +77,12 @@ jobs:
           run av '{}'
           run m5 '{"seconds":12,"width":640,"height":360,"bitrateKbps":600}'
           run m6 '{}'
+          # The source holding its bitrate whatever the picture (media/rateControl.ts).
+          run rate '{"content":"busy","seconds":30}'
+          run rate '{"content":"fine","seconds":30}'
+          run rate '{"content":"noise","seconds":30}'
+          run rate '{"content":"camera","seconds":30}'
+          run rate '{"content":"stage","seconds":30}'
           {
             echo '### Media browser runs'
             echo '```'
@@ -88,3 +94,75 @@ jobs:
         with:
           name: media-runs
           path: media-runs.log
+
+  # The same media through the integrated engine: overlay-integration's composition root, real
+  # transport with NACK, the harness's impairment shim, the package's coordinator, with this
+  # branch's packages/overlay/media in place of the one merged there.
+  integrated:
+    name: Media through the integrated engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: media
+          persist-credentials: false
+      - uses: actions/checkout@v6
+        with:
+          ref: overlay-integration
+          path: int
+          persist-credentials: false
+      - name: This branch's media in the integrated engine
+        run: |
+          set -euo pipefail
+          echo "overlay-integration at $(git -C int rev-parse --short HEAD), media from $(git -C media rev-parse --short HEAD)"
+          rm -rf int/packages/overlay/media
+          cp -r media/packages/overlay/media int/packages/overlay/media
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: int/package-lock.json
+      - run: npm ci
+        working-directory: int
+      - name: Cache Playwright browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+      - name: Run
+        working-directory: int
+        run: |
+          # Measures, does not gate: a scenario that fails its numbers must not stop the rest.
+          set -u +e +o pipefail
+          run() {
+            echo "::group::$1"
+            node --experimental-transform-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --disable-warning=ExperimentalWarning \
+              --import ./test/register.mjs packages/overlay/media/browser/engine-run.ts "$1" 2>&1 | tee -a engine-runs.log
+            echo "exit ${PIPESTATUS[0]} ($1)" | tee -a engine-runs.log
+            echo "::endgroup::"
+          }
+          echo "runner: $(nproc) cores; load $(cut -d' ' -f1-3 /proc/loadavg)" | tee engine-runs.log
+          run '{"program":"busy","width":1280,"height":720,"bitrateKbps":1200,"seconds":40}'
+          run '{"program":"noise","width":1280,"height":720,"bitrateKbps":1200,"seconds":40}'
+          run '{"program":"busy","width":1280,"height":720,"bitrateKbps":1200,"seconds":40,"profile":"home"}'
+          run '{"program":"av","seconds":30}'
+          run '{"program":"av","seconds":30,"profile":"home"}'
+          {
+            echo '### Media through the integrated engine'
+            echo '```'
+            grep -E '^(runner|busy|noise|av|exit )' engine-runs.log
+            grep -oE '^viewer [0-9]+: \{"flashes":[0-9]+,"clicks":[0-9]+,"skewMs":\{[^}]*\}|"glassToGlassMs":\{[^}]*\}|"videoKbps":\{[^}]*\},"rxKbps":\{[^}]*\}' engine-runs.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: engine-runs
+          path: int/engine-runs.log

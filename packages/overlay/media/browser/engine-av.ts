@@ -1,32 +1,60 @@
 /**
- * The A/V clap test through the integrated engine: a real source (createOverlaySource, the
- * composer's flash and a Web Audio click) and real viewers (createOverlayViewer) over the real
- * transport, with NACK, through the harness's impairment shim. The viewer's player is reached
- * by a hook on PlayerImpl's prototype (measurement only): which frames it showed were the flash,
- * by their pixels, and when the click was heard, from the worklet's own output.
+ * Media through the integrated engine (overlay-integration's composition root): a real source
+ * (createOverlaySource) and real viewers (createOverlayViewer) over the real transport, with
+ * NACK, impaired by the harness's shim when the driver bundles it in (./engine-run.ts does, on
+ * overlay-integration: this branch has neither the engine nor the shim, and builds this page
+ * only to type-check it).
+ *
+ * Two programs: "av", the clap test (the composer's flash and a Web Audio click), and "busy" or
+ * "noise" (./rate.ts's pictures), to see what the stream comes to at a viewer. The viewer's
+ * player is reached by hooks on PlayerImpl's prototype, for measuring only: which frames it
+ * showed were the flash, by their pixels; when the click was heard, from the worklet's output;
+ * and every video byte it was given.
  */
 import { createOverlaySource, createOverlayViewer, type MetricsSample } from "../../index";
-import { createImpairment, emptyImpairmentCounters } from "../../harness/impairment";
-import { PROFILES } from "../../harness/scenarios";
-import { realClock } from "../../harness/clock";
+import type { Clock } from "../../runtime";
+import type { ReceivedFrame } from "../../types";
 import type { AudioBackend, DecodedVideo } from "../backends";
 import { PlayerImpl } from "../player";
+import { createWorkerClock } from "../testing/realClock";
 import { encodingFor, program, round, quantile } from "./common";
+import { picture } from "./rate";
+
+/** The harness's impairment shim, when the driver bundled it in. */
+type Impair = {
+  createImpairment: (pick: () => unknown, seed: number, options: { clock: Clock; self: string; counters: unknown }) => unknown;
+  emptyImpairmentCounters: () => unknown;
+  PROFILES: Record<string, unknown>;
+};
+/** Read when a peer starts, not when this module loads: the driver's entry sets it after its imports have run. */
+const impairShim = (): Impair | null => (globalThis as unknown as { __impair?: Impair }).__impair ?? null;
 
 type Hooked = PlayerImpl & { __flashes: number[] };
 let player: Hooked | null = null;
 const originalConfigure = PlayerImpl.prototype.configure;
+/** The engine's player: the first one configured in this page. */
+function hookPlayer(instance: Hooked): void {
+  if (player) return;
+  instance.__flashes = [];
+  player = instance;
+}
 PlayerImpl.prototype.configure = function (this: Hooked, streams) {
-  if (!player) {
-    // The hook exists to keep hold of the page's one player, for measurement.
-    // eslint-disable-next-line @typescript-eslint/no-this-alias
-    player = this;
-    this.__flashes = [];
-  }
+  hookPlayer(this);
   return originalConfigure.call(this, streams);
 };
 const proto = PlayerImpl.prototype as unknown as { show: (video: unknown, decoded: DecodedVideo, ...rest: unknown[]) => void };
 const originalShow = proto.show;
+/** Every video frame the player was given once, with when: what the stream came to here. */
+const videoIn: { at: number; bytes: number }[] = [];
+const seenVideo = new Set<number>();
+const originalPush = PlayerImpl.prototype.push;
+PlayerImpl.prototype.push = function (this: Hooked, frame: ReceivedFrame) {
+  if (frame.header.streamId === 0 && !seenVideo.has(frame.header.frameId)) {
+    seenVideo.add(frame.header.frameId);
+    videoIn.push({ at: performance.now(), bytes: frame.data.byteLength });
+  }
+  return originalPush.call(this, frame);
+};
 proto.show = function (this: Hooked, video, decoded, ...rest) {
   const raw = decoded.raw as VideoFrame | null;
   if (raw) {
@@ -46,8 +74,8 @@ proto.show = function (this: Hooked, video, decoded, ...rest) {
   return originalShow.call(this, video, decoded, ...rest);
 };
 
-const clock = realClock();
-type Start = { coordinatorUrl: string; room: string; ticket: string; profile: string; seed: number; index: number; width?: number; height?: number; bitrateKbps?: number };
+const clock = createWorkerClock();
+type Start = { coordinatorUrl: string; room: string; ticket: string; profile: string; seed: number; index: number; program?: "av" | "busy" | "noise"; width?: number; height?: number; bitrateKbps?: number };
 
 function connectOptions(o: Start) {
   let first: string | null = o.ticket;
@@ -58,9 +86,11 @@ function connectOptions(o: Start) {
     return (window as unknown as { __overlayTicket: () => Promise<string> }).__overlayTicket();
   };
   const base = o.coordinatorUrl.replace(/^http/, "ws").replace(/\/$/, "");
-  const profile = PROFILES[o.profile] ?? null;
-  const wrapChannel = createImpairment(() => profile, o.seed, { clock, self: String(o.index), counters: emptyImpairmentCounters() });
-  return { coordinatorUrl: `${base}/overlay/v1/rooms/${encodeURIComponent(o.room)}/ws`, ticket, wrapChannel };
+  const impair = impairShim();
+  const profile = impair?.PROFILES[o.profile] ?? null;
+  if (o.profile !== "clean" && !profile) throw new Error(`no impairment "${o.profile}": the shim was not bundled in`);
+  const wrapChannel = impair && profile ? impair.createImpairment(() => profile, o.seed, { clock, self: String(o.index), counters: impair.emptyImpairmentCounters() }) : undefined;
+  return { coordinatorUrl: `${base}/overlay/v1/rooms/${encodeURIComponent(o.room)}/ws`, ticket, ...(wrapChannel ? { wrapChannel } : {}) } as Parameters<typeof createOverlaySource>[0];
 }
 
 const samples: MetricsSample[] = [];
@@ -69,10 +99,24 @@ const errors: string[] = [];
 
 async function source(o: Start) {
   const encoding = encodingFor({ width: o.width ?? 640, height: o.height ?? 360, bitrateKbps: o.bitrateKbps ?? 600 });
-  const peer = createOverlaySource({ ...connectOptions(o), encoding });
+  const peer = createOverlaySource({ ...connectOptions(o), encoding } as Parameters<typeof createOverlaySource>[0]);
   peer.on("error", (error) => errors.push(String(error)));
   peer.on("metrics", (sample) => samples.push(sample));
   await peer.connect();
+  if (o.program === "busy" || o.program === "noise") {
+    // A hard picture, and a quiet tone for the sound.
+    const made = picture(o.program, encoding.video.width, encoding.video.height, encoding.video.fps);
+    const context = new AudioContext({ sampleRate: 48000 });
+    const tone = context.createOscillator();
+    const gain = context.createGain();
+    const out = context.createMediaStreamDestination();
+    tone.frequency.value = 300;
+    gain.gain.value = 0.05;
+    tone.connect(gain).connect(out);
+    tone.start();
+    await peer.publish({ video: made.track, audio: out.stream.getAudioTracks()[0] });
+    return { ok: true };
+  }
   const fps = encoding.video.fps;
   let audioContext: AudioContext | null = null;
   let input: AudioNode | null = null;
@@ -116,7 +160,7 @@ const timeline: string[] = [];
 let viewerClock: { now(): number; fromLocal(ms: number): number } | null = null;
 
 async function viewer(o: Start) {
-  const peer = createOverlayViewer({ ...connectOptions(o), decode: true, capabilities: { desktop: true, onPower: true, visible: true, dataSaver: false } } as Parameters<typeof createOverlayViewer>[0]);
+  const peer = createOverlayViewer({ ...connectOptions(o), decode: true } as Parameters<typeof createOverlayViewer>[0]);
   peer.on("error", (error) => errors.push(String(error)));
   peer.on("metrics", (sample) => samples.push(sample));
   me = peer;
@@ -176,6 +220,18 @@ function results(lastS: number) {
       return click === null ? null : round((click - flash.renderedUs) / 1000);
     });
   const g2g = rendered.filter((r) => r.captureUs >= fromUs).map((r) => (r.renderedUs - r.captureUs) / 1000);
+  // The video stream as it came here, over every two-second window of the last part of the run.
+  const fromLocal = performance.now() - lastS * 1000;
+  const arrived = videoIn.filter((v) => v.at >= fromLocal);
+  let worstBytes = 0;
+  let windowBytes = 0;
+  let start = 0;
+  for (let end = 0; end < arrived.length; end++) {
+    windowBytes += arrived[end]!.bytes;
+    while (arrived[end]!.at - arrived[start]!.at >= 2000) windowBytes -= arrived[start++]!.bytes;
+    worstBytes = Math.max(worstBytes, windowBytes);
+  }
+  const rx = samples.filter((s) => s.up && s.at >= (viewerClock?.now() ?? 0) - lastS * 1000).map((s) => s.up!.rxKbps);
   const debug = player?.debug();
   const sum = (pick: (s: MetricsSample) => number | undefined) => samples.reduce((total, s) => total + (pick(s) ?? 0), 0);
   return {
@@ -185,6 +241,8 @@ function results(lastS: number) {
     unpaired: pairs.filter((p) => p === null).length,
     glassToGlassMs: stat(g2g),
     rendered: g2g.length,
+    videoKbps: { mean: round((arrived.reduce((t, v) => t + v.bytes, 0) * 8) / (lastS * 1000)), worst2s: round((worstBytes * 8) / 2000) },
+    rxKbps: stat(rx),
     delay: debug ? { applied: round(debug.appliedDelayMs), path: round(debug.pathMs), D: round(debug.playoutDelayMs) } : null,
     audio: debug?.audio ?? null,
     video: player?.stats().video ?? null,
