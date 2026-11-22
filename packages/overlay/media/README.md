@@ -39,9 +39,16 @@ mode; WebCodecs has no VP8 quantiser to set). `rateControl.ts` holds the stream 
 it asks the encoder for less (to a quarter), does not encode a frame that would not fit two
 seconds of the bitrate +15% (checked at every frame, so every window is bounded), keeps room for
 a keyframe due soon, and, when that still skips a quarter of the frames or a keyframe passes
-250 ms of the bitrate, makes the picture smaller (to 320×180), trying it bigger again later. A
+500 ms of the bitrate, makes the picture smaller (to 320×180), trying it bigger again later. A
 new size is a new configId; the player does not reset its decoder for it (a VP8 keyframe carries
 its size). The first frame of a new input cannot be predicted, so the first window may be over.
+
+Keyframes are bursts, and an ordinary program's are past the overlay's own burst budgets (200–
+250 ms of *B*, SPEC §11.3 rule 6 and §11.5): the camera on a textured stage at 720p gives
+150–385 ms of *B*. The encoder sizes keyframes by the picture, not by its target (asking it for a
+quarter left them where they were and took the stream to 758 kbps), so the source acts only on
+those past 500 ms of *B* (fine detail and noise at full size: 2.2 s). Spreading a keyframe over a
+link's next frames is pacing, and belongs to the transport.
 
 ## Running it
 

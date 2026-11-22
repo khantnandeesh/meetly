@@ -17,7 +17,7 @@
  *    be (from the last ones of its kind) fit in two seconds of the bitrate, with a margin. Checked
  *    at every frame, that bounds every two-second window, not only some.
  * 3. **The picture is made smaller** when that still skips a quarter of the frames, or when a
- *    keyframe is more than 250 ms of the bitrate: 1280×720 → 960×540 → 640×360 → 480×270 → 320×180. It is
+ *    keyframe is more than 500 ms of the bitrate (see KEY_ALLOWANCE_MS): 1280×720 → 960×540 → 640×360 → 480×270 → 320×180. It is
  *    tried bigger again later, waiting twice as long each time that fails (to a minute).
  *
  * Pure: told what was offered and what came out, it answers. The source does the encoding.
@@ -36,12 +36,17 @@ export const SCALE_LEVELS = [1, 0.75, 0.5, 0.375, 0.25] as const;
 /** Smaller when this share of the frames offered over the window was not encoded. */
 export const SCALE_DOWN_SKIPPED = 0.25;
 /**
- * ... or when a keyframe is more than this many milliseconds of the bitrate: a keyframe is handed
- * to each child's channel at once, and the overlay's budgets for a burst on a link are of this
- * order (SPEC §11.5: a replay may fill 250 ms of *B*; §11.2, [D30]: a backlog counts once it has
- * stood over 150 ms of *B* for 150 ms).
+ * ... or when a keyframe is more than this many milliseconds of the bitrate. A keyframe is handed
+ * to each child's channel whole, so it is a burst; the overlay's own budgets for one are 200–250
+ * ms of *B* (SPEC §11.3 rule 6 holds video back above 200 ms of *B* buffered; §11.5 lets a replay
+ * fill 250). But an ordinary program's keyframes are already past that: the camera on a textured
+ * stage at 1272×720 and 1,200 kbps gave keyframes of 150–385 ms of *B*, and holding them to 250
+ * (by asking the encoder for less, measured) brought its whole stream down to 758 kbps while the
+ * keyframes stayed as they were. Keyframes are sized by the picture far more than by the
+ * encoder's target; spreading them over time is pacing, which is the transport's to do. So the
+ * source acts only on keyframes twice that: fine detail and noise at full size come to 2.2 s.
  */
-export const KEY_ALLOWANCE_MS = 250;
+export const KEY_ALLOWANCE_MS = 500;
 /**
  * Keyframes of one picture vary by a tenth or two, so the picture is made smaller once they come
  * to this share of the allowance, not once one has passed it; and it is tried bigger only when
@@ -175,7 +180,10 @@ export class VideoRateController {
     }
     else {
       const layer = Math.min(temporal, this.layerBytes.length - 1);
-      this.layerBytes[layer] = remember(this.layerBytes[layer] ?? null);
+      // Delta frames come thirty a second, and an error in one is made good by the next: their
+      // running mean, not the worst of them, or frames that would have fitted are held back.
+      const old = this.layerBytes[layer] ?? null;
+      this.layerBytes[layer] = old === null ? bytes : 0.7 * old + 0.3 * bytes;
     }
   }
 
@@ -198,23 +206,16 @@ export class VideoRateController {
       // the encoder is.
       const demandKbps = (this.sentBytes / this.sent.length) * this.fps * (8 / 1000);
       const ratio = demandKbps / this.targetKbps;
-      // Given back only while keyframes have room to grow with it: the encoder sizes them by its target.
-      const keyRoom = this.keyBytes === null || this.keyBytes * 1.15 <= KEY_MARGIN * this.keyAllowanceBytes();
       if (ratio > 1.02) this.factor = Math.max(STEER_MIN, this.factor * Math.max(0.6, 1 / ratio));
-      else if (ratio < 0.9 && this.factor < 1 && keyRoom) this.factor = Math.min(1, this.factor * 1.15);
+      else if (ratio < 0.95 && this.factor < 1) this.factor = Math.min(1, this.factor * Math.min(1.15, 1 / ratio));
     }
     const keyTooBig = this.keySeenAtLevel && this.keyBytes !== null && this.keyBytes > KEY_MARGIN * this.keyAllowanceBytes();
     const smallest = this.level >= SCALE_LEVELS.length - 1;
     const newKey = this.keysSeen !== this.keyActedOn;
-    if (keyTooBig && newKey && this.factor > STEER_MIN * 1.05 && (this.keyBytes as number) <= 2 * this.keyAllowanceBytes()) {
-      // A keyframe a little past the allowance: the encoder sizes its keyframes by its target, so
-      // ask it for less first (step 1), once for each keyframe that comes out too big.
-      this.keyActedOn = this.keysSeen;
-      this.factor = Math.max(STEER_MIN, this.factor * Math.max(0.6, (0.9 * KEY_MARGIN * this.keyAllowanceBytes()) / (this.keyBytes as number)));
-    } else if ((this.shrinkNow || (keyTooBig && newKey)) && !smallest) {
-      // A frame too big for the window, or a keyframe past the allowance that asking for less has
-      // not cured (or far past it: the encoder at its coarsest): smaller at once, not at the end
-      // of a hold, so that the next keyframe, two seconds on, is not past it too.
+    if ((this.shrinkNow || (keyTooBig && newKey)) && !smallest) {
+      // A frame too big for the window, or a keyframe past the allowance (asking the encoder for
+      // less does not make keyframes smaller): smaller at once, not at the end of a hold, so that
+      // the next keyframe, two seconds on, is not past it too.
       this.keyActedOn = this.keysSeen;
       this.shrinkNow = false;
       this.shrink(now, keyTooBig);

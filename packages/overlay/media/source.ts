@@ -28,6 +28,8 @@ const AUDIO_HOLE_BLOCKS = 1.5;
 /** The audio timeline is steered by at most this much per window of blocks, to follow the sound card's clock. */
 const AUDIO_STEER_US = 1000;
 const AUDIO_STEER_WINDOW = 50;
+/** The audio timeline ahead of when a block was read by more than this is put back at once: more than reads jitter by. */
+const AUDIO_AHEAD_US = 25_000;
 /**
  * Opus's look-ahead: what a decoder makes of a frame starts this long before the frame's first
  * input sample (312 samples at 48 kHz; measured in the browser by the clap test, 6.6 ms). The
@@ -530,6 +532,16 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
         if (this.audioOutUs !== null) this.audioOutUs += steerUs;
         this.audioSteer = { count: 0, min: Infinity };
       }
+    }
+    // A block cannot have been captured after it was read. A timeline that says so has been moved
+    // on too far (a jump in the track's timestamps that lost no sound, say), and would play the
+    // sound that late against the picture until the slow steering above caught up: put it back
+    // at once. (A few milliseconds are left to the steering: reads are timed by a busy thread.)
+    const aheadUs = this.audioInUs - startedUs;
+    if (aheadUs > AUDIO_AHEAD_US) {
+      this.audioInUs -= aheadUs;
+      if (this.audioOutUs !== null) this.audioOutUs -= aheadUs;
+      this.audioSteer = { count: 0, min: Infinity };
     }
 
     const channels = this.options.encoding.audio.channels;

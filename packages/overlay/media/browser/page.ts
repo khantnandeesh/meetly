@@ -154,6 +154,7 @@ export async function m1(options: { seconds?: number; width?: number; height?: n
     maxEncoderFrames: stats.maxEncoderFrames,
     skippedBusy: stats.skippedBusy,
     skippedPacing: stats.skippedPacing,
+    skippedRate: stats.skippedRate,
     decoded,
     decodeErrors,
     audioFrames: audioIds.length,

@@ -121,12 +121,11 @@ describe("source rate control: the stream holds its bitrate whatever the picture
     assert.ok(fps(out, 10, 30) >= 29, `${fps(out, 10, 30)} fps`);
   });
 
-  it("keyframes a little past the allowance from an encoder that sizes them by its target: it is asked for less, and the picture keeps its size", () => {
+  it("an ordinary program's keyframes (here 255 ms of the bitrate) cost it neither its size nor its bitrate", () => {
     const HEAVY_KEYS: Picture = { overshoot: 0.85, floorBytes: 500, keyTimes: 9 };
-    const { out, rate } = simulate([{ untilS: 30, picture: HEAVY_KEYS }]);
+    const { rate } = simulate([{ untilS: 30, picture: HEAVY_KEYS }]);
     assert.equal(rate.stats().level, 0);
-    const allowance = (TARGET_KBPS * KEY_ALLOWANCE_MS) / 8;
-    for (const frame of out) if (frame.key && frame.at >= 6000) assert.ok(frame.bytes <= allowance, `a keyframe of ${Math.round((frame.bytes * 8) / TARGET_KBPS)} ms of the bitrate at ${Math.round(frame.at)} ms`);
+    assert.ok(rate.stats().factor >= 0.95, `factor ${rate.stats().factor}`);
   });
 
   it("noise is made smaller until it fits at a frame rate worth watching", () => {

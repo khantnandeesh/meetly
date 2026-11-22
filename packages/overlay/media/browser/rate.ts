@@ -9,9 +9,10 @@ import { MediaFlag } from "../../protocol";
 import type { EncodedFrame } from "../../types";
 import { createProgramSource } from "../source";
 import { createLocalSessionClock, createWorkerClock } from "../testing/realClock";
-import { camera, encodingFor, round, sleep } from "./common";
+import { camera, encodingFor, program, round, sleep } from "./common";
 
-type Content = "busy" | "fine" | "noise" | "camera";
+/** "flash": the clap test's program, the camera on a textured stage turned white for one frame each second (a cut, twice a second, that no rate control sees coming). */
+type Content = "busy" | "fine" | "noise" | "camera" | "flash" | "stage";
 
 /** A canvas track drawing `content` at `fps`, as a composer would. */
 export function picture(content: Exclude<Content, "camera">, width: number, height: number, fps: number) {
@@ -113,7 +114,19 @@ export async function rate(options: { content?: Content; seconds?: number; width
   });
   let input: MediaStreamTrack;
   let stop: () => void;
-  if (content === "camera") {
+  if (content === "flash" || content === "stage") {
+    // "stage": the program media's own runs use (the camera on a textured stage), without the flash.
+    const made = await program(encoding, clock, {
+      audio: false,
+      overlay: (context, n) => {
+        if (content === "stage" || n % fps !== 0 || n === 0) return;
+        context.fillStyle = "#fff";
+        context.fillRect(0, 0, width, height);
+      },
+    });
+    input = made.input.video;
+    stop = made.stop;
+  } else if (content === "camera") {
     const stream = await camera(encoding, false);
     input = stream.getVideoTracks()[0]!;
     stop = () => stream.getTracks().forEach((track) => track.stop());
@@ -161,7 +174,11 @@ export async function rate(options: { content?: Content; seconds?: number; width
     meanKbps: round((kept.reduce((s, f) => s + f.bytes, 0) * 8) / (seconds * 1000 - 2000)),
     keyGapMaxMs: keyGapsMs.length ? Math.max(...keyGapsMs) : null,
     // Keyframes once the source has had 5 s to learn the picture.
-    keyMsOfB: { max: keys.some((k) => k.at >= 5000) ? msOfB(Math.max(...keys.filter((k) => k.at >= 5000).map((k) => k.bytes))) : null, first: keys.length ? msOfB(keys[0]!.bytes) : null, last: keys.length ? msOfB(keys[keys.length - 1]!.bytes) : null },
+    keyMsOfB: {
+      count: keys.filter((k) => k.at >= 5000).length,
+      over250: keys.filter((k) => k.at >= 5000 && (k.bytes * 8) / bitrateKbps > 250).length,
+      max: keys.some((k) => k.at >= 5000) ? msOfB(Math.max(...keys.filter((k) => k.at >= 5000).map((k) => k.bytes))) : null,
+      first: keys.length ? msOfB(keys[0]!.bytes) : null, last: keys.length ? msOfB(keys[keys.length - 1]!.bytes) : null },
     keyList: allKeys.map((k) => `${round(k.at / 1000)}s:${k.width}:${msOfB(k.bytes)}${k.probe ? "t" : ""}`).join(" "),
     probeKeys: { count: probes.length, maxMsOfB: probes.length ? msOfB(Math.max(...probes.map((p) => p.bytes))) : null },
     fpsLast5s: round(last.length / 5),
