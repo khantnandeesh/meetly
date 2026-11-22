@@ -14,6 +14,18 @@ import type { JitterBuffer, JitterBufferEvents, JitterBufferOptions, JitterBuffe
 export const STALL_WAIT_US = 150_000;
 /** Media this far beyond *D* ahead of the playout point starts a catch-up (§10.4). */
 export const CATCH_UP_SLACK_US = 100_000;
+/**
+ * [D45] A replay (a join, a repair: frames marked `recovered`, any within REPLAY_WINDOW_MS)
+ * arrives already past due, and a fragment of it lost and asked for again would see its 150 ms
+ * long gone before it came. While one is coming, a missing frame is waited for this long from
+ * when playout reached it instead, and the GOP is given up only if the replay cannot catch up
+ * before the next keyframe would be due.
+ */
+export const REPLAY_FRAMES = 1;
+export const REPLAY_WINDOW_MS = 300;
+export const REPLAY_STALL_WAIT_US = 300_000;
+/** While a replay is played forward to catch up, the newest frame handed out is shown at least this often. */
+export const CATCH_UP_SHOW_EVERY_US = 100_000;
 /** *D* falls no faster than this (§10.2). */
 export const DELAY_FALL_MS_PER_S = 10;
 /** What a NACK round trip is taken to cost before the link's RTT has been measured. */
@@ -51,11 +63,18 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
   private lastOutCaptureUs: number | null = null;
   /** The keyframe of the GOP being handed out, and which of its frames have been. */
   private gopKeyId = -1;
+  private gopKeyCaptureUs: number | null = null;
   private handed = new Set<number>();
   /** A GOP given up on: its frames are dropped as they arrive. */
   private deadGopKeyId: number | null = null;
   /** The frame playout is waiting for. */
   private stallRoot: number | null = null;
+  /** When playout reached the frame it is waiting for (session µs). */
+  private stallSinceUs = 0;
+  /** Recovered frames lately: when they came (local ms) and their capture times. */
+  private recoveredIn: { at: number; captureUs: number }[] = [];
+  /** When a frame was last handed out to be shown (session µs). */
+  private lastShownUs = -Infinity;
   /** The next keyframe handed out is a jump: say so. */
   private skipPending = false;
   /** Frames newer than `lastOutId` already counted as lost or late, so that passing them does not count them again. */
@@ -128,6 +147,11 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     if (this.entries.has(id) || this.accounted.has(id)) return;
     this.maxSeenId = Math.max(this.maxSeenId, id);
     this.framesIn++;
+    if (frame.recovered) {
+      const at = this.options.clock.now();
+      this.recoveredIn.push({ at, captureUs: header.captureUs });
+      while (this.recoveredIn.length > 0 && (this.recoveredIn[0] as { at: number }).at < at - 1000) this.recoveredIn.shift();
+    }
     this.recentLayers.push(header.temporal);
     if (this.recentLayers.length > 16) this.recentLayers.shift();
     if (this.newestCaptureUs === null || header.captureUs > this.newestCaptureUs) this.newestCaptureUs = header.captureUs;
@@ -204,6 +228,37 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     return "never";
   }
 
+  /** A replay is coming in: several recovered frames lately, not a single retransmission. */
+  private replaying(): boolean {
+    const now = this.options.clock.now();
+    let recent = 0;
+    for (const r of this.recoveredIn) if (r.at >= now - REPLAY_WINDOW_MS) recent++;
+    return recent >= REPLAY_FRAMES;
+  }
+
+  /**
+   * [D45] Whether the replay will reach the playout point before the next keyframe is due: the
+   * capture time it delivers per second of arrival, against the lag it has to make up.
+   */
+  private replayCatchesUp(nowUs: number, delayUs: number, gopKeyCaptureUs: number | null): boolean {
+    const recovered = this.recoveredIn;
+    if (recovered.length < 2) return true;
+    const first = recovered[0] as { at: number; captureUs: number };
+    const last = recovered[recovered.length - 1] as { at: number; captureUs: number };
+    const arrivalUs = (last.at - first.at) * 1000;
+    if (arrivalUs <= 0) return true;
+    // Capture time delivered per unit of time, as the live stream delivers 1.
+    const speed = (last.captureUs - first.captureUs) / arrivalUs;
+    const lagUs = nowUs - delayUs - last.captureUs;
+    if (lagUs <= 0) return true;
+    if (speed <= 1) return false;
+    const catchUpUs = lagUs / (speed - 1);
+    if (gopKeyCaptureUs === null) return true;
+    const keyIntervalUs = (this.options.config.keyIntervalFrames ?? 60) * this.frameUs;
+    const nextKeyDueUs = gopKeyCaptureUs + keyIntervalUs + delayUs;
+    return nowUs + catchUpUs <= nextKeyDueUs;
+  }
+
   pop(nowUs: number): PlayoutFrame[] {
     const delayUs = this.updateDelay() + Math.round(this.extraMs * 1000);
     this.lastPopUs = nowUs;
@@ -219,6 +274,7 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     const catchingUp = newest - playoutPointUs > delayUs + CATCH_UP_SLACK_US;
     const showFromUs = newest - delayUs;
 
+    const replaying = this.replaying();
     let waiting = false;
     for (const id of [...this.ids]) {
       const entry = this.entries.get(id);
@@ -246,18 +302,45 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
 
       // A frame others build on is waiting for a missing one: video stalls (§10.3).
       const rootDueUs = frame.header.captureUs - (id - blocker) * this.frameUs + delayUs;
-      if (nowUs < rootDueUs + STALL_WAIT_US) {
+      // [D45] During a replay the missing frame was due long ago: it is given its wait from when
+      // playout reached it, as long as the replay can still catch up before the next keyframe.
+      const keyId = id - frame.header.keyDelta;
+      const keyCaptureUs = this.gopKeyId === keyId ? this.gopKeyCaptureUs : null;
+      const sinceUs = this.stallRoot === blocker ? this.stallSinceUs : nowUs;
+      const giveUpAt = replaying && this.replayCatchesUp(nowUs, delayUs, keyCaptureUs) ? Math.max(rootDueUs + STALL_WAIT_US, sinceUs + REPLAY_STALL_WAIT_US) : rootDueUs + STALL_WAIT_US;
+      if (nowUs < giveUpAt) {
         if (this.stallRoot !== blocker) {
           this.stallRoot = blocker;
+          this.stallSinceUs = nowUs;
           this.stalls++;
           this.emit("stall", this.streamId, blocker);
         }
         waiting = true;
         continue;
       }
-      this.giveUp(id - frame.header.keyDelta);
+      this.giveUp(keyId);
     }
+    this.showDuringCatchUp(out, nowUs, replaying);
     return out;
+  }
+
+  /**
+   * [D45] Played forward to catch up, frames are decoded and not shown (§10.4); but a picture
+   * held still the whole way is a freeze. So the newest of them that others build on (a
+   * discardable one would not survive the player's lateness rule) is shown, at most once per
+   * CATCH_UP_SHOW_EVERY_US: the viewer sees the picture skip forward, not stand.
+   */
+  private showDuringCatchUp(out: PlayoutFrame[], nowUs: number, catchingUp: boolean): void {
+    if (this.audio) return;
+    for (const played of out) if (!played.decodeOnly) this.lastShownUs = nowUs;
+    if (!catchingUp || nowUs - this.lastShownUs < CATCH_UP_SHOW_EVERY_US) return;
+    for (let i = out.length - 1; i >= 0; i--) {
+      const played = out[i] as PlayoutFrame;
+      if (!played.decodeOnly || (played.frame.header.flags & MediaFlag.Discardable) !== 0) continue;
+      played.decodeOnly = false;
+      this.lastShownUs = nowUs;
+      return;
+    }
   }
 
   private handOut(frame: ReceivedFrame): void {
@@ -293,6 +376,7 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     if (key && !this.audio) {
       if (this.skipPending || this.stallRoot !== null) this.emit("skip", this.streamId, id);
       this.gopKeyId = id;
+      this.gopKeyCaptureUs = header.captureUs;
       this.handed = new Set();
       this.deadGopKeyId = null;
       this.skipPending = false;
@@ -397,9 +481,12 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     this.lastOutId = -1;
     this.lastOutCaptureUs = null;
     this.gopKeyId = -1;
+    this.gopKeyCaptureUs = null;
     this.handed = new Set();
     this.deadGopKeyId = null;
     this.stallRoot = null;
+    this.recoveredIn = [];
+    this.lastShownUs = -Infinity;
     this.skipPending = false;
     this.accounted.clear();
     this.newestCaptureUs = null;

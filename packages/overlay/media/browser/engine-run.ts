@@ -90,6 +90,8 @@ try {
     const result = await pages[i]!.evaluate((seconds) => (window as unknown as { __av: { results(f: number): unknown } }).__av.results(seconds), options.seconds - 5);
     console.log(`viewer ${i}: ${JSON.stringify(result)}`);
   }
+  const atSource = await pages[0]!.evaluate((seconds) => (window as unknown as { __av: { sourceWindows(s: number): unknown } }).__av.sourceWindows(seconds), options.seconds - 5);
+  console.log(`source: ${JSON.stringify(atSource)}`);
 } finally {
   await browser.close();
   server.close();

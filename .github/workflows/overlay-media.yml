@@ -83,6 +83,7 @@ jobs:
           run rate '{"content":"noise","seconds":30}'
           run rate '{"content":"camera","seconds":30}'
           run rate '{"content":"stage","seconds":30}'
+          run rate '{"content":"flash","seconds":30,"width":640,"height":360,"bitrateKbps":600}'
           {
             echo '### Media browser runs'
             echo '```'
@@ -158,6 +159,7 @@ jobs:
             echo '### Media through the integrated engine'
             echo '```'
             grep -E '^(runner|busy|noise|av|exit )' engine-runs.log
+            grep -E '^source: ' engine-runs.log | cut -c1-200
             grep -oE '^viewer [0-9]+: \{"flashes":[0-9]+,"clicks":[0-9]+,"skewMs":\{[^}]*\}|"glassToGlassMs":\{[^}]*\}|"videoKbps":\{[^}]*\},"rxKbps":\{[^}]*\}' engine-runs.log
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

@@ -119,7 +119,8 @@ export async function rate(options: { content?: Content; seconds?: number; width
     const made = await program(encoding, clock, {
       audio: false,
       overlay: (context, n) => {
-        if (content === "stage" || n % fps !== 0 || n === 0) return;
+        // Half a second off the keyframes, so that the cut is a delta frame.
+        if (content === "stage" || n % fps !== fps >> 1) return;
         context.fillStyle = "#fff";
         context.fillRect(0, 0, width, height);
       },
