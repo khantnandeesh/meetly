@@ -32,7 +32,16 @@ export const GATE_MIX: SwarmConfig["mix"] = [
 /* ------------------------------ what each shard works out alone ------------------------------ */
 
 /** The source is peer 0 and runs on shard 0; every other peer on the shard its index falls to. */
-export const shardOf = (index: number, count: number): number => index % Math.max(1, count);
+export function shardOf(index: number, config: Pick<SwarmConfig, "shard" | "layout">): number {
+  const layout = config.layout;
+  if (!layout) return index % Math.max(1, config.shard.count);
+  if (index === 0) return layout.sourceShard;
+  return layout.viewerShards[(index - 1) % layout.viewerShards.length];
+}
+
+/** The shards that carry out churn on viewers, in turn. */
+const churnShards = (config: Pick<SwarmConfig, "shard" | "layout">): number[] =>
+  config.layout ? config.layout.viewerShards : Array.from({ length: config.shard.count }, (_, i) => i);
 
 /**
  * The network of peer `index`. The source's is clean: it is the host. The viewers present at the
@@ -103,7 +112,8 @@ export type ChurnStep = {
  * know another's peers and none needs the coordinator (which may be the thing that is dead).
  * The coordinator's own death is for whoever runs it: `shard` is -1.
  */
-export function churnSteps(config: Pick<SwarmConfig, "seed" | "peers" | "churn" | "shard">): ChurnStep[] {
+export function churnSteps(config: Pick<SwarmConfig, "seed" | "peers" | "churn" | "shard" | "layout">): ChurnStep[] {
+  const turnShards = churnShards(config);
   const steps: ChurnStep[] = [];
   // Each kind of event goes round the shards on its own, so every shard gets its share of each.
   const turns: Record<string, number> = {};
@@ -116,10 +126,10 @@ export function churnSteps(config: Pick<SwarmConfig, "seed" | "peers" | "churn" 
     }
     for (let nth = 0; nth < event.count; nth++) {
       const turn = (turns[event.action] = (turns[event.action] ?? -1) + 1);
-      const step: ChurnStep = { atS: event.atS, event, nth, shard: turn % config.shard.count, seed: mixSeed(config.seed, "churn", at, nth) };
+      const step: ChurnStep = { atS: event.atS, event, nth, shard: turnShards[turn % turnShards.length], seed: mixSeed(config.seed, "churn", at, nth) };
       if (event.action === "join") {
         step.index = nextIndex++;
-        step.shard = shardOf(step.index, config.shard.count);
+        step.shard = shardOf(step.index, config);
       }
       steps.push(step);
     }
@@ -235,14 +245,17 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     case "slow-child": {
       // E-congestion's tree (congestion/browser/run.ts): the source's three children, and four
       // grandchildren under them. One child of the source is capped at 900 kbps under the 1,200
-      // kbps stream; 15 s later it has 3 Mbps, room for every layer again.
-      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: SYNTHETIC };
+      // kbps stream, on the source's link to it only; 15 s later it has 3 Mbps, room for every layer.
+      // A real encode padded to 1,200 kbps (the package's encoder fed moving noise; the stand-in
+      // pads too), so that 900 kbps really is under the stream.
+      const config = { ...base, peers: 8, params: { sourceFanout: 3, maxFanout: 2, ...short }, program: GATE_PROGRAM };
       const at = settledS(config);
       return {
         ...config,
         churn: [
-          { atS: at, action: "impair", pick: "shallowest-relay", count: 1, profile: "cap-900" },
-          { atS: at + SLOW_CHILD.liftAfterS, action: "impair", pick: "impaired", count: 1, profile: "cap-3000" },
+          // The source's link to the child is the slow one (PLAN C3), not the child's own uplink to its children.
+          { atS: at, action: "impair", pick: "shallowest-relay", count: 1, profile: "cap-900", link: "from-parent" },
+          { atS: at + SLOW_CHILD.liftAfterS, action: "impair", pick: "impaired", count: 1, profile: "cap-3000", link: "from-parent" },
         ],
         durationS: at + SLOW_CHILD.liftAfterS + 15,
         expect: { peers: 8, minRepairs: 0 },
@@ -256,7 +269,7 @@ export function scenario(name: ScenarioName, options: ScenarioOptions = {}): Swa
     case "gate": {
       const peers = options.peers ?? (name === "gate" ? 200 : 30);
       // Most viewers light, one in `decodeEvery` decoding as the check on them (D29, SPEC §13.2).
-      const config = { ...base, peers, mix: GATE_MIX, joinPerS: name === "gate" ? 4 : 3, decodeEvery: name === "gate" ? 20 : 8, pagesPerBrowser: 10, program: GATE_PROGRAM };
+      const config = { ...base, peers, mix: GATE_MIX, joinPerS: name === "gate" ? 4 : 3, decodeEvery: name === "gate" ? 20 : 8, pagesPerBrowser: 12, program: GATE_PROGRAM };
       const from = fillS(config) + 5;
       const churnS = options.churnS ?? (name === "gate" ? 600 : 120);
       // Each kill orphans a relay's children: about three repairs a kill once the tree is full.

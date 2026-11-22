@@ -22,7 +22,7 @@ describe("overlay-swarm plan", () => {
     const shards = JSON.parse(out.shards).include as { run: string; shard: number; shards: number; peers: number }[];
     assert.deepEqual(
       shards.map((s) => [s.run, s.shard, s.shards, s.peers]),
-      [0, 1, 2, 3].map((i) => ["sharded", i, 4, 100]),
+      [0, 1, 2, 3, 4, 5].map((i) => ["sharded", i, 6, 100]),
     );
     assert.deepEqual(
       (JSON.parse(out.single).include as { dir: string; peers: number }[]).map((s) => [s.dir, s.peers]),
@@ -31,10 +31,10 @@ describe("overlay-swarm plan", () => {
     assert.equal(out.merge, "true");
   });
 
-  it("runs the gate, 19 shards of about 10 on the merged engine, nightly", () => {
+  it("runs the gate on 20 runners, the most a free account runs at once, nightly", () => {
     const out = plan({ EVENT: "schedule" });
     const shards = JSON.parse(out.shards).include as { run: string; peers: number }[];
-    assert.deepEqual([shards.length, shards[0].run, shards[0].peers, out.merge], [19, "gate", 200, "true"]);
+    assert.deepEqual([shards.length, shards[0].run, shards[0].peers, out.merge], [20, "gate", 200, "true"]);
   });
 
   it("runs the small named scenarios, each alone", () => {
@@ -54,6 +54,6 @@ describe("overlay-swarm plan", () => {
   it("runs a manual run's input", () => {
     const out = plan({ EVENT: "workflow_dispatch", RUNS_INPUT: "experiment" });
     const shards = JSON.parse(out.shards).include as { run: string; scenario: string }[];
-    assert.deepEqual([shards.length, shards[0].scenario, out.merge], [2, "two-runner", "false"]);
+    assert.deepEqual([shards.length, shards[0].scenario, out.merge], [4, "two-runner", "false"]);
   });
 });

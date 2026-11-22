@@ -70,7 +70,7 @@ describe("harness slow-child", () => {
   it("times the layers against the cap and the lift, and leaves the slow child's subtree out of the siblings", () => {
     const report = slowChildReport(run());
     assert.deepEqual([report.slow, report.under, report.siblings], ["slow", ["s1"], ["a", "a1"]]);
-    assert.deepEqual([report.firstDropMs, report.settledMs, report.layer1BackAfterLiftMs, report.layer2BackAfterLiftMs], [700, 1230, 6000, 11000]);
+    assert.deepEqual([report.firstDropMs, report.settledMs, report.settledLayer, report.layer1BackAfterLiftMs, report.layer2BackAfterLiftMs], [700, 1230, 0, 6000, 11000]);
     assert.equal(report.siblingsFramesLost, 0, "s1 lost frames, but it is under the slow child");
     assert.deepEqual(report.siblingsLatencyP95, { before: 100, during: 120 });
     assert.equal(report.slowChildAudioConcealedMs, 0);
@@ -95,6 +95,9 @@ describe("harness slow-child", () => {
       config.churn.map((e) => (e.action === "impair" ? [e.pick, e.profile] : null)),
       [["shallowest-relay", "cap-900"], ["impaired", "cap-3000"]],
     );
+    // The source's link to the child is capped, not the child's own uplink; and the stream is padded to 1,200 kbps.
+    assert.deepEqual(config.churn.map((e) => (e.action === "impair" ? e.link : null)), ["from-parent", "from-parent"]);
+    assert.deepEqual([config.program?.source, config.program?.bitrateKbps, config.program?.pad], ["camera", 1200, true]);
     const peers = [
       { index: 1, children: 2, depth: 1, impaired: false },
       { index: 2, children: 1, depth: 1, impaired: true },

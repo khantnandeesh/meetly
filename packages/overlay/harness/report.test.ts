@@ -227,7 +227,7 @@ describe("harness report", () => {
     ]);
     assert.equal(report.gate.valid, false);
     assert.ok(report.gate.notes.some((note) => /^shard 1: clock uncertainty p95 27 ms/.test(note)));
-    assert.match(renderReport(report), /\| 1 \| 4 \| 2 \| 10 \| 27 \|/);
+    assert.match(renderReport(report), /\| 1 \| – \| 4 \| 2 \| 10 \| 27 \|/);
   });
 
   it("measures how far apart viewers' clocks and the source's really were, against wall clocks", () => {
@@ -290,6 +290,15 @@ describe("harness report", () => {
     assert.equal(buildReport(results).measuredClockMs?.max, 17);
   });
 
+  it("says what the stream really was, as viewers at depth 1 received it", () => {
+    const results = goodRun();
+    const rx = (peer: string, kbps: number) => ({ ...sample(peer, 1, 1, [100]), up: { parent: "src", rttMs: 10, lossPct: 0, queueDelayMs: 0, rxKbps: kbps, nacksSent: 0, retransmitsReceived: 0, duplicates: 0, turn: false } });
+    results[0].samples = [rx("x1", 1150), rx("x2", 1180), { ...rx("deep", 300), depth: 2 }];
+    const report = buildReport(results);
+    assert.deepEqual([report.streamKbps.n, report.streamKbps.p50, report.streamKbps.max], [2, 1150, 1180]);
+    assert.match(renderReport(report), /depth 1 received it: p50 1150 kbps/);
+  });
+
   it("says where joins' time went", () => {
     const report = buildReport(goodRun());
     // join(): start 100, welcome 110, linked 120, firstPacket 130, firstFrame 100 + ms.
@@ -301,6 +310,29 @@ describe("harness report", () => {
     const text = "Reference ID    : A9FEA97B (169.254.169.123)\nSystem time     : 0.000012345 seconds fast of NTP time\nRoot delay      : 0.000400000 seconds\nRoot dispersion : 0.000150000 seconds\n";
     assert.ok(Math.abs((ntpBoundMs(text) as number) - 0.362345) < 1e-9);
     assert.equal(ntpBoundMs("nothing"), null);
+  });
+
+  it("leaves excluded shards out of the numbers, and judges a laid-out run on the peers that ran", () => {
+    const results = goodRun().map((s) => ({ ...s, ice: "stun" as const }));
+    for (const s of results) s.shard.count = 4;
+    results[0].role = "source";
+    results[0].peersOfRun = 120;
+    results[1].role = "viewers";
+    results[1].peersOfRun = 85;
+    const aws: ShardResult = { ...shard(2, 4, []), excluded: "symmetric NAT (an AWS-hosted runner): no link to another machine opens without TURN", role: "excluded", peersOfRun: 0, host: { cores: 0, loadAvg1: [], maxEventLoopLagMs: 0 } };
+    const coordinator: ShardResult = { ...shard(3, 4, []), role: "coordinator", peersOfRun: 0, clock: undefined, ice: "stun" };
+    let report = buildReport([...results, aws, coordinator]);
+    assert.deepEqual(report.excluded.map((e) => e.shard), [2]);
+    assert.deepEqual(report.hosts.map((h) => [h.shard, h.role]), [[0, "source"], [1, "viewers"], [3, "coordinator"]]);
+    const check = (name: string) => report.gate.validity.find((v) => v.name.startsWith(name));
+    assert.deepEqual([check("peers of the run that ran")?.value, check("peers of the run that ran")?.pass], [205, true]);
+    assert.equal(check("shards that reported")?.value, 4, "an excluded shard reported");
+    assert.match(renderReport(report), /Covers cone-NAT peers only/);
+    assert.match(renderReport(report), /Excluded before they started a peer: shard 2 \(symmetric NAT/);
+    // Too few peers left once the AWS shard is out.
+    results[1].peersOfRun = 60;
+    report = buildReport([...results, aws, coordinator]);
+    assert.equal(report.gate.validity.find((v) => v.name.startsWith("peers of the run that ran"))?.pass, false);
   });
 
   it("finds the largest size that was a valid measurement (H4)", () => {
@@ -361,7 +393,7 @@ describe("harness scenarios: what every shard works out alone", () => {
     assert.deepEqual(all, again, "every shard derives the same script");
     const joins = all.filter((step) => step.event.action === "join");
     assert.deepEqual(joins.map((step) => step.index), Array.from({ length: 120 }, (_, i) => 200 + i));
-    assert.ok(joins.every((step) => step.shard === shardOf(step.index as number, count)));
+    assert.ok(joins.every((step) => step.shard === shardOf(step.index as number, { shard: { index: 0, count } })));
     const kills = all.filter((step) => step.event.action === "kill");
     for (let s = 0; s < count; s++) assert.ok(kills.some((step) => step.shard === s), `shard ${s} kills somebody`);
     assert.deepEqual(all.filter((step) => step.shard === -1).map((step) => step.event.action), ["kill-coordinator"]);

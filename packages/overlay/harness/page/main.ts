@@ -25,6 +25,8 @@ declare global {
 const clock = realClock();
 const impairment = emptyImpairmentCounters();
 let profile: ImpairmentProfile | null = null;
+/** When set, `profile` is on the link to this peer only. */
+let profilePeer: PeerId | null = null;
 let engine: "real" | "standin" = "standin";
 let standin: StandinPeer | null = null;
 let real: OverlayViewer | OverlaySource | null = null;
@@ -61,7 +63,7 @@ async function start(options: PageStartOptions): Promise<void> {
     if (!window.__overlayTicket) throw new Error("no more tickets: the driver exposed no __overlayTicket");
     return window.__overlayTicket();
   };
-  const wrapChannel = createImpairment(() => profile, options.seed, { clock, self: String(options.index ?? ""), counters: impairment });
+  const wrapChannel = createImpairment((info) => (profilePeer !== null && info.peer !== profilePeer ? null : profile), options.seed, { clock, self: String(options.index ?? ""), counters: impairment });
 
   if (options.engine !== "standin") {
     try {
@@ -159,7 +161,13 @@ function state(): PageState {
 
 window.__overlay = {
   start,
-  setProfile: (next) => void (profile = next),
+  setProfile: (next, onlyPeer) => {
+    profile = next;
+    // Not through state(): that takes the lag measured since the last poll.
+    const parent = standin ? standin.parent() : (real?.status()?.stripes[0]?.parent ?? null);
+    // No parent to name: the profile falls on no link at all, rather than on every one.
+    profilePeer = onlyPeer === "parent" ? (parent ?? "") : (onlyPeer ?? null);
+  },
   takeSamples: () => (standin ? standin.takeSamples() : realSamples.splice(0, realSamples.length)),
   leave: async () => {
     if (standin) await standin.leave();

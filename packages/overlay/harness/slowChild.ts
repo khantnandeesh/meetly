@@ -18,6 +18,8 @@ export type SlowChildReport = {
   /** Milliseconds after the cap: the first `layer` event lowering it, and the last before the lift. */
   firstDropMs: number | null;
   settledMs: number | null;
+  /** The highest temporal layer the slow child was left with while capped (2 = all of them). */
+  settledLayer: number | null;
   /** Milliseconds after the lift: the middle layer back, and the top. */
   layer1BackAfterLiftMs: number | null;
   layer2BackAfterLiftMs: number | null;
@@ -55,6 +57,7 @@ export function slowChildReport(result: ShardResult): SlowChildReport {
     siblings,
     firstDropMs: null,
     settledMs: null,
+    settledLayer: null,
     layer1BackAfterLiftMs: null,
     layer2BackAfterLiftMs: null,
     layerEvents: 0,
@@ -81,7 +84,10 @@ export function slowChildReport(result: ShardResult): SlowChildReport {
     if (e.maxTemporal < level && report.firstDropMs === null) report.firstDropMs = e.at - capAt;
     level = e.maxTemporal;
   }
-  if (capped.length) report.settledMs = capped[capped.length - 1].at - capAt;
+  if (capped.length) {
+    report.settledMs = capped[capped.length - 1].at - capAt;
+    report.settledLayer = capped[capped.length - 1].maxTemporal;
+  }
   for (const e of layers.filter((x) => x.at >= liftAt)) {
     if (e.maxTemporal >= 1 && report.layer1BackAfterLiftMs === null) report.layer1BackAfterLiftMs = e.at - liftAt;
     if (e.maxTemporal >= 2 && report.layer2BackAfterLiftMs === null) report.layer2BackAfterLiftMs = e.at - liftAt;
@@ -113,7 +119,7 @@ export function renderSlowChild(report: SlowChildReport): string {
     "| Measure | Here | E-congestion |",
     "| --- | ---: | ---: |",
     `| First layer dropped, after the cap | ${ms(report.firstDropMs)} | ~${b.firstDropMs} ms |`,
-    `| Cap settled | ${ms(report.settledMs)} | ~${b.settledMs} ms |`,
+    `| Cap settled | ${ms(report.settledMs)}${report.settledLayer === null ? "" : `, on layer ${report.settledLayer}`} | ~${b.settledMs} ms |`,
     `| Siblings' frames lost while capped | ${report.siblingsFramesLost} | ${b.siblingsFramesLost} |`,
     `| Siblings' latency p95, change (bucket edges) | ${shift === null ? "not measured" : `${shift} ms (${report.siblingsLatencyP95.before} → ${report.siblingsLatencyP95.during})`} | under ${b.siblingsLatencyP95ShiftMs} ms |`,
     `| Slow child's audio concealed | ${ms(report.slowChildAudioConcealedMs)} | ${b.slowChildAudioConcealedMs} ms |`,

@@ -22,7 +22,8 @@ import { runShard } from "./shard";
 import { renderSlowChild, slowChildReport } from "./slowChild";
 import { startStandinCoordinator, type StandinCoordinator } from "./standin/coordinator";
 import { MODULES, probeStubs } from "./stubs";
-import type { ShardResult, SwarmConfig } from "./types";
+import { decideLayout, type NatReport } from "./layout";
+import type { ShardLayout, ShardResult, SwarmConfig } from "./types";
 
 function parse(argv: string[]): { words: string[]; flags: Map<string, string> } {
   const words: string[] = [];
@@ -70,6 +71,12 @@ function configFrom(name: string, flags: Map<string, string>): SwarmConfig {
   if (decodeEvery !== undefined) config.decodeEvery = decodeEvery;
   const stun = flags.get("stun");
   if (stun) config.iceServers = stun.split(",").map((urls) => ({ urls: [urls] }));
+  // The run's layout (./layout.ts), from shard 0's rendezvous or a file of its own.
+  const layoutFile = flags.get("layout");
+  if (layoutFile) {
+    const parsed = JSON.parse(readFileSync(layoutFile, "utf8")) as ShardLayout | { layout: ShardLayout };
+    config.layout = "layout" in parsed ? parsed.layout : parsed;
+  }
   const durationS = number(flags, "duration-s");
   if (durationS !== undefined) config.durationS = durationS;
   return config;
@@ -156,6 +163,68 @@ async function main(): Promise<number> {
     // One shard of several cannot be judged alone: the report job does that.
     if (config.shard.count > 1) return 0;
     return writeReport([result], out, flags.get("require") ?? "none");
+  }
+
+  if (command === "layout") {
+    // Shard 0: lay the run out from what the others said of their NAT (ci/natcheck.mjs, one nat-N.json each).
+    const count = number(flags, "shards");
+    const dir = flags.get("nat-dir");
+    if (!count || !dir) throw new Error("layout: --shards N --nat-dir DIR");
+    const reports: NatReport[] = [];
+    for (const entry of readdirSync(dir)) {
+      const match = /^nat-(\d+)\.json$/.exec(entry);
+      if (!match) continue;
+      try {
+        const found = JSON.parse(readFileSync(join(dir, entry), "utf8")) as { symmetric: boolean | null };
+        reports.push({ shard: Number(match[1]), symmetric: found.symmetric });
+      } catch {
+        reports.push({ shard: Number(match[1]), symmetric: null });
+      }
+    }
+    const layout = decideLayout(count, reports);
+    console.log(JSON.stringify(layout));
+    return 0;
+  }
+
+  if (command === "excluded") {
+    // A shard the layout left out: it starts no peer, and says why, so the report counts it as excluded and not as missing.
+    const config = configFrom(rest[0] ?? "", flags);
+    const why = config.layout?.excluded.find((e) => e.shard === config.shard.index)?.why ?? flags.get("why") ?? "excluded";
+    const now = Date.now();
+    const result: ShardResult = {
+      runId: config.runId,
+      shard: config.shard,
+      startedAt: now,
+      endedAt: now,
+      peersStarted: 0,
+      peersFailed: [],
+      samples: [],
+      host: { cores: 0, loadAvg1: [], maxEventLoopLagMs: 0 },
+      peers: config.peers,
+      durationS: config.durationS,
+      scenario: config.scenario,
+      seed: config.seed,
+      expect: config.expect,
+      excluded: why,
+      role: "excluded",
+      peersOfRun: 0,
+      ice: config.ice,
+    };
+    const nat = flags.get("nat");
+    if (nat) {
+      try {
+        const found = JSON.parse(readFileSync(nat, "utf8")) as { symmetric: boolean | null; mapped: { server: string; mapped: { ip: string; port: number } | null }[] };
+        result.host.nat = { symmetric: found.symmetric, mapped: found.mapped.map((m) => `${m.server} sees ${m.mapped ? `${m.mapped.ip}:${m.mapped.port}` : "nothing"}`) };
+      } catch {
+        // Nothing readable: the reason above stands.
+      }
+    }
+    if (out) {
+      mkdirSync(out, { recursive: true });
+      writeFileSync(join(out, `shard-${config.shard.index}.json`), JSON.stringify(result));
+    }
+    log(`shard ${config.shard.index}: excluded (${why})`);
+    return 0;
   }
 
   if (command === "sizes") {

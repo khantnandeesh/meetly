@@ -17,6 +17,7 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 import { decodeMetricsSample, emptyHistogram, latencyBucket, mergeHistogram, signTicket, type MetricsSample, type PeerId } from "../protocol";
 import { startNodeCoordinator } from "../coordinator/node";
 import type { NodeCoordinator } from "../coordinator/types";
+import { busyVideoFile } from "./busyVideo";
 import { seededRandom } from "./clock";
 import { bundlePage, servePage, type PageServer } from "./page/build";
 import { addLinks } from "./report";
@@ -150,7 +151,7 @@ export function pickPeer<T extends { index: number; children: number; depth: num
 /** Runs this process's share of a swarm to the end and returns what its peers measured. */
 export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   const log = config.log ?? (() => undefined);
-  const mine = (index: number): boolean => shardOf(index, config.shard.count) === config.shard.index;
+  const mine = (index: number): boolean => shardOf(index, config) === config.shard.index;
   const stubbed = probeStubs();
   const notes: string[] = [];
   const startedAt = Date.now();
@@ -176,7 +177,11 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
 
   /* ------------------------------ the page, the browsers ------------------------------ */
 
-  const playwright = loadPlaywright();
+  // Only when there is a page to open: shard 0 of a laid-out run, the coordinator's, has none.
+  let playwright: Playwright | null = null;
+  // A padded program wants a stream as big as asked: give the fake camera something no encoder can shrink.
+  const fakeVideo = config.program?.pad && config.program.source === "camera" ? [`--use-file-for-fake-video-capture=${busyVideoFile()}`] : [];
+  if (fakeVideo.length) notes.push("the fake camera played a drifting, grainy pattern (harness/busyVideo.ts), so that the encoder reaches its bitrate");
   let server: PageServer | null = null;
   const browsers: PwBrowser[] = [];
   const peers = new Map<number, PeerHandle>();
@@ -216,7 +221,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
 
   async function newPage(): Promise<PwPage> {
     if (!context || pagesInBrowser >= Math.max(1, config.pagesPerBrowser)) {
-      const browser = await playwright.chromium.launch({ args: CHROMIUM_ARGS });
+      playwright ??= loadPlaywright();
+      const browser = await playwright.chromium.launch({ args: [...CHROMIUM_ARGS, ...fakeVideo] });
       browsers.push(browser);
       context = await browser.newContext();
       pagesInBrowser = 0;
@@ -365,7 +371,9 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       const profile = config.profiles.find((p) => p.name === event.profile) ?? PROFILES[event.profile] ?? null;
       peer.profile = profile;
       impaired.add(peer.index);
-      await peer.page.evaluate((p) => window.__overlay.setProfile(p), profile).catch(() => undefined);
+      const only = event.link === "from-parent" ? "parent" : undefined;
+      await peer.page.evaluate(([p, o]) => window.__overlay.setProfile(p, o), [profile, only] as const).catch(() => undefined);
+      if (only) entry.targets.push(`on its link from its parent ${peer.state?.parent ?? "?"} only`);
     }
   }
 
@@ -459,6 +467,9 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   return {
     runId: config.runId,
     shard: config.shard,
+    role: !config.layout ? "all" : config.layout.coordinatorShard === config.shard.index && !peers.size ? "coordinator" : peers.has(0) && peers.size === 1 ? "source" : "viewers",
+    peersOfRun: [...peers.values()].filter((p) => p.index < config.peers).length,
+    ice: config.ice,
     startedAt,
     endedAt: Date.now(),
     peersStarted: peers.size,

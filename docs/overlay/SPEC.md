@@ -1247,8 +1247,14 @@ The gate of §1 is passed by one run of the harness that meets all of this:
 - **Measures:** repair time p95 over every `repair` event of kind warm, cold or wait; latency
   p95 over every rendered video frame of every viewer; join time p95 over every `join` event.
 - **Valid only if:** at least 100 repair events; no peer failed to start; no machine was starved
-  (event-loop lag under 50 ms at p99 on every shard); and the sum of clock uncertainties
-  (§4.1) at p95 is under 20 ms. A run that is not valid is neither a pass nor a fail.
+  (event-loop lag under 50 ms at p99 on every shard); and the clocks agree to under 20 ms at
+  p95 (below). A run that is not valid is neither a pass nor a fail.
+- **The clocks** **[D40]**. Each viewer's session clock and the source's are read against their
+  machines' wall clocks, synchronised by chrony. A viewer's disagreement is the largest gap
+  between the two at any moment of the run, plus both machines' chrony error bounds (|offset| +
+  root delay / 2 + root dispersion). Its p95 over all viewers must be under 20 ms. If any shard's
+  wall clock cannot be bounded that way, the sum of clock uncertainties (§4.1) at p95 must be
+  under 20 ms instead. Every report states both numbers, and which one judged the run.
 
 **[D28]** The report did not say what "injected loss and churn" are; the numbers above are that.
 They are stricter than the proof, which ran clean.
@@ -1458,6 +1464,7 @@ Rotating speakers on the overlay. Out of scope.
 | D37 | A parent at its fan-out takes a viewer with nothing to watch, up to twice the fan-out, and sheds a layer (integrator, 2026-11-21) | 7.1 |
 | D38 | Provisional relays: fan-out 2 on a short probe, before probation ends, used only when no full relay has a slot (integrator, 2026-11-21) | 8.1 |
 | D39 | The reordering window is max(10 ms, p95 inter-arrival jitter), at most 60 ms (integrator, 2026-11-21) | 4.6 |
+| D40 | The gate's clocks are judged as measured against chrony-synced wall clocks, the §4.1 bound only where a shard has no chrony (decided by integrator 2026-11-21) | 12.3 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms

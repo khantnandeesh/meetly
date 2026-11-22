@@ -119,7 +119,110 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
 
-## The whole engine (H6): run 44951357064, on overlay-integration
+## The whole engine (H6): the latest gate, with D37–D39
+
+[44964101029](https://github.com/khantnandeesh/meetly/actions/runs/44964101029), `gate
+integration`: overlay-integration at 39ae7d3, its newest green head, with D37 (overload), D38
+(provisional relays) and D39 (adaptive reordering). The coordinator is the package's Node entry
+point (`startNodeCoordinator`), on shard 0, behind a Cloudflare quick tunnel; not wrangler.
+Laid out over 20 runners: the coordinator on shard 0, the source on shard 1, 199 viewers over the 14
+runners left, after **4 AWS-hosted runners (shards 5, 11, 17, 19) were excluded** for their
+symmetric NAT. It covers cone-NAT peers only: no TURN was offered, so viewers who need it (about
+15–22% of real audiences) are untested.
+
+**Invalid**: 13 of the 14 viewer runners were over the health bar, at load 4.54–8.82 with 14 peers
+each (shard 2 at 2.69, the coordinator's at 0.51 and the source's at 1.74 passed; timer lag p99
+was 10–20 ms everywhere), and 6 late joiners never rendered. Everything else held: 200 of the run's
+peers ran, 4,995 repairs, clocks 12.7 ms as measured (77.9 ms by the §4.1 bound), light and
+decoding viewers 10 ms apart.
+
+| Measure (ms) | p50 | p95 | p99 | Gate | The run before, without D37–D39 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Join (313) | 2,500 | over 10,000 | over 10,000 | 3,000 | 3,500 / over 10,000 |
+| Repair (4,995: 624 warm, 35 cold, 4,336 wait) | 340 | 3,500 | 6,500 | 500 | 1,650 / 7,500 |
+| Glass-to-glass latency | 400 | 700 | 850 | 500 | 410 / 700 |
+| Freezes (10,151) | 370 | 4,000 | 7,000 | | 1,550 / 7,000 |
+
+Joins: connect() to welcome p50 369 ms; welcome to a parent linked p50 569 ms, p95 25.6 s; first
+packet to first frame p50 957 ms, p95 4.9 s. Frames lost: 308,018 (871,661 before).
+
+## The whole engine (H6): a laid-out gate, 20 runners, before D37–D39
+
+[44960914556](https://github.com/khantnandeesh/meetly/actions/runs/44960914556) (attempt 1),
+`gate integration`: overlay-integration at d9eb663, the newest commit whose CI had passed when the
+run was planned (39ae7d3, with D37–D39, passed a few minutes later). The run was laid out by
+`layout.ts`: the coordinator alone on shard 0 (itself behind a symmetric NAT, which a coordinator
+does not mind), the source alone on shard 1, 199 viewers over shards 2–18, and shard 19 excluded
+as late (it was still queued for a runner after six minutes). No runner it laid out was on AWS this
+time. It covers cone-NAT peers only: no TURN was offered.
+
+**Invalid**: 9 viewer runners were over the health bar, at load 4.01–7.8 with about 12 peers each
+(timer lag was 10 ms at p99 on every runner), and 7 viewers who joined in the run's last minutes
+never rendered. Everything else held: 200 of the run's peers ran, 4,574 repairs, clocks 10.5 ms as
+measured (63.5 ms by SPEC §4.1's bound), light and decoding viewers in agreement.
+
+| Measure (ms) | p50 | p95 | p99 | Gate |
+| --- | ---: | ---: | ---: | ---: |
+| Join (312) | 3,500 | over 10,000 | over 10,000 | 3,000 |
+| Repair (4,574: 528 warm, 257 cold, 3,789 wait) | 1,650 | 7,500 | over 10,000 | 500 |
+| Glass-to-glass latency | 410 | 700 | 850 | 500 |
+| Freezes (15,516) | 1,550 | 7,000 | over 10,000 | |
+
+Joins: connect() to welcome p50 424 ms; welcome to a parent linked p50 555 ms, p95 20.9 s;
+first packet to first frame p50 1.0 s, p95 6.5 s.
+
+**The health bar cannot be met at 200 peers on this account.** A free account runs 20 jobs at
+once. Less the coordinator's runner and the source's, 18 are left for 199 viewers: 11 or 12 each,
+and with the package's engine that is a load of 3.5–7.8 on 4 vCPUs. Only a lighter page, a higher
+bar, or more runners at once (a paid plan's 40 or 60) gets there.
+
+## The whole engine (H6): the 19-runner gate before the layout
+
+[44956480109](https://github.com/khantnandeesh/meetly/actions/runs/44956480109), `gate
+integration`: overlay-integration at d9eb663, 13 of 13 factories real; the package's Node
+coordinator (`startNodeCoordinator`, with a store that outlives its 30 s death) on shard 0's
+runner, reached by the other runners through a Cloudflare quick tunnel; 19 runners of 10 or 11
+peers; the D28 mix and churn for ten minutes; the fake camera playing `busyVideo.ts`, so the stream
+was 1,634 kbps at p50 as depth-1 viewers received it (1,200 asked; see below).
+
+**Invalid**, for three reasons, each named in the report:
+
+- 5 of the 19 runners were AWS-hosted, behind a symmetric NAT: all 85 of their peers failed to
+  link anywhere. With no TURN server they cannot.
+- 8 runners were over the health bar: load (1 min, once filled) of 4.07–9.41 on 4 vCPUs. Timer
+  lag was 10 ms at p99 everywhere. Shard 0, which also encodes the program and runs the
+  coordinator and the tunnel, reached 9.41.
+- 103 peers failed to start in all: the 85, and 18 who joined late and never rendered.
+
+The clocks passed, as measured: 17.9 ms at p95 at each viewer's worst moment against the
+source's (SPEC §4.1's bound: 70.6 ms). Light viewers' latency was 30 ms off the decoding ones'.
+
+| Measure (ms) | p50 | p95 | p99 | Gate |
+| --- | ---: | ---: | ---: | ---: |
+| Join | 5,500 | over 10,000 | over 10,000 | 3,000 |
+| Repair (4,225: 487 warm, 131 cold, 3,607 wait) | 1,450 | 9,000 | over 10,000 | 500 |
+| Glass-to-glass latency | 370 | 650 | 800 | 500 |
+| Freezes (9,827) | 1,600 | 7,500 | over 10,000 | |
+
+Where joins went: connect() to welcome p50 284 ms, p95 14.5 s (viewers waiting out the outage);
+welcome to a parent linked p50 601 ms, p95 19.7 s; first packet to first frame p50 1.9 s,
+p95 10.6 s.
+
+**slow-child** in the same run (one runner, 8 peers), with the source's link to the child capped
+at 900 kbps and then lifted to 3 Mbps, next to E-congestion's own run: first layer dropped 863 ms
+after the cap (theirs ~700), settled on layer 0 at 2.9 s (~1.23 s), siblings lost 0 frames and
+their latency p95 did not move (160 → 160 ms; theirs under 5 ms), the slow child concealed 20 ms
+of audio (theirs 0), middle layer back 4.8 s after the lift (~6 s), top layer 9.9 s (~11 s).
+proof-tree: 2 warm repairs of 220 ms, 0 frames lost. chain-kill: 1 cold and 2 wait repairs of
+240 ms, 0 frames lost.
+
+**The encoder and the busy video.** Chromium's fake camera encodes to 566–800 kbps whatever is
+asked, so "slow" at 900 kbps was not slow. Moving noise drove the package's encoder to 14,817 kbps
+(asked 1,200) and was dropped; measured locally, a fine pattern gives 3,600–4,000 kbps (with
+`bitrateMode: "constant"` too) and the drifting, grainy pattern now used about 1,500. Past some
+level of detail the encoder overshoots its target: one for E-media.
+
+## The first whole-engine gate: run 44951357064, 8 runners
 
 [44951357064](https://github.com/khantnandeesh/meetly/actions/runs/44951357064), `integration`:
 overlay-integration (6921832) merged in, 13 of 13 factories real, the pages running the
