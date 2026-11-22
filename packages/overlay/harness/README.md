@@ -146,6 +146,13 @@ decoding viewers 10 ms apart.
 Joins: connect() to welcome p50 369 ms; welcome to a parent linked p50 569 ms, p95 25.6 s; first
 packet to first frame p50 957 ms, p95 4.9 s. Frames lost: 308,018 (871,661 before).
 
+The 6 viewers who never rendered (peers 242–247) joined during the coordinator's 30 s outage or
+just after it. Peer 242's page reached the restarted coordinator (its samples run to the end of the
+run), and 3 s later its node logged "overlay: no parent could be found; rejoining"; it stayed a leaf
+at depth 255 with no parent for the six minutes left. The engine's placement after a restart, not
+the page. Since then (D42) a runner is judged by its timer lag alone, so this run's 13 loaded
+runners, whose timers ran 10–20 ms late at p99, would have passed.
+
 ## The whole engine (H6): a laid-out gate, 20 runners, before D37–D39
 
 [44960914556](https://github.com/khantnandeesh/meetly/actions/runs/44960914556) (attempt 1),
