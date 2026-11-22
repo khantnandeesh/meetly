@@ -66,6 +66,12 @@ const PROBE_HEADROOM = 1.1;
 const probeTargetKbps = (params: OverlayParams, streamKbps: number, fanout = params.maxFanout) => PROBE_HEADROOM * Math.max((fanout * 1.15 * streamKbps) / 0.7, 2 * 1.15 * streamKbps);
 /** SPEC §8.1 [D38], [D41]: the short probe, 1 s, as soon as there is a parent: sized for a provisional relay's two children. */
 const SHORT_PROBE = { fanout: 2, durationMs: 1000 };
+/**
+ * The short probe starts this soon after the peer first has a parent, not at the next look
+ * (`PROBE_WAIT_MS` after welcome): at a session's start every joiner past the first few waits
+ * for the provisional relays, and each one opened a second sooner is a layer of the tree sooner.
+ */
+const PROBE_AFTER_PARENT_MS = 200;
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /** The source applies SPEC §11.4's uplink rule once a second. */
@@ -227,7 +233,10 @@ abstract class PeerEngine {
         this.options.logger?.warn("overlay", error.message);
         this.pending.push({ t: "error", at: Math.max(0, this.client.sessionClock.now()), where: "node", message: error.message.slice(0, 512) });
       });
-      node.on("status", () => this.sendStatus());
+      node.on("status", () => {
+        this.sendStatus();
+        this.probeOnFirstParent();
+      });
       node.on("config", (config) => this.onConfig(config));
       // The session's streams, later than welcome: a viewer welcomed before the source started.
       this.client.on("message", (message) => {
@@ -289,6 +298,17 @@ abstract class PeerEngine {
     return DEFAULT_ENCODING.video.bitrateKbps;
   }
 
+  private hadParent = false;
+  private probeRunning = false;
+
+  private probeOnFirstParent(): void {
+    if (this.hadParent || this.welcome?.role === "source") return;
+    const stripe = this.node?.status().stripes[0];
+    if (!stripe || stripe.state !== "active" || stripe.parent === null) return;
+    this.hadParent = true;
+    if (this.probePhase === "short" && !this.probeRunning) this.scheduleProbe(PROBE_AFTER_PARENT_MS);
+  }
+
   private scheduleProbe(afterMs: number): void {
     this.probeTimer?.();
     this.probeTimer = this.clock.setTimeout(() => this.maybeProbe(), afterMs);
@@ -315,6 +335,7 @@ abstract class PeerEngine {
     const allowed = this.probePhase === "short" ? ["uplink", "probation"] : ["uplink"];
     if (verdict.reasons.some((reason) => !allowed.includes(reason))) return this.scheduleProbe(PROBE_RETRY_MS);
     const short = this.probePhase === "short";
+    this.probeRunning = true;
     node.runProbe(
       createUplinkProbe({
         targetKbps: probeTargetKbps(welcome.params, this.videoKbps(), short ? SHORT_PROBE.fanout : welcome.params.maxFanout),
@@ -324,6 +345,7 @@ abstract class PeerEngine {
   }
 
   private onProbe(spare: number | null): void {
+    this.probeRunning = false;
     if (spare === null) return this.scheduleProbe(this.probePhase === "short" ? PROBE_WAIT_MS : PROBE_RETRY_MS);
     if (this.caps) this.caps = { ...this.caps, uplinkKbps: Math.round(spare) };
     this.sendStatus();

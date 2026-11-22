@@ -11,8 +11,12 @@ const sent = (net: SimNet, from: string, type: PeerMessage["t"], since = 0) => n
 
 /** Video frames `from`..`to` that `peer` never got whole. */
 function missing(peer: SimPeer, from: number, to: number): number[] {
+  // A joiner's replay leaves out the enhancement layers of what is more than JOIN_THIN_MS behind
+  // the newest frame: it would only decode them. Those, before its first enhancement-layer frame, are not missing.
+  const enhancement = (id: number) => (id % 60) % 4 !== 0;
+  const firstEnhancement = Math.min(...[...peer.video].filter(enhancement));
   const out: number[] = [];
-  for (let id = from; id <= to; id++) if (!peer.video.has(id)) out.push(id);
+  for (let id = from; id <= to; id++) if (!peer.video.has(id) && !(enhancement(id) && id < firstEnhancement)) out.push(id);
   return out;
 }
 

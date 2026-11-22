@@ -111,6 +111,10 @@ export const PACE_ABOVE_FRAMES = 2;
 export const PACE_FRAMES = 3;
 /** D43: past this much held for one child, nothing more is held: the link's own queue sheds. */
 const PACE_MAX_BYTES = 1 << 20;
+/** A joiner's replay older than this behind its newest frame is the base layer only. */
+export const JOIN_THIN_MS = 500;
+/** Past this many packets waiting behind a child's replay, live video no longer waits. */
+const MAX_BEHIND_REPLAY = 4096;
 /**
  * D43: a link just above B has absorbed a paced keyframe within this many times the keyframe's
  * own time at B after its pacing ends. At 1.1 × B the backlog drains only by what the link carries
@@ -855,6 +859,19 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       if (child.subs.size === 0) continue;
       const sub = child.subs.get(id);
       if (!sub || sub.mode !== "active" || !sub.stripes.includes(header.stripe)) continue;
+      if (hopFlags & HopFlag.Replay && !stream.audio) {
+        // A replay this node is being sent (its own repair) is a replay for its children too
+        // (§11.5): behind live media, within the replay budget, and with the gate's replay
+        // grace. Handed over as it came, it is a burst on every child's channel at once; rule 6
+        // then refuses some of it, and everything that needed those frames, to the next keyframe.
+        if (sub.decisions.get(header.frameId) === false) continue;
+        if (header.temporal > sub.gate.cap.maxTemporal || header.spatial > sub.gate.cap.maxSpatial) continue;
+        sub.decisions.set(header.frameId, true);
+        sub.replay.push(packet);
+        pumpReplay(child, receivedAt);
+        sent = true;
+        continue;
+      }
       let admit = sub.decisions.get(header.frameId);
       if (admit === undefined) {
         const buffered = child.link.bufferedAmount;
@@ -876,7 +893,15 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         writeHopFields(packet, { hopFlags, hops: Math.min(255, hops), linkSeq: 0, sendMs: 0 });
         stamped = true;
       }
-      if (hopFlags & (HopFlag.Replay | HopFlag.Retransmit) || stream.audio) sendPacket(child, packet, hopFlags & HopFlag.Replay ? "replay" : stream.sendClass, receivedAt);
+      if (sub.replay.length > 0 && sub.replay.length < MAX_BEHIND_REPLAY && !stream.audio && !(hopFlags & HopFlag.Retransmit)) {
+        // Live video waits behind this child's replay, in order: until the replay is through,
+        // the child cannot decode it, and its jitter buffer, seeing frames that need ones not
+        // there and long past due, gives up the GOP and waits for the next keyframe.
+        const copy = packet.slice();
+        liveBehind.add(copy);
+        sub.replay.push(copy);
+        pumpReplay(child, receivedAt);
+      } else if (hopFlags & (HopFlag.Replay | HopFlag.Retransmit) || stream.audio) sendPacket(child, packet, hopFlags & HopFlag.Replay ? "replay" : stream.sendClass, receivedAt);
       else paceOrSend(child, stream, header, packet, receivedAt);
       sent = true;
     }
@@ -1190,6 +1215,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     });
     if (mode === "active") {
       sub.replay = cache.replay(stream.config.id, sub.stripes, message.fromFrame, sub.gate.cap);
+      if (message.fromFrame === FROM_LATEST_KEYFRAME && !stream.audio) sub.replay = thinJoinReplay(sub.replay);
       if (sub.replay.length > 0) sub.lastReplayAt = now;
       for (const packet of sub.replay) sub.decisions.set(decodeFrameId(packet), true);
       pumpReplay(peer, now);
@@ -1201,6 +1227,25 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     checkOverload();
     changed();
   }
+
+  /**
+   * A joiner's replay runs from the GOP's keyframe, up to 2 s back, and the joiner shows nothing
+   * until it has caught up. What is older than its playout point it only decodes, and a frame
+   * above the base layer is decoded for nothing: no later frame needs it (SPEC §9.2). So the
+   * part of the GOP more than `JOIN_THIN_MS` behind the newest frame goes as keyframe and base
+   * layer only: a smaller replay, and a sooner first frame.
+   */
+  function thinJoinReplay(packets: Uint8Array[]): Uint8Array[] {
+    let newestUs = -Infinity;
+    for (const packet of packets) newestUs = Math.max(newestUs, readCaptureUs(packet));
+    const before = newestUs - JOIN_THIN_MS * 1000;
+    return packets.filter((packet) => (packet[4] & 0x0f) === 0 || readCaptureUs(packet) >= before);
+  }
+
+  const readCaptureUs = (packet: Uint8Array) => decodeMediaHeader(packet)?.captureUs ?? 0;
+
+  /** Live packets held behind a child's replay: already stamped as live, and sent as they are. */
+  const liveBehind = new WeakSet<Uint8Array>();
 
   const decodeFrameId = (packet: Uint8Array) => ((packet[8] << 24) | (packet[9] << 16) | (packet[10] << 8) | packet[11]) >>> 0;
 
@@ -1219,6 +1264,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       while (sentCount < sub.replay.length && budget >= sub.replay[sentCount].byteLength) {
         const packet = sub.replay[sentCount++];
         budget -= packet.byteLength;
+        if (liveBehind.has(packet)) {
+          sendPacket(peer, packet, streams.get(packet[2])?.sendClass ?? "video", now);
+          continue;
+        }
         writeHopFields(packet, { hopFlags: HopFlag.Replay, hops, linkSeq: 0, sendMs: 0 });
         sendPacket(peer, packet, "replay", now);
       }
