@@ -850,6 +850,16 @@ link is never *ok*; such a peer is not eligible in any case (loss under 2%, the 
 the peer's own use; the 1.15 for retransmissions and replays. `maxFanout` is 4; the source's is
 3, because the host's uplink also carries the stage. **[D20]**
 
+**[D49] The source alone takes up to six** (decided by integrator 2026-11-22). While no other
+relay, full or provisional, is connected, the source's fan-out is the formula's at its measured
+uplink, between `sourceFanout` and `sourceAloneFanout` (6 when the params do not say): at a
+session's start every joiner can go to it at once, instead of waiting for relays to finish
+probation or their short probe. The source has no parent: once it has a child it probes toward
+that child (sized for `sourceAloneFanout` children), which reports in its FEEDBACK as any child
+does. The coordinator tells the source its fan-out in `role` (`role: source`, with `fanout`) when
+it rises, and again when the first relay appears and it falls back to `sourceFanout`; children
+over it are then moved as for any relay. Only with [D48] and the probe waiting for the NAT type.
+
 **[D50] One fan-out, everywhere** (decided by integrator 2026-11-22). The probe is sized by the
 same *sessionKbps* as the formula (video and audio together), so a probe that reaches its target
 shows the fan-out it was sized for. Every relay's `role` carries its `fanout`, provisional or
@@ -1563,6 +1573,7 @@ Rotating speakers on the overlay. Out of scope.
 | D46 | Frames shown during a [D45] catch-up are not in glass-to-glass latency; counted apart, with their age (integrator, 2026-11-22) | 12.1, 12.2 |
 | D47 | A relay is demoted for its children's loss only when more than half of them, and two at least, report over 5% (integrator, 2026-11-22) | 8.1 |
 | D48 | The NAT probe answers as soon as the candidates decide it; the short probe waits for it (integrator, 2026-11-22) | 8.1 |
+| D49 | While it is the only relay, the source takes up to `sourceAloneFanout` (6) children, as its probe toward a child shows (integrator, 2026-11-22) | 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told

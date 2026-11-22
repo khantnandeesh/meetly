@@ -864,6 +864,8 @@ const params = object({
   rebalanceMinMs: int(0, 3_600_000),
   /** SPEC §8.1, D18: nobody relays before this long in the session. 20 s when absent. */
   probationMs: optional(int(0, 3_600_000)),
+  /** SPEC §8.1, D49: the most children the source takes while it is the only relay, if its probe shows the uplink. 6 when absent. */
+  sourceAloneFanout: optional(int(1, 64)),
 });
 export type OverlayParams = Infer<typeof params>;
 
