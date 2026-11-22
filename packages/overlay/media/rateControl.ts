@@ -68,6 +68,12 @@ export const SCALE_HOLD_MS = 2500;
  */
 export const TRY_MS = 2500;
 export const TRY_GATE = 0.88;
+/**
+ * A cut in the picture (a flash, a new scene) makes a delta frame as big as a keyframe, and no
+ * guess made before encoding it sees that coming. So room is kept for the biggest such surprise
+ * (what a frame came to over what it was expected to be) of this long past.
+ */
+export const SURPRISE_MEMORY_MS = 6_000;
 /** Room is kept for a keyframe due this soon, so that it is not late for want of it. */
 export const KEY_RESERVE_MS = 600;
 
@@ -83,6 +89,9 @@ export class VideoRateController {
   private readonly offered: { at: number; skipped: boolean }[] = [];
   /** Bytes expected of frames in the encoder that have not come out yet. */
   private inFlight: number[] = [];
+  private firstOfferAt = -Infinity;
+  /** Frames that came out bigger than expected, by how much, lately. */
+  private surprises: { at: number; bytes: number }[] = [];
   /** Recent sizes, by kind: keyframes, and each temporal layer. */
   private keyBytes: number | null = null;
   private readonly layerBytes: (number | null)[];
@@ -145,6 +154,7 @@ export class VideoRateController {
    */
   offer(now: number, key: boolean, temporal: number, untilKeyMs = Infinity): RateDecision {
     this.forget(now);
+    if (this.firstOfferAt === -Infinity) this.firstOfferAt = now;
     this.counters.offered++;
     const expected = this.expectedBytes(key, temporal);
     const pending = this.inFlight.reduce((sum, bytes) => sum + bytes, 0);
@@ -157,7 +167,11 @@ export class VideoRateController {
       this.shrinkNow = true;
       return "skip";
     }
-    const fits = this.sentBytes + pending + reserved + expected <= gate;
+    while (this.surprises.length > 0 && (this.surprises[0] as { at: number }).at < now - SURPRISE_MEMORY_MS) this.surprises.shift();
+    // What the gate's own margin under the window's limit absorbs needs no more room.
+    const absorbed = this.windowCapBytes() - gate / (now < this.tryingUntil ? TRY_GATE : 1);
+    const surprise = Math.max(0, this.surprises.reduce((most, s) => Math.max(most, s.bytes), 0) - absorbed);
+    const fits = this.sentBytes + pending + reserved + Math.min(surprise, gate / 2) + expected <= gate;
     // An empty window always takes a frame, however big: otherwise a frame bigger than the
     // window would stop the stream for good.
     const decision: RateDecision = fits || this.sentBytes + pending === 0 ? "encode" : "skip";
@@ -175,7 +189,10 @@ export class VideoRateController {
   /** A frame came out of the encoder. */
   encoded(now: number, bytes: number, key: boolean, temporal: number): void {
     this.forget(now);
-    this.inFlight.shift();
+    const expected = this.inFlight.shift();
+    // Delta frames only (keyframes have their own estimate), and not while the picture is being
+    // learnt: the first frames of an input are all surprises.
+    if (!key && expected !== undefined && expected > 0 && bytes > expected && now - this.firstOfferAt >= RATE_WINDOW_MS) this.surprises.push({ at: now, bytes: bytes - expected });
     this.sent.push({ at: now, bytes });
     this.sentBytes += bytes;
     // The latest of each kind, a little pessimistic: pictures change fast.
