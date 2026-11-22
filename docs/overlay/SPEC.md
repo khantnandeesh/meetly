@@ -860,6 +860,12 @@ does. The coordinator tells the source its fan-out in `role` (`role: source`, wi
 it rises, and again when the first relay appears and it falls back to `sourceFanout`; children
 over it are then moved as for any relay. Only with [D48] and the probe waiting for the NAT type.
 
+**[D51] `sourceAloneFanout`** (decided by integrator 2026-11-22) is an optional session param,
+6 when absent: the ceiling of [D49]. A scenario about a fixed tree (the proof's, a chain) sets it
+to its `sourceFanout`. With D49 a depth-1 peer's backup can never be clear of the source, so at
+least 93% of first backups are clear of the first parent, not 95%; and a short probe put off for
+want of the NAT type is checked as slower than one that waits for it, no longer as over 4 s.
+
 **[D50] One fan-out, everywhere** (decided by integrator 2026-11-22). The probe is sized by the
 same *sessionKbps* as the formula (video and audio together), so a probe that reaches its target
 shows the fan-out it was sized for. Every relay's `role` carries its `fanout`, provisional or
@@ -1574,6 +1580,7 @@ Rotating speakers on the overlay. Out of scope.
 | D47 | A relay is demoted for its children's loss only when more than half of them, and two at least, report over 5% (integrator, 2026-11-22) | 8.1 |
 | D48 | The NAT probe answers as soon as the candidates decide it; the short probe waits for it (integrator, 2026-11-22) | 8.1 |
 | D49 | While it is the only relay, the source takes up to `sourceAloneFanout` (6) children, as its probe toward a child shows (integrator, 2026-11-22) | 8.1 |
+| D51 | `sourceAloneFanout`, an optional param (6), the ceiling of D49; fixed-tree scenarios set it to `sourceFanout` (integrator, 2026-11-22) | 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
