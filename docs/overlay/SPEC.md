@@ -581,6 +581,12 @@ the session has ended.
 
 Filling shallowest-first keeps the tree as short as its relays allow. With a fan-out of 4 and a
 source fan-out of 3, 200 peers sit within depth 4 if a quarter of them can relay.
+**[D54]** A joiner that can never relay is placed shallowest-first too, no longer deepest-first:
+a relay with few children never takes a deeper subtree while a shallower one has room. (The
+coordinator has no joiner-to-relay round trip; among feeders at one depth it prefers the same
+`region`.) Depth 3 for 200 peers is not reachable at `maxFanout` 4: within depth 3 the tree holds
+3 + 12 + 48 = 63 peers (6 + 24 + 96 = 126 with [D49]'s six on the source); depth 3 needs a fan-out
+of about 6 throughout. *Decided by integrator 2026-11-22.*
 
 **Answering `need`.** The same, with `exclude` removed, and, for `want: "backup"`, without any
 peer whose path contains the asker's current parent.
@@ -1333,6 +1339,12 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
   from the last packet heard from the lost parent until one second after the first packet from
   the new one. It includes the frame interval that is always there, as the proof's `freezeMs`
   did. A peer in `waiting` whose parent recovered reports `kind: "wait"` with the freeze it saw.
+  **[D55]** A repair's `framesLost` counts every frame after the last decodable one before the
+  loss, up to the newest that arrived in the window, that never became decodable, less the frames
+  the new parent never sent: a layer it was shedding, and any frame of a temporal layer above the
+  lowest cap it announced during the repair (`sub-ack` `maxTemporal`, `layers`). An overloaded
+  backup (D37) sheds the top layer; the frame the old parent had begun and the new one never sent
+  is shed, not lost. *Decided by integrator 2026-11-22.*
 - **Join time:** `firstFrame − start`: from `connect()` being called to the first frame rendered.
 
 ### 12.3 The gate run
@@ -1581,6 +1593,8 @@ Rotating speakers on the overlay. Out of scope.
 | D48 | The NAT probe answers as soon as the candidates decide it; the short probe waits for it (integrator, 2026-11-22) | 8.1 |
 | D49 | While it is the only relay, the source takes up to `sourceAloneFanout` (6) children, as its probe toward a child shows (integrator, 2026-11-22) | 8.1 |
 | D51 | `sourceAloneFanout`, an optional param (6), the ceiling of D49; fixed-tree scenarios set it to `sourceFanout` (integrator, 2026-11-22) | 8.1 |
+| D54 | A joiner goes under the shallowest feeder with room, dead ends included (integrator, 2026-11-22) | 6.6 |
+| D55 | A repair's lost frames exclude those of a layer above the new parent's lowest announced cap (integrator, 2026-11-22) | 12.2 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told

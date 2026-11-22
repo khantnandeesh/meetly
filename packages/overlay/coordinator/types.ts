@@ -90,6 +90,8 @@ export type CoordinatorCoreOptions = {
   /** Meetly's server shows this to use the HTTP API. */
   serverSecret: string;
   params: OverlayParams;
+  /** Where a joiner that can never relay goes: "shallow" (D54, the default) or "deep" (before D54), for tests. */
+  leafPlacement?: "deep" | "shallow";
   /** The most viewers admitted. The source is never refused. */
   viewerCap: number;
   /** STUN and TURN servers for a new peer, with fresh credentials. */

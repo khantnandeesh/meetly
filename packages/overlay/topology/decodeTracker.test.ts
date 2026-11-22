@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MediaFlag } from "@meetly/overlay";
-import { DecodeTracker } from "@meetly/overlay/topology/node";
+import { DecodeTracker, temporalOfKeyDelta } from "@meetly/overlay/topology/node";
 
 /** L1T3, a keyframe every 60 frames, one frame every 33 ms. */
 const header = (frameId: number) => {
@@ -35,5 +35,14 @@ describe("DecodeTracker.gap", () => {
     for (let id = 0; id < 40; id++) if (header(id).temporal !== 2) tracker.push(header(id), at(id));
     assert.equal(tracker.gap(at(10), at(40), (id) => header(id).temporal === 2).lost, 0);
     assert.equal(tracker.gap(at(10), at(40)).lost, 15);
+  });
+
+  it("D55: the layer of a frame from its place in the GOP, and the keyframe of a frame that never came", () => {
+    assert.deepEqual([0, 1, 2, 3, 4, 5, 6, 7].map((d) => temporalOfKeyDelta(3, d)), [0, 2, 1, 2, 0, 2, 1, 2]);
+    assert.equal(temporalOfKeyDelta(1, 5), 0);
+    const tracker = new DecodeTracker(false);
+    for (let id = 60; id < 70; id++) tracker.push(header(id), at(id));
+    assert.equal(tracker.keyNear(71), 60);
+    assert.equal(tracker.keyNear(10), null);
   });
 });

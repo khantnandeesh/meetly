@@ -96,7 +96,7 @@ class Core implements CoordinatorCore {
 
   constructor(options: CoordinatorCoreOptions) {
     this.o = options;
-    this.map = new TreeMap({ params: options.params, scoring: options.scoring ?? scoring(), streamKbps: () => this.sessionKbps() });
+    this.map = new TreeMap({ params: options.params, scoring: options.scoring ?? scoring(), streamKbps: () => this.sessionKbps(), leafPlacement: options.leafPlacement });
   }
 
   /* ------------------------------ the interface ------------------------------ */

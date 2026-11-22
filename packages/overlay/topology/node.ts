@@ -222,6 +222,15 @@ export class DecodeTracker {
     return id;
   }
 
+  /** The keyframe of the GOP `id` falls in, from the nearest decodable frame before it; null if none is known. */
+  keyNear(id: number): number | null {
+    for (let back = 1; back <= 255; back++) {
+      const key = this.decodable.get(id - back);
+      if (key !== undefined) return key;
+    }
+    return null;
+  }
+
   /** When each whole frame arrived, decodable or not. */
   private arrived: { at: number; id: number }[] = [];
 
@@ -310,6 +319,20 @@ export class DecodeTracker {
     for (let id = first; id <= last; id++) if (!decodedBy.has(id) && !neverSent(id)) lost++;
     return { freezeMs, lost };
   }
+}
+
+/** The temporal layer of the frame `keyDelta` after its keyframe, in an L1Tn stream (SPEC §9.2). */
+export function temporalOfKeyDelta(layers: number, keyDelta: number): number {
+  if (layers <= 1 || keyDelta <= 0) return 0;
+  const period = 1 << (layers - 1);
+  let position = keyDelta % period;
+  if (position === 0) return 0;
+  let layer = layers - 1;
+  while (position % 2 === 0) {
+    layer--;
+    position >>= 1;
+  }
+  return layer;
 }
 
 /** A quantile of the last few hundred values handed in. */
@@ -414,6 +437,8 @@ type RepairRecord = {
   resubscribed: number;
   firstPacket: number | null;
   usedCoordinator: boolean;
+  /** [D55] The lowest layer cap the parent announced (sub-ack, `layers`) from the repair to its report. */
+  minCap: number;
 };
 
 export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
@@ -973,7 +998,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       // The parent is alive but cut off, and is repairing: wait for it (SPEC D17).
       setState("waiting");
       waitingSince = now;
-      repair = { dead: peer.id, next: peer.id, kind: "wait", lastHeard: Number.isFinite(peer.lastMediaAt) ? peer.lastMediaAt : now, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false };
+      repair = { dead: peer.id, next: peer.id, kind: "wait", lastHeard: Number.isFinite(peer.lastMediaAt) ? peer.lastMediaAt : now, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15 };
       changed();
     } else if (!peer.stalled && wasStalled && state === "waiting") {
       resumeFromWaiting(now);
@@ -1332,6 +1357,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         if (peer === parent) {
           const stream = streams.get(message.stream);
           if (stream) stream.parentCap = message.maxTemporal;
+          if (stream === primary()) noteCap(message.maxTemporal);
           if (stream && !stream.audio) {
             if (message.maxTemporal === 0 && message.reason === "congestion") starvedSince ??= now;
             else starvedSince = null;
@@ -1509,7 +1535,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const known = streams.get(message.config.id);
     const before = known ? JSON.stringify(known.config) : "";
     const stream = addStream(message.config);
-    if (message.maxTemporal !== undefined) stream.parentCap = message.maxTemporal;
+    if (message.maxTemporal !== undefined) {
+      stream.parentCap = message.maxTemporal;
+      if (stream === primary()) noteCap(message.maxTemporal);
+    }
     if (JSON.stringify(stream.config) !== before) events.emit("config", stream.config);
   }
 
@@ -1663,7 +1692,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       forgetPending(to, "switch");
     }
     const lastHeard = why === "grace" && repair ? repair.lastHeard : dead.lastHeardAt;
-    repair = { dead: dead.id, next: null, kind: "warm", lastHeard, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false };
+    repair = { dead: dead.id, next: null, kind: "warm", lastHeard, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15 };
     forgetPending(dead);
     if (why !== "loop") markUnreachable(dead.id, now);
     if (previous && previous !== dead) {
@@ -1940,6 +1969,12 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ metrics ------------------------------ */
 
+  /** [D55] A cap the parent announced: kept, at its lowest, by the repair in progress and those not yet reported. */
+  function noteCap(maxTemporal: number): void {
+    if (repair) repair.minCap = Math.min(repair.minCap, maxTemporal);
+    for (const { record } of finishing) record.minCap = Math.min(record.minCap, maxTemporal);
+  }
+
   function finishRepairLater(): void {
     if (!repair || repair.firstPacket === null) return;
     finishing.push({ record: repair, at: repair.firstPacket + REPAIR_WINDOW_MS });
@@ -1950,7 +1985,15 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     while (finishing.length > 0 && finishing[0].at <= now) {
       const { record } = finishing.shift()!;
       const stream = primary();
-      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId)) : { freezeMs: 0, lost: 0 };
+      // [D55] Not lost either: a frame of a layer above what the new parent was sending (an
+      // overloaded backup sheds the top layer, D37), which the old parent never finished.
+      const layers = stream ? temporalLayers(stream.config) : 1;
+      const aboveCap = (frameId: number) => {
+        if (!stream || record.minCap >= layers - 1) return false;
+        const key = stream.tracker.keyNear(frameId);
+        return key !== null && temporalOfKeyDelta(layers, frameId - key) > record.minCap;
+      };
+      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId) || aboveCap(frameId)) : { freezeMs: 0, lost: 0 };
       metric({
         t: "repair",
         stream: stream?.config.id ?? 0,
