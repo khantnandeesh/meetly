@@ -1245,8 +1245,8 @@ const serverMessage = tagged({
   assign: { id: optional(int(0, 0xffffffff)), reason: oneOf("join", "need", "rebalance", "move"), assign: list(assignment, 64) },
   /**
    * You are now a relay, or no longer one. Comes with the grant that says so. `fanout`: the most
-   * active children you may take, when it is fewer than your own judgement says (a provisional
-   * relay, SPEC §8.1 [D38], takes 2).
+   * active children you may take (a provisional relay, SPEC §8.1 [D38], takes 2; a full relay
+   * its verdict's, [D50]); the node never takes more than it, nor than `maxFanout`.
    */
   role: { role: overlayRole, grant: token, fanout: optional(int(1, 64)) },
   /** A grant to replace the one you hold, before it expires. */

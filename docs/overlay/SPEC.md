@@ -813,7 +813,12 @@ coordinator and the peer call it.
 
 NAT type is found by gathering candidates against two STUN servers: the same public port from
 both means "cone", different ports "symmetric", a public host address "open". A peer whose every
-link so far needed TURN is "relay".
+link so far needed TURN is "relay". **[D48]** The answer comes as soon as the candidates decide
+it, not at the end of gathering or the probe's 3 s timeout: a public host address or one socket
+mapped two ways at once; otherwise "cone" 300 ms after the first server-reflexive candidate (a
+browser reports one candidate per distinct mapping, so a cone NAT never shows a second). The
+short probe (D38) waits for that answer rather than finding "nat" against the peer and trying
+again 10 s later. *Decided by integrator 2026-11-22.*
 
 Spare uplink is not known when a peer joins, and nothing a browser reports can be trusted for
 it. After probation the peer sends its parent PROBE packets (§4.7) for one second at what a full
@@ -845,8 +850,18 @@ link is never *ok*; such a peer is not eligible in any case (loss under 2%, the 
 the peer's own use; the 1.15 for retransmissions and replays. `maxFanout` is 4; the source's is
 3, because the host's uplink also carries the stage. **[D20]**
 
+**[D50] One fan-out, everywhere** (decided by integrator 2026-11-22). The probe is sized by the
+same *sessionKbps* as the formula (video and audio together), so a probe that reaches its target
+shows the fan-out it was sized for. Every relay's `role` carries its `fanout`, provisional or
+full, and is sent again when the verdict's changes; the node takes no more active children than
+it (D37's over-fan-out aside). The coordinator's placement and relief, and the node, agree.
+
 Because `caps` is a claim, the coordinator also watches what a relay's children report. A relay
 whose children's loss is over 5%, or who are STARVED, for 10 s, is demoted (`role: leaf`).
+**[D47]** "Its children's loss" is more than half of the children that report, and at least two
+of them, over 5%: one child's bad link is the child's, not the relay's. In the simulator this cut
+demotions from 90–146 to 7–9, and moves that deepen the tree from 70–104 to 2–6, per 10 minutes.
+*Decided by integrator 2026-11-22.*
 
 ### 8.2 Relay score
 
@@ -1546,6 +1561,9 @@ Rotating speakers on the overlay. Out of scope.
 | D44 | Per child, live video waits behind its replay (integrator, 2026-11-22) | 11.5 |
 | D45 | A replay is played forward: a missing frame waited for from when playout reached it while the replay can catch up, the newest frame shown every 100 ms (integrator, 2026-11-22) | 10.3 |
 | D46 | Frames shown during a [D45] catch-up are not in glass-to-glass latency; counted apart, with their age (integrator, 2026-11-22) | 12.1, 12.2 |
+| D47 | A relay is demoted for its children's loss only when more than half of them, and two at least, report over 5% (integrator, 2026-11-22) | 8.1 |
+| D48 | The NAT probe answers as soon as the candidates decide it; the short probe waits for it (integrator, 2026-11-22) | 8.1 |
+| D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
