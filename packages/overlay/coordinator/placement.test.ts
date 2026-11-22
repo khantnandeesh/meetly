@@ -70,6 +70,29 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.ok(shape.maxDepth > bound(200) || shape.waiting > 0);
     assert.equal(swarm.offeredBeyondFree, 0);
   });
+
+  it("the smoke's tree (7 peers, fan-outs 2): a full relay whose verdict says one child keeps the two its node takes", async () => {
+    // A full relay's `role` carries no fan-out: its node takes `maxFanout`, and says so in its
+    // free slots, which placement offers. Relief by the verdict (here 1: a probe short of its
+    // target, or sized by the video where the verdict is by the session) moved its second child
+    // to a sibling, a level down; the swarm smoke test's kill then orphaned one viewer, not two.
+    for (let seed = 1; seed <= 3; seed++) {
+      const params = { ...DEFAULT_PARAMS, sourceFanout: 2, maxFanout: 2, probationMs: 3000 };
+      const swarm = new Swarm(new Rig({ random: seeded(seed), params }), undefined, { probeAt: ({ placedAt }) => placedAt + 1300, linkMs: 100, probedUplinkKbps: 3000 });
+      await swarm.addSource();
+      for (let t = 0, joined = 0; t < 35_000; t += 100) {
+        while (joined < 6 && 2000 + joined * 500 <= t) {
+          await swarm.addViewer(true);
+          joined++;
+        }
+        await swarm.step(100);
+      }
+      const children = [...swarm.source!.kids].map((id) => swarm.peers.get(id)!.kids.size);
+      assert.deepEqual(children, [2, 2], `seed ${seed}: the source's children have ${children.join(" and ")}`);
+      assert.equal(swarm.shape().maxDepth, 2);
+      assert.equal(swarm.moves, 0);
+    }
+  });
 });
 
 describe("coordinator placement: the map is soft state (SPEC §6.6, D12)", () => {

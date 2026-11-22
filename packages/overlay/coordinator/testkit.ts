@@ -269,6 +269,8 @@ export type SwarmOptions = {
    * each `joinWaits` entry. The placement itself is immediate.
    */
   linkMs?: number;
+  /** What a peer's probe finds (20,000 kbps): less makes a verdict's fan-out under `maxFanout`, which a full relay's node does not know. */
+  probedUplinkKbps?: number;
   /**
    * Whether a peer takes a backup offered in an `assign` "rebalance" that has no free slot, only
    * a standby place (SPEC §7.3: that is all a backup needs). False is topology's node as built
@@ -335,6 +337,7 @@ export class Swarm {
   private readonly standbyBackups: boolean;
   private readonly nodeRebalance: SwarmOptions["nodeRebalance"];
   private readonly badNetworks: SwarmOptions["badNetworks"];
+  private readonly probedUplinkKbps: number;
   /** Switches the peers made by their own cost rule, and how many of them took the peer deeper. */
   nodeSwitches = 0;
   nodeSwitchesDeeper = 0;
@@ -352,6 +355,7 @@ export class Swarm {
     this.standbyBackups = options.standbyBackups ?? false;
     this.nodeRebalance = options.nodeRebalance;
     this.badNetworks = options.badNetworks;
+    this.probedUplinkKbps = options.probedUplinkKbps ?? 20_000;
   }
 
   private network(peer: SimPeer): void {
@@ -435,6 +439,9 @@ export class Swarm {
     this.network(sim);
     if (welcome) {
       this.peers.set(sim.peer, sim);
+      // A `role` sent with this welcome (a relay promoted for the joiner) reaches that relay
+      // before the joiner's `sub` does: the joiner's link is set up through it, after.
+      await this.flush();
       this.onAssign(sim, welcome.assign, "join");
     } else this.unwelcomed.add(sim);
     return sim;
@@ -724,7 +731,7 @@ export class Swarm {
       if (!peer.alive) continue;
       // SPEC §8.1: a peer able to relay, in the tree, measures its spare uplink (D19, D38).
       if (peer.capable && peer.role === "leaf" && peer.placedAt !== null && peer.caps.uplinkKbps === null && this.rig.now >= (this.probeAt ? this.probeAt({ joinedAt: peer.joinedAt, placedAt: peer.placedAt }) : peer.placedAt + this.probeAfterMs)) {
-        peer.caps = relayCaps({ uplinkKbps: 20_000 });
+        peer.caps = relayCaps({ uplinkKbps: this.probedUplinkKbps });
         peer.dirty = true;
       }
       if (this.rig.now - peer.statusAt >= this.rig.options.params.statusMs) peer.dirty = true;
