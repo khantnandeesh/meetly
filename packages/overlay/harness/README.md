@@ -119,7 +119,36 @@ outage) alone on a 4-vCPU runner, light viewers with one in 8 decoding. Stand-in
 arrive during the outage are more than 5% of all joins, and they wait for it. At 200 they are
 under 2%.
 
-## The whole engine (H6): the latest gate, with D37–D39
+## The gate (H6): the first valid run, and it fails
+
+[44970866134](https://github.com/khantnandeesh/meetly/actions/runs/44970866134), `gate
+integration`: overlay-integration at b2f255b (its newest green head: D37–D39, D41, the
+coordinator's D38 and placement work at e607937, node fixes). The package's Node coordinator
+(`startNodeCoordinator`) on shard 0 behind a Cloudflare quick tunnel. 20 runners: the coordinator
+on shard 0, the source on shard 1, 199 viewers on 14 runners; **excluded**: shards 3 and 15 (AWS,
+symmetric NAT) and shards 10 and 13 (late: still queued for a runner after six minutes). It covers
+cone-NAT peers only: no TURN was offered, so viewers who need it (about 15–22% of real audiences)
+are untested.
+
+**Valid, and a FAIL** on all three limits. Every validity check held: 200 of the run's peers ran,
+925 repairs, no peer failed to start, timer lag 10 ms at p99 on every runner (D42; load was
+2.64–6.05 on the viewers' runners, reported only), clocks 13.9 ms as measured (D40; 46.2 ms by
+the §4.1 bound), light and decoding viewers 10 ms apart.
+
+| Measure (ms) | p50 | p95 | p99 | Gate | Last run (39ae7d3), p50 / p95 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| Join (319) | 2,000 | 7,000 | over 10,000 | 3,000 | 2,500 / over 10,000 |
+| Repair (925: 273 warm, 4 cold, 648 wait) | 360 | 750 | 1,650 | 500 | 340 / 3,500 |
+| Glass-to-glass latency | 350 | 600 | 700 | 500 | 400 / 700 |
+| Freezes (61,401) | 290 | 470 | 1,050 | | 370 / 4,000 |
+
+Joins: connect() to welcome p50 318 ms, p95 507 ms; welcome to a parent linked p50 456 ms, p95
+4.6 s; linked to first packet 2 ms; first packet to first frame p50 873 ms, p95 2.4 s. Frames
+lost 39,952 (308,018 the run before). The stream as depth-1 viewers received it was 764 kbps at p50
+and 1,393 at p95: the source spent most of the run well under its 1,200 kbps (D27 follows the
+audience), so for much of it the "slow" viewers' 900 kbps was not under the stream.
+
+## The whole engine (H6): the gate with D37–D39
 
 [44964101029](https://github.com/khantnandeesh/meetly/actions/runs/44964101029), `gate
 integration`: overlay-integration at 39ae7d3, its newest green head, with D37 (overload), D38
