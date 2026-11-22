@@ -102,6 +102,22 @@ export const RETRANSMIT_SHARE = 0.2;
 export const RETRANSMIT_BACKLOG_MS = 50;
 /** D36: a base-layer or keyframe packet asked for over the line waits at most this long for the backlog to clear. */
 export const RETRANSMIT_HOLD_MS = 500;
+/**
+ * D43: a keyframe bigger than this many frame intervals of B is paced to each child, not burst:
+ * its packets are spread so the last leaves `PACE_FRAMES` frame intervals after the first, its
+ * own and two more. What arrives for the child behind it waits its turn, so frames stay in order.
+ */
+export const PACE_ABOVE_FRAMES = 2;
+export const PACE_FRAMES = 3;
+/** D43: past this much held for one child, nothing more is held: the link's own queue sheds. */
+const PACE_MAX_BYTES = 1 << 20;
+/**
+ * D43: a link just above B has absorbed a paced keyframe within this many times the keyframe's
+ * own time at B after its pacing ends. At 1.1 × B the backlog drains only by what the link carries
+ * beyond the frames behind the keyframe, a quarter of B: 300 ms of B is gone in about a second,
+ * under the 1.2 s this allows. A backlog that stands longer is the link's, whatever the keyframe did.
+ */
+const PACE_ABSORB_FACTOR = 4;
 /** How often a peer compares its parent with the alternatives (SPEC §7.6). */
 export const REBALANCE_COMPARE_MS = 10_000;
 /** A parent that has held this peer at the base layer for this long may be left at once (SPEC §7.6). */
@@ -338,7 +354,23 @@ type Peer = {
   lastProbeAt: number;
   probeReporting: boolean;
   probeFeedbackAt: number;
+  /** D43: the packets held back to pace a keyframe, and what of it may still be in the channel. */
+  pacer: Pacer;
 };
+
+type Pacer = {
+  /** In order of release. Copies: the cache's own bytes are restamped for retransmits. */
+  queue: { packet: Uint8Array; due: number }[];
+  queuedBytes: number;
+  /**
+   * The last keyframe paced: its first packet's due time and the spacing of the rest; its size,
+   * the backlog (channel and queue) it found, whether its last packet has been seen, and the
+   * least the backlog has stood over that since its pacing ended.
+   */
+  frame: { stream: number; frameId: number; start: number; spacing: number; bytes: number; before: number; whole: boolean; paceEnd: number; low: number; until: number } | null;
+};
+
+const newPacer = (): Pacer => ({ queue: [], queuedBytes: 0, frame: null });
 
 type Purpose = "join" | "repair" | "cold" | "switch" | "standby";
 type PendingSub = { peer: PeerId; stream: number; purpose: Purpose };
@@ -619,6 +651,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       lastProbeAt: -Infinity,
       probeReporting: false,
       probeFeedbackAt: -Infinity,
+      pacer: newPacer(),
     };
     peers.set(peer.id, peer);
     peer.offs.push(
@@ -641,6 +674,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   const dropSubs = (peer: Peer) => {
     for (const sub of peer.subs.values()) for (const off of sub.offs) off();
     peer.subs.clear();
+    peer.pacer = newPacer();
   };
 
   /** Opens (or finds) the link to a peer this node wants something from. */
@@ -662,6 +696,69 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     peer.estimator.onSent(packet.byteLength, now);
     txBytes += packet.byteLength;
     return true;
+  };
+
+  /**
+   * D43: a live video packet for a child, sent now or held so that a large keyframe goes out over
+   * `PACE_FRAMES` frame intervals. Anything behind a held packet is held too, in order.
+   */
+  const paceOrSend = (child: Peer, stream: StreamCtx, header: MediaHeader, packet: Uint8Array, now: number): void => {
+    const pacer = child.pacer;
+    let due = now;
+    if (header.flags & MediaFlag.Key) {
+      const interval = frameIntervalMs(stream.config);
+      const bytes = header.fragCount * packet.byteLength;
+      if (bytes > (stream.config.bitrateKbps * PACE_ABOVE_FRAMES * interval) / 8) {
+        let frame = pacer.frame;
+        if (!frame || frame.stream !== stream.config.id || frame.frameId !== header.frameId) {
+          const last = pacer.queue.length > 0 ? pacer.queue[pacer.queue.length - 1].due : now;
+          const before = child.link.bufferedAmount + pacer.queuedBytes;
+          const start = Math.max(now, last);
+          const paceEnd = start + PACE_FRAMES * interval;
+          const until = paceEnd + (PACE_ABSORB_FACTOR * bytes * 8) / stream.config.bitrateKbps;
+          frame = pacer.frame = { stream: stream.config.id, frameId: header.frameId, start, spacing: (PACE_FRAMES * interval) / header.fragCount, bytes, before, whole: false, paceEnd, low: Infinity, until };
+        }
+        due = frame.start + header.fragIndex * frame.spacing;
+        if (header.fragIndex === header.fragCount - 1) frame.whole = true;
+      }
+    }
+    if (pacer.queue.length > 0) due = Math.max(due, pacer.queue[pacer.queue.length - 1].due);
+    if ((due <= now && pacer.queue.length === 0) || pacer.queuedBytes > PACE_MAX_BYTES) {
+      sendPacket(child, packet, stream.sendClass, now);
+      return;
+    }
+    pacer.queue.push({ packet: packet.slice(), due });
+    pacer.queuedBytes += packet.byteLength;
+  };
+
+  /** D43: hands each child the held packets now due. */
+  function releasePaced(now: number): void {
+    for (const peer of peers.values()) {
+      const pacer = peer.pacer;
+      while (pacer.queue.length > 0 && pacer.queue[0].due <= now) {
+        const held = pacer.queue.shift()!;
+        pacer.queuedBytes -= held.packet.byteLength;
+        sendPacket(peer, held.packet, streams.get(held.packet[2])?.sendClass ?? "video", now);
+      }
+    }
+  }
+
+  /**
+   * D43: what of the last paced keyframe the link has yet to absorb: how far the backlog (the
+   * channel's and the pacer's) stands over the one the keyframe found, never more than the
+   * keyframe itself. Once the pacing is done a link that carries the stream only drains it, so
+   * the remainder never rises again: a backlog that grows back is the link's, not the keyframe's.
+   * Nothing once the backlog is back down to where it was, or once the link has had
+   * `PACE_ABSORB_FACTOR` times the keyframe's time at B to absorb it.
+   */
+  const pacedRemainder = (peer: Peer, now: number): number => {
+    const frame = peer.pacer.frame;
+    if (!frame) return 0;
+    let over = now >= frame.until ? 0 : Math.min(frame.bytes, peer.link.bufferedAmount + peer.pacer.queuedBytes - frame.before);
+    if (now >= frame.paceEnd) over = frame.low = Math.min(frame.low, over);
+    if (over > 0) return over;
+    if (frame.whole) peer.pacer.frame = null;
+    return 0;
   };
 
   /* ------------------------------ receiving ------------------------------ */
@@ -763,7 +860,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         const buffered = child.link.bufferedAmount;
         if (buffered > bufferedMax) bufferedMax = buffered;
         child.estimator.onBuffered(buffered, receivedAt);
-        admit = sub.gate.admit(header, header.fragCount * packet.byteLength, child.estimator.estimate(receivedAt), receivedAt);
+        admit = sub.gate.admit(header, header.fragCount * packet.byteLength, child.estimator.estimate(receivedAt), receivedAt, pacedRemainder(child, receivedAt));
         sub.decisions.set(header.frameId, admit);
         if (sub.decisions.size > 256) {
           let drop = 128;
@@ -779,7 +876,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         writeHopFields(packet, { hopFlags, hops: Math.min(255, hops), linkSeq: 0, sendMs: 0 });
         stamped = true;
       }
-      sendPacket(child, packet, hopFlags & HopFlag.Replay ? "replay" : stream.sendClass, receivedAt);
+      if (hopFlags & (HopFlag.Replay | HopFlag.Retransmit) || stream.audio) sendPacket(child, packet, hopFlags & HopFlag.Replay ? "replay" : stream.sendClass, receivedAt);
+      else paceOrSend(child, stream, header, packet, receivedAt);
       sent = true;
     }
     if (sent) {
@@ -1871,6 +1969,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const now = clock.now();
     const late = lastTickAt === lastTickAt ? now - lastTickAt - TICK_MS : 0;
     lastTickAt = now;
+    releasePaced(now);
     if (late > OWN_STALL_MS) {
       forgiveOwnStall(late);
       return;

@@ -99,11 +99,14 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
     Math.max(tuning.dropEveryMs, tuning.dropHoldMinMs, tuning.dropHoldRttFactor * ((estimate.rttMs ?? UNKNOWN_RTT_MS) + tuning.reactionMs));
 
   /** Rules 3, 4, 5 and 7: move the cap with the state of the link. */
-  const step = (estimate: LinkEstimate, now: number): void => {
+  const step = (estimate: LinkEstimate, now: number, pacedBytes: number): void => {
     let state = estimate.state;
     // A replay fills the channel on purpose (§11.5). Until it has had time to drain, a backlog
     // with no loss and no queue on the path says nothing about the link: hold, do not shed.
     if (state === "congested" && now - lastReplayAt < tuning.replayGraceMs && estimate.lossPct < 10 && estimate.queueDelayMs < 100) state = "strained";
+    // D43: so does a keyframe being paced. A backlog that, less what of the keyframe the link has
+    // yet to absorb, is under the congested line, with the loss under it too, is the keyframe's.
+    if (state === "congested" && pacedBytes > 0 && estimate.lossPct < CONGESTED_LOSS_PCT && estimate.bufferedBytes - pacedBytes <= congestedBytes) state = "strained";
 
     if (state !== "ok") okSince = null;
     else if (okSince === null) okSince = now;
@@ -180,7 +183,7 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
 
   const isAudio = (header: MediaHeader): boolean => (options.kind !== undefined ? options.kind === "audio" : header.streamId === STAGE1_AUDIO_STREAM);
 
-  const verdict = (header: MediaHeader, estimate: LinkEstimate, now: number): GateVerdict => {
+  const verdict = (header: MediaHeader, estimate: LinkEstimate, now: number, pacedBytes: number): GateVerdict => {
     const key = (header.flags & MediaFlag.Key) !== 0;
     if (starved) {
       // Rule 7: resume only at a keyframe that the link can take.
@@ -191,7 +194,9 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
     if (header.temporal > cap.maxTemporal || header.spatial > cap.maxSpatial) return "above-cap"; // rule 2
     // Rule 6. While a replay is draining the limit is the replay's own (§11.5), or the first live
     // frame after a catch-up would be refused for the backlog the catch-up was allowed to make.
-    const limit = now - lastReplayAt < tuning.replayGraceMs ? Math.max(staleBytes, replayBytes) : staleBytes;
+    // D43 (integrator, 2026-11-21): a keyframe being paced is in flight, not a stale backlog; the
+    // limit is at least what of it has not left yet.
+    const limit = Math.max(now - lastReplayAt < tuning.replayGraceMs ? Math.max(staleBytes, replayBytes) : staleBytes, pacedBytes);
     if (estimate.bufferedBytes > limit) return "stale";
     if (!key && header.refDelta > 0) {
       const reference = header.frameId - header.refDelta;
@@ -203,10 +208,10 @@ export function createLayerGate(options: LayerGateOptions): InspectableLayerGate
   return {
     on: (event, listener) => emitter.on(event, listener),
 
-    admit(header, _frameBytes, estimate, now) {
+    admit(header, _frameBytes, estimate, now, pacedBytes = 0) {
       if (isAudio(header)) return true; // rule 1: audio is never refused
-      step(estimate, now);
-      lastVerdict = verdict(header, estimate, now);
+      step(estimate, now, pacedBytes);
+      lastVerdict = verdict(header, estimate, now, pacedBytes);
       const slot = header.frameId & (MEMORY - 1);
       if (lastVerdict === "sent") {
         sent[slot] = header.frameId;
