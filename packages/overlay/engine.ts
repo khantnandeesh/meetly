@@ -64,8 +64,8 @@ const PROBE_HEADROOM = 1.1;
  * target could never show a peer eligible.
  */
 const probeTargetKbps = (params: OverlayParams, streamKbps: number, fanout = params.maxFanout) => PROBE_HEADROOM * Math.max((fanout * 1.15 * streamKbps) / 0.7, 2 * 1.15 * streamKbps);
-/** SPEC §8.1 [D38]: the short probe, as soon as there is a parent: sized for a provisional relay's two children. */
-const SHORT_PROBE = { fanout: 2, durationMs: 2000 };
+/** SPEC §8.1 [D38], [D41]: the short probe, 1 s, as soon as there is a parent: sized for a provisional relay's two children. */
+const SHORT_PROBE = { fanout: 2, durationMs: 1000 };
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /** The source applies SPEC §11.4's uplink rule once a second. */
@@ -229,6 +229,10 @@ abstract class PeerEngine {
       });
       node.on("status", () => this.sendStatus());
       node.on("config", (config) => this.onConfig(config));
+      // The session's streams, later than welcome: a viewer welcomed before the source started.
+      this.client.on("message", (message) => {
+        if (message.t === "streams" && welcome.role !== "source") node.setStreams(message.streams);
+      });
       node.on("probe", (spare) => this.onProbe(spare));
       await this.beforeStart(welcome);
       node.start(welcome.role, welcome.streams, welcome.assign);

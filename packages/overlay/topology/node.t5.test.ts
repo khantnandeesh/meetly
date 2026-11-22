@@ -5,7 +5,7 @@ import { NACK_WHOLE_FRAME, PacketType, encodeNack, type MetricsEvent } from "@me
 import type { LinkEstimator, UplinkProbe } from "@meetly/overlay/congestion/types";
 import type { LinkEstimate } from "@meetly/overlay/types";
 import { createBasicEstimator, createOpenGate, type OpenGate } from "@meetly/overlay/topology/standins";
-import { SimNet, type SimPeer } from "@meetly/overlay/topology/sim";
+import { AUDIO, SimNet, VIDEO, type SimPeer } from "@meetly/overlay/topology/sim";
 
 const stateOf = (peer: SimPeer) => peer.node.status().stripes[0];
 const repairs = (peer: SimPeer) => peer.metrics.filter((event) => event.t === "repair");
@@ -113,6 +113,50 @@ describe("node: NACK under the gate mix's bad profile (SPEC §4.6, §12.3)", () 
       });
     });
   }
+});
+
+describe("node: what the coordinator says later", () => {
+  it("a viewer welcomed before the source started takes the streams when they come, and subscribes", async () => {
+    const net = new SimNet({ backups: false });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    // Welcomed with a parent to go to but no streams: it has nothing to ask for.
+    const viewer = net.add("1", "leaf");
+    viewer.node.start("leaf", [], [{ stream: 0, stripe: 0, parents: [{ peer: "0", depth: 0, free: 1 }], backups: [] }]);
+    await net.runAsync(1500);
+    assert.equal(viewer.video.size, 0);
+    // The coordinator's `streams`, once the source has said what it sends.
+    viewer.node.setStreams([VIDEO, AUDIO]);
+    await net.runAsync(1000);
+    assert.deepEqual([stateOf(viewer).state, stateOf(viewer).parent], ["active", "0"]);
+    assert.ok(viewer.video.has(net.published - 3));
+  });
+
+  it("takes a better backup offered in a rebalance even when it has no free slot: standing by needs no slot", async () => {
+    const net = new SimNet({ backups: false, params: { sourceFanout: 3, maxFanout: 2 } });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    net.join("a", "relay", ["0"]);
+    net.join("b", "relay", ["0"]);
+    net.join("d", "relay", ["0"]);
+    await net.runAsync(300);
+    net.join("c", "relay", ["d"]);
+    await net.runAsync(300);
+    // The leaf, under b, stands by on c, two hops down; relay a, one hop down, is full.
+    net.join("x", "leaf", ["a"]);
+    net.join("y", "leaf", ["a"]);
+    await net.runAsync(300);
+    const leaf = net.join("L", "leaf", ["b"], ["c"]);
+    await net.runAsync(1500);
+    assert.deepEqual([stateOf(leaf).parent, stateOf(leaf).backup], ["b", "c"]);
+    assert.equal(net.nodes.get("a")!.node.status().freeSlots, 0);
+    net.assign("L", [{ stream: 0, stripe: 0, parents: [], backups: [{ peer: "a", depth: 1, free: 0 }] }], "rebalance");
+    await net.runAsync(1500);
+    assert.deepEqual([stateOf(leaf).parent, stateOf(leaf).backup], ["b", "a"]);
+    assert.ok(net.nodes.get("a")!.node.status().standbyChildren.includes("L"));
+  });
 });
 
 describe("node: a provisional relay (SPEC §8.1 [D38])", () => {

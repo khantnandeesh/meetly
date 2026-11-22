@@ -197,6 +197,12 @@ export interface OverlayNode extends Listenable<OverlayNodeEvents> {
   publish(frame: EncodedFrame): void;
   /** The source only: a stream's configuration changed. */
   publishConfig(config: StreamConfig): void;
+  /**
+   * A viewer: the streams of the session, as the coordinator says them (`streams`). One welcomed
+   * before the source started was told of none, and has had nothing to subscribe to: the node
+   * takes up the ones it did not know, and asks its parent, or the peer it is asking, for them.
+   */
+  setStreams(streams: StreamConfig[]): void;
   /** What the player can use right now; passed upstream in feedback. */
   setWanted(streamId: number, cap: LayerCap): void;
   /** The oldest frame of a stream the player still wants: nothing older is NACKed. */

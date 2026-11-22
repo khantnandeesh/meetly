@@ -1436,6 +1436,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   /** Subscribes to the first candidate parent whose link is open. False if none is; then up to two more are being linked. */
   function tryJoinCandidate(now: number): boolean {
     if (next || parent) return true;
+    // No streams yet (welcomed before the source started): nothing to ask anyone for. setStreams goes on.
+    if (streams.size === 0) return false;
     for (const candidate of candidates) {
       if (tried.has(candidate.peer)) continue;
       const peer = peers.get(candidate.peer);
@@ -1547,7 +1549,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /** Tries the next candidate for a new parent, or asks the coordinator for some. */
   function tryCold(now: number): void {
-    if (next || stopping) return;
+    if (next || stopping || streams.size === 0) return;
     while (candidates.length > 0) {
       const candidate = candidates[0];
       if (tried.has(candidate.peer) || candidate.peer === self) {
@@ -1880,6 +1882,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       else if (state === "waiting" && now - waitingSince >= params.stallGraceMs) parentDied(now, "grace");
     }
     if (next && now >= nextDeadline) attemptFailed(next, now);
+    // Waiting for the source's streams is not a failed join.
+    if (streams.size === 0) {
+      joinDeadline = Math.max(joinDeadline, now + JOIN_TIMEOUT_MS);
+      coldSince = now;
+    }
     if (state === "probing" && now >= joinDeadline) coldRepair(now);
     if (state === "cold-repair" || state === "rejoining") {
       if (!next && candidates.length > 0 && coldLinkDeadline > 0 && now >= coldLinkDeadline) {
@@ -1985,7 +1992,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     if (reason !== "rebalance" || !parent || state !== "active" || switching || backupPending) return;
     // Advice: the best of them becomes the backup if it sits nearer the source than the one this
     // node has, so that the next comparisons measure it. The rule of §7.6 still decides.
-    const better = offered.find((c) => c.peer !== parent!.id && c.peer !== backup?.id && !path.includes(c.peer) && c.free > 0 && c.depth < (backup ? backup.depth : DEPTH_UNKNOWN));
+    // A backup needs a standby place, not an active slot: a relay with none free (free 0) may still be one.
+    const better = offered.find((c) => c.peer !== parent!.id && c.peer !== backup?.id && !path.includes(c.peer) && c.depth < (backup ? backup.depth : DEPTH_UNKNOWN));
     if (!better) return;
     if (backup) {
       const old = backup;
@@ -2061,6 +2069,27 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         forward(stream, header, packet, now, 0, 0);
         cache.add(packet, header, now);
       }
+    },
+
+    setStreams(configs) {
+      if (role === "source" || stopping) return;
+      const added: StreamCtx[] = [];
+      for (const config of configs) {
+        if (streams.has(config.id)) continue;
+        const stream = addStream(config);
+        events.emit("config", stream.config);
+        added.push(stream);
+      }
+      if (added.length === 0) return;
+      const now = clock.now();
+      if (parent) subscribe(parent, "join", added, () => FROM_LATEST_KEYFRAME, false);
+      else if (next) subscribe(next, nextPurpose, added, nextPurpose === "join" ? () => FROM_LATEST_KEYFRAME : after, nextPurpose === "repair", repair?.dead);
+      else if (state === "probing") {
+        joinDeadline = now + JOIN_TIMEOUT_MS;
+        tryJoinCandidate(now);
+      }
+      else if (state === "cold-repair" || state === "rejoining") tryCold(now);
+      changed();
     },
 
     publishConfig(config) {
