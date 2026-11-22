@@ -95,22 +95,34 @@ function params(env: CoordinatorEnv): OverlayParams {
   }
 }
 
+/**
+ * What a Worker that embeds `OverlayRoom`, rather than deploying this file's own Worker, may set
+ * for its sessions. It passes them from a subclass: the runtime constructs a Durable Object with
+ * `(state, env)` only.
+ */
+export type OverlayRoomOptions = {
+  /** The STUN servers offered to every peer, in place of Cloudflare's alone. Empty: none. */
+  stun?: IceServer[];
+  /** The most viewers admitted, over `OVERLAY_VIEWER_CAP` and the default. */
+  viewerCap?: number;
+};
+
 /** STUN, and TURN minted for this peer from a Cloudflare TURN key when one is configured. */
-async function iceServers(env: CoordinatorEnv): Promise<IceServer[]> {
-  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return STUN;
+async function iceServers(env: CoordinatorEnv, stun: IceServer[] = STUN): Promise<IceServer[]> {
+  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return stun;
   const response = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`, {
     method: "POST",
     headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, "content-type": "application/json" },
     body: JSON.stringify({ ttl: TURN_TTL_S }),
   });
-  if (!response.ok) return STUN;
+  if (!response.ok) return stun;
   const body = (await response.json()) as { iceServers?: { urls: string | string[]; username?: string; credential?: string }[] };
   const servers = (body.iceServers ?? []).map((server) => ({
     urls: (Array.isArray(server.urls) ? server.urls : [server.urls]).slice(0, 8),
     ...(server.username ? { username: server.username } : {}),
     ...(server.credential ? { credential: server.credential } : {}),
   }));
-  return servers.length > 0 ? servers.slice(0, 8) : STUN;
+  return servers.length > 0 ? servers.slice(0, 8) : stun;
 }
 
 /** One session. The class name is what wrangler.jsonc's `durable_objects` and `migrations` refer to. */
@@ -124,6 +136,7 @@ export class OverlayRoom {
   constructor(
     readonly state: DurableObjectStateLike,
     readonly env: CoordinatorEnv,
+    private readonly options: OverlayRoomOptions = {},
   ) {}
 
   /** The core, rebuilt from storage and the sockets' attachments if this object has just woken. */
@@ -137,8 +150,8 @@ export class OverlayRoom {
       admissionSecret: this.env.OVERLAY_ADMISSION_SECRET ?? "",
       serverSecret: this.env.OVERLAY_SERVER_SECRET ?? "",
       params: params(this.env),
-      viewerCap: Number(this.env.OVERLAY_VIEWER_CAP) > 0 ? Number(this.env.OVERLAY_VIEWER_CAP) : 10_000,
-      iceServers: () => iceServers(this.env),
+      viewerCap: this.options.viewerCap ?? (Number(this.env.OVERLAY_VIEWER_CAP) > 0 ? Number(this.env.OVERLAY_VIEWER_CAP) : 10_000),
+      iceServers: () => iceServers(this.env, this.options.stun),
       random: Math.random,
     });
     const stored: Record<string, string> = {};
