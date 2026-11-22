@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ClientMessage, MetricsSample, PeerId, ServerMessage, ServerMessageOf } from "@meetly/overlay/protocol";
 import { PROVISIONAL_FANOUT } from "./treeMap";
-import { Rig, STREAMS, Swarm, grantFanout, leafCaps, relayCaps, seeded } from "./testkit";
+import { Rig, STREAMS, Swarm, leafCaps, relayCaps, seeded } from "./testkit";
 
 const of = <T extends ServerMessage["t"]>(messages: ServerMessage[], t: T): ServerMessageOf<T>[] => messages.filter((message): message is ServerMessageOf<T> => message.t === t);
 const scope = (grant: string) => (JSON.parse(Buffer.from(grant.split(".")[0], "base64url").toString()) as { scope: string[] }).scope;
@@ -22,7 +22,8 @@ const status = (parent: PeerId | null, depth: number, free: number, over: Partia
   children: 0,
   standby: 0,
   free,
-  caps: relayCaps({ uplinkKbps: 3_000 }),
+  // Room for two children by the short probe's rule (SPEC §8.1 [D38]: 2 × 1.15 × B / 0.7).
+  caps: relayCaps({ uplinkKbps: 5_000 }),
   lossPct: 0,
   rttMs: 15,
   ...over,
@@ -80,8 +81,8 @@ describe("coordinator: provisional relays (D38)", () => {
     const promoted = promotedOf(s.under);
     assert.equal(promoted.length, 1, "promoted at 2 s, long before the 20 s of probation");
     const role = of(promoted[0].heard, "role")[0];
-    assert.deepEqual(scope(role.grant), ["view", "relay", `fanout:${PROVISIONAL_FANOUT}`]);
-    assert.equal(grantFanout(role.grant), 2);
+    assert.deepEqual(scope(role.grant), ["view", "relay"]);
+    assert.equal(role.fanout, PROVISIONAL_FANOUT, "the role says the fan-out (SPEC §8.1 [D38])");
     assert.equal(joiner.welcome!.assign[0].parents[0].peer, promoted[0].peer);
 
     // Joiners go to it, two at most (holds count until they report).
@@ -99,6 +100,7 @@ describe("coordinator: provisional relays (D38)", () => {
     const last = of(promoted[0].heard, "role").at(-1)!;
     assert.equal(last.role, "relay");
     assert.deepEqual(scope(last.grant), ["view", "relay"]);
+    assert.equal(last.fanout, undefined, "a role relay without a fan-out confirms a full relay");
     assert.equal(s.rig.core.snapshot().peers.find((peer) => peer.peer === promoted[0].peer)?.role, "relay");
   });
 
@@ -171,5 +173,32 @@ describe("coordinator: provisional relays (D38)", () => {
       assert.ok(withProvisional.p95 <= 0.7 * without.p95, "p95 down by at least 30%");
       assert.ok(withProvisional.depth <= 5);
     }
+  });
+
+  it("gate-small's session start, 30 peers joining at 10 a second with the 20 s probation on: join to parent p95 within 4 s (simulated, in whole seconds)", { timeout: 120_000 }, async () => {
+    const run = async (provisional: boolean) => {
+      const waits: number[] = [];
+      for (let seed = 1; seed <= 10; seed++) {
+        const random = seeded(seed);
+        const swarm = new Swarm(new Rig({ random: seeded(seed), provisionalRelays: provisional }), undefined, { probeAfterMs: 2_000 });
+        await swarm.addSource();
+        for (let joined = 0; joined < 29; ) {
+          for (let k = 0; k < 10 && joined < 29; k++, joined++) await swarm.addViewer(random() < 0.95);
+          await swarm.second();
+        }
+        for (let s = 0; s < 40; s++) await swarm.second();
+        assert.equal(swarm.shape().waiting, 0);
+        waits.push(...swarm.joinWaits);
+      }
+      waits.sort((a, b) => a - b);
+      return { p50: waits[Math.floor(waits.length / 2)] / 1000, p95: waits[Math.floor(waits.length * 0.95)] / 1000 };
+    };
+    const without = await run(false);
+    const withProvisional = await run(true);
+    // The floor is a generation of relays: a link, the 2 s probe, a promotion, a link. The
+    // simulator counts in whole seconds, so 3 here is anything from 2 to 3.
+    console.log(`      30 peers, 10 joining a second: without D38 p50 ${without.p50} s, p95 ${without.p95} s; with D38 p50 ${withProvisional.p50} s, p95 ${withProvisional.p95} s`);
+    assert.ok(withProvisional.p95 <= 4, `p95 ${withProvisional.p95} s`);
+    assert.ok(without.p95 >= 15, "without D38 they wait out probation");
   });
 });

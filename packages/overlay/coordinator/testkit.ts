@@ -5,7 +5,7 @@
  *
  * Owner: E-coordinator.
  */
-import { DEFAULT_PARAMS, encodeClientMessage, fromBase64Url, signTicket } from "../protocol";
+import { DEFAULT_PARAMS, encodeClientMessage, signTicket } from "../protocol";
 import type { Assignment, Capabilities, ClientMessage, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig, Ticket } from "../protocol";
 import type { Cancel, Clock } from "../runtime";
 import { createCore } from "./core";
@@ -227,7 +227,7 @@ export type SimPeer = {
   stuck: boolean;
   capable: boolean;
   role: OverlayRole;
-  /** The fan-out its grant allows (`fanout:<n>` in the scope, D38), or null for the role's own. */
+  /** The fan-out its last `role` gave it (a provisional relay, SPEC §8.1 [D38]), or null for the role's own. */
   grantFanout: number | null;
   caps: Capabilities;
   parent: PeerId | null;
@@ -285,6 +285,12 @@ export class Swarm {
   /** Per joiner: ms from its welcome to its first parent. */
   readonly joinWaits: number[] = [];
   warmRepairs = 0;
+  /** Moves the coordinator asked for that left the peer deeper than it was: a peer that relays, or could. */
+  deepeningMoves = 0;
+  /** The same, of a dead end (a leaf that can never relay) stepping down to let a relay up. */
+  deadEndSwaps = 0;
+  /** The same, of a leaf moved off a parent over its fan-out (relief, SPEC §7.5 [D37]). */
+  reliefDown = 0;
   coldRepairs = 0;
   /** Cold repairs still without a parent after 5 s (SPEC §7.5: the peer would start again). */
   rejoins = 0;
@@ -515,8 +521,10 @@ export class Swarm {
       if (clear) this.backupsApart++;
     }
     const offered = this.peers.get(first.parents[0].peer);
-    if (!offered || offered.kids.size >= this.fanout(offered)) this.offeredBeyondFree++;
-    const parent = first.parents.map((hint) => this.peers.get(hint.peer)).find((candidate) => this.fits(peer, candidate, 1));
+    // An offer over a fan-out says so (`free: 0`, D37: a joiner that waited 3 s with nowhere to go); one that claims a slot must have it.
+    if ((!offered || offered.kids.size >= this.fanout(offered)) && first.parents[0].free > 0) this.offeredBeyondFree++;
+    // A viewer with nothing to watch is taken in up to twice the fan-out, as topology's node does.
+    const parent = first.parents.map((hint) => this.peers.get(hint.peer)).find((candidate) => this.fits(peer, candidate, reason === "join" && peer.parent === null ? 2 : 1));
     if (!parent) {
       // A joiner none of whose offers will have it asks again, as the node does once no link has
       // opened (SPEC §7.1: cold repair). A sub is refused when full; a later `repair` is not.
@@ -524,6 +532,12 @@ export class Swarm {
       return;
     }
     if (peer.parent !== null) this.moves++;
+    if (peer.parent !== null && parent.depth + 1 > peer.depth) {
+      const from = this.peers.get(peer.parent);
+      if (from && from.kids.size > this.fanout(from)) this.reliefDown++;
+      else if (peer.role === "leaf" && !peer.capable) this.deadEndSwaps++;
+      else this.deepeningMoves++;
+    }
     const old = peer.parent;
     const backup = first.backups.map((hint) => this.peers.get(hint.peer)).find((candidate) => candidate && candidate.alive && candidate !== parent && candidate !== peer);
     this.attach(peer, parent);
@@ -573,7 +587,7 @@ export class Swarm {
             peer.grant = message.grant;
             if (peer.role === "relay" && message.role === "leaf") demoted.push(peer);
             peer.role = message.role;
-            peer.grantFanout = grantFanout(message.grant);
+            peer.grantFanout = message.fanout ?? null;
             peer.dirty = true;
           }
         }
@@ -648,16 +662,5 @@ export class Swarm {
       if (peer.role === "relay") relays++;
     }
     return { maxDepth, meanDepth: placed > 0 ? sum / placed : 0, waiting, relays, placed };
-  }
-}
-
-/** The `fanout:<n>` scope of a grant (D38: a provisional relay), or null. */
-export function grantFanout(grant: string): number | null {
-  try {
-    const body = JSON.parse(new TextDecoder().decode(fromBase64Url(grant.split(".")[0]) ?? new Uint8Array())) as { scope?: string[] };
-    const scope = body.scope?.find((entry) => entry.startsWith("fanout:"));
-    return scope ? Number(scope.slice("fanout:".length)) : null;
-  } catch {
-    return null;
   }
 }

@@ -12,6 +12,7 @@
 import type { Capabilities, OverlayParams, OverlayRole, PeerHint, PeerId } from "../protocol";
 import type { Candidate, Observed, RelayVerdict } from "../topology/types";
 import type { ConnId, PeerRecord } from "./types";
+import { PROVISIONAL_FANOUT } from "../topology/index";
 import type { Scoring } from "./scoring";
 
 /** A place offered to a joiner is held for it this long, unless its `status` settles it sooner. */
@@ -22,8 +23,7 @@ export const SUSPECT_MS = 3_000;
 export const FORGET_MS = 30_000;
 /** SPEC §8.1: a relay must have been failing for this long before it is demoted. */
 export const DEMOTE_AFTER_MS = 10_000;
-/** D38: a provisional relay's fan-out, until probation is over. */
-export const PROVISIONAL_FANOUT = 2;
+export { PROVISIONAL_FANOUT };
 /** D38: a provisional relay that misbehaves this long is made a leaf again, sooner than a full one. */
 export const PROVISIONAL_DEMOTE_AFTER_MS = 3_000;
 /** A relay being made a leaf gives its children this long to move away first (make-before-break). */
@@ -76,6 +76,8 @@ export type TreeNode = Omit<PeerRecord, "conn"> & {
   lastRebalanceAt: number;
   /** When it was last offered a better backup (see `TreeMap.backupAdvice`). */
   backupAdviceAt: number;
+  /** It has had a parent in this session: a `need` for one is a repair, not a join. */
+  placedOnce: boolean;
   /**
    * D38: a relay before its probation is over, with `PROVISIONAL_FANOUT` children at most, used
    * only when no full relay has a free slot, and made a full relay at the end of probation.
@@ -122,6 +124,7 @@ export function newNode(init: Pick<TreeNode, "peer" | "identity" | "name" | "tic
     lastAssignAt: 0,
     lastRebalanceAt: 0,
     backupAdviceAt: 0,
+    placedOnce: false,
     provisional: false,
     demotingSince: null,
     demotedAt: -Infinity,
@@ -287,13 +290,12 @@ export class TreeMap {
     }
   }
 
-  /**
-   * D38: may this leaf be made a provisional relay? Everything §8.1 asks but the end of probation,
-   * with room for two children (the uplink check is that already, from the short probe).
-   */
+  /** D38: may this peer be a provisional relay? Topology's `judgeProvisional`, on what is known of it. */
   provisionallyEligible(node: TreeNode, now: number): boolean {
-    const verdict = this.judge(node, now);
-    return !verdict.eligible && verdict.reasons.length > 0 && verdict.reasons.every((reason) => reason === "probation");
+    const judge = this.scoring.judgeProvisional;
+    if (!judge || this.judge(node, now).eligible) return false;
+    const observed: Observed = { uptimeMs: now - node.joinedAt, spareUplinkKbps: node.caps.uplinkKbps, lossPct: node.lossPct, churnPerMin: node.parentChanges.length };
+    return judge(node.caps, observed, this.streamKbps(), this.params).eligible;
   }
 
   /** What a peer said of itself. True if it may have made room for someone. */
@@ -317,6 +319,7 @@ export class TreeMap {
     const backup = node.role === "source" ? null : (status.links[0]?.backup ?? null);
     this.setBackup(node, backup !== null && backup !== node.peer ? backup : null);
     if (node.parent !== null) {
+      node.placedOnce = true;
       // It has settled somewhere: nothing is held for it any more.
       for (const other of this.feeders) this.nodes.get(other)?.held.delete(node.peer);
       node.waitingSince = null;
@@ -409,6 +412,19 @@ export class TreeMap {
     return count;
   }
 
+  /** Relays (not the source) in the session now. */
+  relayCount(): number {
+    let count = 0;
+    for (const peer of this.feeders) if (this.nodes.get(peer)?.role === "relay") count++;
+    return count;
+  }
+
+  /** A leaf in the session, in the tree or waiting for a place, that could one day relay. */
+  couldGrow(): boolean {
+    for (const node of this.nodes.values()) if (node.role === "leaf" && node.canRelay && node.conn !== null) return true;
+    return false;
+  }
+
   /** A leaf already in the tree that could be made a relay: the tree can still grow. */
   private growthPending(): boolean {
     for (const node of this.nodes.values()) if (node.role === "leaf" && node.canRelay && node.conn !== null && node.parent !== null) return true;
@@ -476,7 +492,11 @@ export class TreeMap {
     if (forParent && options.overload === true) {
       // Everyone is full. The least over its fan-out first, then the shallowest.
       const load = (candidate: Ranked) => Math.max(this.childrenOf(candidate.node.peer).size, candidate.node.children) - this.fanout(candidate.node);
-      const parents = pool.sort((a, b) => load(a) - load(b) || a.cost - b.cost || order(a, b)).slice(0, 3);
+      // Up to twice the fan-out (D37): beyond that, nobody.
+      const parents = pool
+        .filter((candidate) => load(candidate) < this.fanout(candidate.node))
+        .sort((a, b) => load(a) - load(b) || a.cost - b.cost || order(a, b))
+        .slice(0, 3);
       return { parents: parents.map((candidate) => ({ ...candidate.hint, free: 0 })), backups: [] };
     }
     // D38: a provisional relay only when no full relay (or the source) has a free slot.

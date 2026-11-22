@@ -8,12 +8,13 @@
  *
  * The first 200-peer runs of the integrated engine reached depth 13 (SPEC §6.6 expects 4 or 5),
  * with a median of 10 repair or wait events per kill. In this simulator, six seeds each, seconds
- * of the 600 deeper than 5 (and p95 depth), before this change (d9eb663) and after it:
+ * of the 600 deeper than 5 (p95 depth), d9eb663 -> this:
  *
- *   almost all able to relay, D38's probe at 2 s:  339–402 (p95 7)    →  2–34  (p95 5)
- *   a quarter, the relay killed replaced:          52–236  (p95 6–7)  →  6–60  (p95 5–6)
- *   almost all, the probe after probation (21 s):  250–496 (p95 6–11) →  0–31  (p95 5–6)
+ *   almost all able to relay, D38's probe at 2 s:  339-402 (p95 7)    ->  1-13 (p95 5)
+ *   a quarter, the relay killed replaced:          52-236  (p95 6-7)  ->  0-27 (p95 4-5)
  *
+ * Moves that took a peer that relays, or could, deeper: 0-8 per 10 minutes (the rest of the
+ * moves down are dead-end swaps within the bound, and relief of parents over their fan-out).
  * Each kill's events are everyone below the relay killed: each sees it, as a repair or as a wait
  * (D17). Their median is 4 here before and after; the simulator's trees were never as deep as
  * the run's, whose 10 is what a depth-13 tree gives.
@@ -22,7 +23,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Rig, Swarm, seeded } from "./testkit";
 
-type Result = { overFive: number; maxDepth: number; p95Depth: number; eventsMedian: number; eventsP95: number; waitingMax: number; relays: number };
+type Result = { overFive: number; maxDepth: number; p95Depth: number; eventsMedian: number; eventsP95: number; waitingMax: number; relays: number; deepening: number; swaps: number; relief: number };
 
 async function churn(share: number, replaceKilled: boolean, seed: number): Promise<Result> {
   const random = seeded(seed * 7 + 1);
@@ -64,22 +65,27 @@ async function churn(share: number, replaceKilled: boolean, seed: number): Promi
     eventsP95: events[Math.floor(events.length * 0.95)],
     waitingMax,
     relays: swarm.relays().length,
+    deepening: swarm.deepeningMoves,
+    swaps: swarm.deadEndSwaps,
+    relief: swarm.reliefDown,
   };
 }
 
 describe("coordinator: the tree's depth under the gate's churn (SPEC §6.6, §12.3)", () => {
-  // The quarter's case is not yet where the integrator wants it (depth 5 throughout): across six
-  // seeds, 1 to 10% of the seconds are at depth 6 to 8, p95 5 in four of them. It is held to
-  // that here, so it cannot get worse unnoticed; the harness's case is held to depth 5 at p95.
   for (const [label, share, replace, p95] of [
     ["almost everyone able to relay (the harness's headless desktops)", 0.95, false, 5],
-    ["a quarter able to relay (SPEC §6.6), a relay killed replaced by one", 0.25, true, 6],
+    ["a quarter able to relay (SPEC §6.6), a relay killed replaced by one", 0.25, true, 5],
   ] as const) {
     it(`200 peers, 10 minutes of churn, ${label}: depth ${p95} or less at p95`, { timeout: 120_000 }, async () => {
       const result = await churn(share, replace, 1);
-      console.log(`      ${share * 100}%: ${result.overFive} s of 600 deeper than 5, p95 ${result.p95Depth}, deepest ${result.maxDepth}; events per kill median ${result.eventsMedian}, p95 ${result.eventsP95}; ${result.relays} relays at the end, ${result.waitingMax} without a parent at most`);
+      console.log(`      ${share * 100}%: ${result.overFive} s of 600 deeper than 5, p95 ${result.p95Depth}, deepest ${result.maxDepth}; events per kill median ${result.eventsMedian}, p95 ${result.eventsP95}; moves deeper: ${result.deepening}, besides ${result.swaps} dead-end swaps and ${result.relief} reliefs; ${result.relays} relays at the end, ${result.waitingMax} without a parent at most`);
       assert.ok(result.p95Depth <= p95, `p95 depth ${result.p95Depth}`);
       assert.ok(result.overFive <= 60, `${result.overFive} s deeper than 5`);
+      // The only moves that take anyone down: a dead end stepping down so that a relay comes up,
+      // within the bound, and a leaf moved off a parent over its fan-out. A peer that relays, or
+      // could, is moved only up (the integrator's rule; a few here are the simulator's peers
+      // acting on a move while the coordinator's view of depths is a status behind).
+      assert.ok(result.deepening <= 10, `${result.deepening} deepening moves`);
       assert.ok(result.eventsMedian <= 5, `median ${result.eventsMedian} events per kill`);
     });
   }

@@ -80,28 +80,35 @@ The harness signs tickets with `signTicket` (protocol.ts), starts `startNodeCoor
 
 ## Provisional relays (D38) and keeping the tree short under churn
 
-- **D38.** A leaf that passes §8.1 but for probation, with the short probe's uplink, is made a
-  relay with fan-out 2 when someone has nowhere to go (a joiner, an orphan, a child to move):
-  its grant says `"fanout:2"` in its scope, and the coordinator never counts more than 2 slots
-  for it. Placement offers it only when no full relay (or the source) has a free slot, and as a
-  backup last. At the end of probation, eligible in full, it is sent a new grant without the
-  limit. One that misbehaves first (anything but probation fails §8.1, or half its children lose
-  over 5%) is demoted after 3 s. The fifth-of-the-audience rule promotes full relays only.
+- **D38.** A leaf that passes topology's `judgeProvisional` is made a relay when someone has
+  nowhere to go (a joiner, an orphan, a child to move), with `role relay` and `fanout: 2`; the
+  coordinator never counts more than that for it. Placement offers it only when no full relay
+  or the source has a free slot, and as a backup last. When it passes `judgeRelay` it is sent
+  `role relay` without `fanout`: confirmed. One that misbehaves first (anything but probation
+  fails, or half its children lose over 5%) is demoted after 3 s. The fifth-of-the-audience
+  rule promotes full relays only. A resumed relay the coordinator has forgotten, here for less
+  than probation, is taken to be provisional, so that it is still confirmed.
 - **Demotion is make-before-break.** A relay to be made a leaf is offered to nobody, its
-  children are sent `move`s to slots elsewhere, and it is told `role: leaf` once they have gone,
-  or after 5 s.
-- **Depth.** Every placement prefers a place where the peer and its subtree end within
-  `neededDepth() + 1` (5 at 200 peers); a dead end is never moved down below that; relief of a
-  parent over its fan-out moves only what does not push a subtree past it (a parent over its
-  fan-out sheds a layer, D37, which costs less). Backups are chosen at the parent's own depth for
-  peers with subtrees (a warm repair then moves nothing deeper) and as deep as the limit allows
-  for leaves (keeping the places near the source for those that need them). Peers whose warm
-  repair would push their subtree too deep are offered a better backup by `assign` "rebalance"
-  with backups only, once a minute: topology's node takes it only if it says `free > 0`, so for
-  a backup at a full relay it needs the node to look at standby places instead. Moves: 5% of
-  the audience a second, a peer again after 10 s.
-- **Measured** in the simulator under the gate's churn (`churn.test.ts`): see the table there.
-  The quarter's case still spends 1–10% of the time at depth 6–8.
+  children are sent `move`s, and it is told `role: leaf` once they have gone, or after 5 s.
+- **Placement.** Joins (of peers that could relay) and every `need` go to the shallowest free
+  slot. A joiner that can never relay takes the deepest free slot within `neededDepth() + 1`,
+  and the tree's last free slots are kept from it while anyone could be promoted or relays are
+  stuck below dead ends. A joiner with nowhere to go for 3 s is sent over a fan-out (up to
+  twice it, D37: topology's node takes a viewer with nothing to watch), unless it is a dead end
+  and someone could still be promoted. Until then a joiner's `need` is answered with nothing at
+  all: a node with no parent tries every peer it is offered, backups included.
+- **Backups**: clear of the parents offered, full relays first; for a peer with a subtree at
+  its parent's depth (a warm repair then moves nothing deeper), for a leaf as deep as the bound
+  allows (keeping places near the source for those that need them). Shallowest-first for all
+  made the tree deeper under churn in the simulator, as did pulling leaves up two levels.
+- **Moves** only take a relay up, never a peer that relays or could down. Two exceptions, both
+  within the bound: a dead end steps down so that a relay stuck below it comes up (a swap), and
+  relief of a parent over its fan-out may move a leaf off it. A subtree is never moved down. 5%
+  of the audience a second, a peer again after 10 s. Peers whose warm repair would push their
+  subtree too deep are offered a better backup (`assign` "rebalance" with backups only, once a
+  minute); topology's node takes it only if it says `free > 0`.
+- **Measured** in the simulator: `churn.test.ts` (the gate's churn at 200), `provisional.test.ts`
+  (session start), `restart.test.ts` (joiners after a restart). Numbers there.
 
 ## K6: load (measured 2026-11-21, 4 shared cores, load average 5–6)
 
