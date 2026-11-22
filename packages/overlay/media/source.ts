@@ -100,6 +100,13 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
   private lastKeyAt = -Infinity;
   private sinceKey = Infinity;
   private forceKey = false;
+  /**
+   * A new configuration (a new size) has had no keyframe out of the encoder yet. Its viewers can
+   * decode nothing until one comes, so each frame is a keyframe until one is in the encoder, and
+   * again if that one does not come out as one (an encoder reconfigured may drop what it held).
+   */
+  private keyOwed = false;
+  private keyInFlight: number | null = null;
   private lastKeyRequestAt = -Infinity;
   private lastVideoCaptureUs = -Infinity;
   private scaler: { canvas: OffscreenCanvas; context: OffscreenCanvasRenderingContext2D } | null = null;
@@ -267,7 +274,8 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
       this.scaleLevel = level;
       this.encoderFactor = factor;
       this.videoConfigId = (this.videoConfigId + 1) % 256;
-      this.forceKey = true;
+      this.keyOwed = true;
+      this.keyInFlight = null;
       try {
         encoder.configure(this.videoEncoderConfig());
         this.emit("config", this.videoConfig());
@@ -346,7 +354,7 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
     // A keyframe every keyIntervalFrames frames, and at least as often in time when frames are
     // not encoded for want of room (§9.3: a joiner waits for one at most that long).
     const { keyIntervalFrames } = this.options.encoding.video;
-    const keyFrame = this.forceKey || this.sinceKey >= keyIntervalFrames || nowMs - this.lastKeyAt >= (keyIntervalFrames * frameUs) / 1000;
+    const keyFrame = this.forceKey || (this.keyOwed && this.keyInFlight === null) || this.sinceKey >= keyIntervalFrames || nowMs - this.lastKeyAt >= (keyIntervalFrames * frameUs) / 1000;
     const temporal = keyFrame ? 0 : (expectedTemporalLayer(this.options.encoding.video.scalability, this.sinceKey) ?? 0);
     // Step 2: a frame that would not fit in the stream's bitrate is not encoded.
     const untilKeyMs = Math.min((keyIntervalFrames - this.sinceKey) * (frameUs / 1000), this.lastKeyAt + (keyIntervalFrames * frameUs) / 1000 - nowMs);
@@ -355,6 +363,7 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
       return;
     }
     if (keyFrame) {
+      if (this.keyOwed) this.keyInFlight = frame.timestamp;
       this.forceKey = false;
       this.sinceKey = 0;
       this.lastKeyAt = nowMs;
@@ -400,9 +409,15 @@ class ProgramSourceImpl extends Emitter<ProgramSourceEvents> implements ProgramS
       if (timestamp > chunk.timestamp) continue;
       this.inEncoder.delete(timestamp);
       if (timestamp !== chunk.timestamp) this.rate.dropped();
+      // The keyframe a new configuration was waiting for did not come out as one: ask again.
+      if (timestamp === this.keyInFlight && (timestamp !== chunk.timestamp || chunk.type !== "key")) this.keyInFlight = null;
     }
     const captureUs = entry?.captureUs ?? this.nowUs();
     const configId = entry?.configId ?? this.videoConfigId;
+    if (chunk.type === "key" && configId === this.videoConfigId) {
+      this.keyOwed = false;
+      this.keyInFlight = null;
+    }
 
     const key = chunk.type === "key";
     const frameId = this.nextVideoId++;

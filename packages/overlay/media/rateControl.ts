@@ -42,6 +42,14 @@ export const SCALE_DOWN_SKIPPED = 0.25;
  * stood over 150 ms of *B* for 150 ms).
  */
 export const KEY_ALLOWANCE_MS = 250;
+/**
+ * Keyframes of one picture vary by a tenth or two, so the picture is made smaller once they come
+ * to this share of the allowance, not once one has passed it; and it is tried bigger only when
+ * its keyframe one size up would likely be under this share too.
+ */
+export const KEY_MARGIN = 0.85;
+/** A bigger size is tried only when its keyframe would likely be under this share of the allowance. */
+export const KEY_TRY_MARGIN = 0.85;
 /** Tried bigger again after this long at a size, doubling each time that fails within the wait, to a minute. */
 export const SCALE_UP_AFTER_MS = 10_000;
 export const SCALE_UP_MAX_MS = 60_000;
@@ -75,6 +83,9 @@ export class VideoRateController {
   private raisedAt = -Infinity;
   private counters = { offered: 0, skipped: 0, scaleChanges: 0 };
   private keySeenAtLevel = false;
+  /** Keyframes out so far, and how many of them had been acted on: each is acted on once. */
+  private keysSeen = 0;
+  private keyActedOn = 0;
   /** A frame too big for the window was seen: smaller at the next tick, whatever the hold. */
   private shrinkNow = false;
 
@@ -157,6 +168,7 @@ export class VideoRateController {
     // The latest of each kind, a little pessimistic: pictures change fast.
     const remember = (old: number | null) => (old === null ? bytes : Math.max(bytes, 0.5 * old + 0.5 * bytes));
     if (key) {
+      this.keysSeen++;
       // Only what a keyframe of this size really came to.
       this.keyBytes = this.keySeenAtLevel ? remember(this.keyBytes) : bytes;
       this.keySeenAtLevel = true;
@@ -186,25 +198,35 @@ export class VideoRateController {
       // the encoder is.
       const demandKbps = (this.sentBytes / this.sent.length) * this.fps * (8 / 1000);
       const ratio = demandKbps / this.targetKbps;
+      // Given back only while keyframes have room to grow with it: the encoder sizes them by its target.
+      const keyRoom = this.keyBytes === null || this.keyBytes * 1.15 <= KEY_MARGIN * this.keyAllowanceBytes();
       if (ratio > 1.02) this.factor = Math.max(STEER_MIN, this.factor * Math.max(0.6, 1 / ratio));
-      else if (ratio < 0.9 && this.factor < 1) this.factor = Math.min(1, this.factor * 1.15);
+      else if (ratio < 0.9 && this.factor < 1 && keyRoom) this.factor = Math.min(1, this.factor * 1.15);
     }
-    if (this.shrinkNow && this.level < SCALE_LEVELS.length - 1) {
+    const keyTooBig = this.keySeenAtLevel && this.keyBytes !== null && this.keyBytes > KEY_MARGIN * this.keyAllowanceBytes();
+    const smallest = this.level >= SCALE_LEVELS.length - 1;
+    const newKey = this.keysSeen !== this.keyActedOn;
+    if (keyTooBig && newKey && this.factor > STEER_MIN * 1.05 && (this.keyBytes as number) <= 2 * this.keyAllowanceBytes()) {
+      // A keyframe a little past the allowance: the encoder sizes its keyframes by its target, so
+      // ask it for less first (step 1), once for each keyframe that comes out too big.
+      this.keyActedOn = this.keysSeen;
+      this.factor = Math.max(STEER_MIN, this.factor * Math.max(0.6, (0.9 * KEY_MARGIN * this.keyAllowanceBytes()) / (this.keyBytes as number)));
+    } else if ((this.shrinkNow || (keyTooBig && newKey)) && !smallest) {
+      // A frame too big for the window, or a keyframe past the allowance that asking for less has
+      // not cured (or far past it: the encoder at its coarsest): smaller at once, not at the end
+      // of a hold, so that the next keyframe, two seconds on, is not past it too.
+      this.keyActedOn = this.keysSeen;
       this.shrinkNow = false;
-      this.setLevel(this.level + 1, now);
+      this.shrink(now, keyTooBig);
     } else if (now - this.levelAt >= SCALE_HOLD_MS) {
       const offered = this.offered.length;
       const skipped = this.offered.filter((o) => o.skipped).length;
       const tooManySkipped = offered >= 10 && skipped / offered >= SCALE_DOWN_SKIPPED;
-      const keyTooBig = this.keySeenAtLevel && this.keyBytes !== null && this.keyBytes > this.keyAllowanceBytes();
-      // Smaller only once asking the encoder for less has done all it can (step 1 before 3),
-      // or when a keyframe alone is too much for the window, which asking does not change.
+      // Smaller for want of room only once asking the encoder for less has done all it can (step 1 before 3).
       const askedLeast = this.factor <= STEER_MIN * 1.05;
-      if (((tooManySkipped && askedLeast) || keyTooBig) && this.level < SCALE_LEVELS.length - 1) {
-        // Bigger did not hold: wait longer before trying it again.
-        this.upAfterMs = now - this.raisedAt < this.upAfterMs ? Math.min(SCALE_UP_MAX_MS, this.upAfterMs * 2) : this.upAfterMs;
-        this.setLevel(this.level + 1, now);
-      } else if (this.level > 0 && skipped === 0 && !keyTooBig && this.factor >= SCALE_UP_FACTOR && now - this.levelAt >= this.upAfterMs) {
+      if (tooManySkipped && askedLeast && !smallest) {
+        this.shrink(now, false);
+      } else if (this.level > 0 && skipped === 0 && this.biggerKeyFits() && this.factor >= SCALE_UP_FACTOR && now - this.levelAt >= this.upAfterMs) {
         // Only a picture the encoder keeps to what it is asked is tried bigger: one at its coarsest
         // (asked for less, it spent no less) would only bring back the frames that do not fit,
         // and a keyframe past the allowance with them.
@@ -213,6 +235,34 @@ export class VideoRateController {
       }
     }
     return { factor: this.factor, level: this.level };
+  }
+
+  /**
+   * Whether a keyframe one size up might still be inside the allowance. A picture at the encoder's
+   * coarsest costs its area, one it holds to its target costs about the same at any size, and
+   * nothing here tells the two apart: taken halfway (the square root of the area's ratio). A try
+   * that guesses wrong costs one keyframe past the allowance, and the wait before the next doubles.
+   */
+  private biggerKeyFits(): boolean {
+    if (this.keyBytes === null) return true;
+    const ratio = ((SCALE_LEVELS[this.level - 1] as number) / (SCALE_LEVELS[this.level] as number)) ** 2;
+    return this.keyBytes * Math.sqrt(ratio) <= KEY_TRY_MARGIN * this.keyAllowanceBytes();
+  }
+
+  /**
+   * One size smaller; or, for a keyframe past the allowance, straight to the size where it would
+   * not be, taking it to cost its area (a keyframe that big is the encoder at its coarsest), so
+   * that the way down is not a keyframe past the allowance at every size.
+   */
+  private shrink(now: number, forKey: boolean): void {
+    // Bigger did not hold: wait longer before trying it again.
+    if (now - this.raisedAt < this.upAfterMs) this.upAfterMs = Math.min(SCALE_UP_MAX_MS, this.upAfterMs * 2);
+    let level = this.level + 1;
+    if (forKey && this.keyBytes !== null) {
+      const share = SCALE_LEVELS[this.level] as number;
+      while (level < SCALE_LEVELS.length - 1 && this.keyBytes * ((SCALE_LEVELS[level] as number) / share) ** 2 > KEY_MARGIN * this.keyAllowanceBytes()) level++;
+    }
+    this.setLevel(level, now);
   }
 
   private setLevel(level: number, now: number): void {

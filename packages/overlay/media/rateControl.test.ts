@@ -7,7 +7,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { RATE_WINDOW_ALLOWANCE, SCALE_LEVELS, VideoRateController } from "@meetly/overlay/media/rateControl";
+import { KEY_ALLOWANCE_MS, RATE_WINDOW_ALLOWANCE, SCALE_LEVELS, VideoRateController } from "@meetly/overlay/media/rateControl";
 import { expectedTemporalLayer } from "@meetly/overlay/media/layers";
 
 const FPS = 30;
@@ -18,10 +18,11 @@ type Picture = { overshoot: number; floorBytes: number; keyTimes: number };
 // An easy picture: the encoder keeps to its target, keyframes included.
 const EASY: Picture = { overshoot: 0.85, floorBytes: 500, keyTimes: 5 };
 // Busy: 60% over whatever it is asked, as the harness's pattern.
-const BUSY: Picture = { overshoot: 1.6, floorBytes: 2000, keyTimes: 2.5 };
+const BUSY: Picture = { overshoot: 1.6, floorBytes: 2000, keyTimes: 3 };
 // Fine detail and noise: at the coarsest quantiser already, so the floor is what it costs.
-const FINE: Picture = { overshoot: 1.5, floorBytes: 20_000, keyTimes: 8 };
-const NOISE: Picture = { overshoot: 1, floorBytes: 260_000, keyTimes: 1.8 };
+// (Measured: fine detail's keyframes about five of its frames, noise's about one.)
+const FINE: Picture = { overshoot: 1.5, floorBytes: 20_000, keyTimes: 5 };
+const NOISE: Picture = { overshoot: 1, floorBytes: 260_000, keyTimes: 1.1 };
 
 function simulate(pictures: { untilS: number; picture: Picture }[]) {
   const rate = new VideoRateController(TARGET_KBPS, 3);
@@ -54,8 +55,7 @@ function simulate(pictures: { untilS: number; picture: Picture }[]) {
     const area = (SCALE_LEVELS[level] as number) ** 2;
     const asked = (TARGET_KBPS * factor * 1000) / 8 / FPS;
     const layerShare = [1.6, 1, 0.7][temporal] as number;
-    let bytes = Math.max(picture.floorBytes * area, asked * picture.overshoot) * layerShare;
-    if (key) bytes *= picture.keyTimes;
+    let bytes = Math.max(picture.floorBytes * area, asked * picture.overshoot) * (key ? picture.keyTimes : layerShare);
     bytes = Math.round(bytes);
     rate.encoded(now + 5, bytes, key, temporal);
     out.push({ at: now + 5, bytes, key, level });
@@ -96,6 +96,14 @@ describe("source rate control: the stream holds its bitrate whatever the picture
       const keys = out.filter((o) => o.key).map((o) => o.at);
       for (let i = 1; i < keys.length; i++) assert.ok((keys[i] as number) - (keys[i - 1] as number) <= 2100, `keyframes ${keys[i - 1]} and ${keys[i]} ms`);
       assert.ok(fps(out, 30, 40) >= 5, `${fps(out, 30, 40)} fps at the end`);
+      // Keyframes inside the allowance once the picture is learnt, but for the first of a try at a bigger size.
+      const allowance = (TARGET_KBPS * KEY_ALLOWANCE_MS) / 8;
+      let previousLevel = 0;
+      for (const frame of out) {
+        const probe = frame.level < previousLevel;
+        previousLevel = frame.level;
+        if (frame.key && frame.at >= 5000 && !probe) assert.ok(frame.bytes <= allowance, `a keyframe of ${Math.round((frame.bytes * 8) / TARGET_KBPS)} ms of the bitrate at ${Math.round(frame.at)} ms`);
+      }
     });
   }
 
@@ -111,6 +119,14 @@ describe("source rate control: the stream holds its bitrate whatever the picture
     assert.equal(rate.stats().level, 0, "full size");
     assert.ok(rate.stats().factor < 0.75 && rate.stats().factor > 0.5, `factor ${rate.stats().factor}`);
     assert.ok(fps(out, 10, 30) >= 29, `${fps(out, 10, 30)} fps`);
+  });
+
+  it("keyframes a little past the allowance from an encoder that sizes them by its target: it is asked for less, and the picture keeps its size", () => {
+    const HEAVY_KEYS: Picture = { overshoot: 0.85, floorBytes: 500, keyTimes: 9 };
+    const { out, rate } = simulate([{ untilS: 30, picture: HEAVY_KEYS }]);
+    assert.equal(rate.stats().level, 0);
+    const allowance = (TARGET_KBPS * KEY_ALLOWANCE_MS) / 8;
+    for (const frame of out) if (frame.key && frame.at >= 6000) assert.ok(frame.bytes <= allowance, `a keyframe of ${Math.round((frame.bytes * 8) / TARGET_KBPS)} ms of the bitrate at ${Math.round(frame.at)} ms`);
   });
 
   it("noise is made smaller until it fits at a frame rate worth watching", () => {

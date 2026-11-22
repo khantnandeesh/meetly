@@ -108,7 +108,7 @@ export const SCENARIOS: { [Name in keyof Scenarios]: Scenario<Name> } = {
       [`${r.content}: every two-second window within +15% of ${r.targetKbps} kbps`, n(r.worstWindowPct) <= 115, `worst ${r.worstWindowPct}% (at ${r.worstWindowAtS} s); mean ${r.meanKbps} kbps; encoder asked ${r.encoderKbps} kbps; ${r.skippedRate} frames not encoded; sizes ${r.sizes || "unchanged"}`],
       ["a keyframe at least every 2 s (a frame's slack)", n(r.keyGapMaxMs) <= 2250, `longest gap ${round(r.keyGapMaxMs)} ms`],
       [
-        "keyframes within 250 ms of the bitrate, once the picture is learnt (but a try at a bigger size)",
+        "keyframes within 250 ms of the bitrate, once the picture is learnt (but while trying a bigger size)",
         r.keyMsOfB.max === null || r.keyMsOfB.max <= 250,
         `up to ${r.keyMsOfB.max} ms of the bitrate after 5 s (the first ${r.keyMsOfB.first}, the last ${r.keyMsOfB.last}); ${r.probeKeys.count} tries at a bigger size, their keyframes up to ${r.probeKeys.maxMsOfB} ms`,
       ],

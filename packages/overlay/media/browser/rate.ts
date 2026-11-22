@@ -98,18 +98,18 @@ export async function rate(options: { content?: Content; seconds?: number; width
   });
   const frames: { at: number; bytes: number; key: boolean; width: number; probe: boolean }[] = [];
   let currentWidth = width;
-  /** The first keyframe after the picture was made bigger again: the source trying a size it may have to leave. */
-  let probing = false;
+  /** Keyframes in the first 2.5 s after the picture was made bigger again: the source trying a size it may have to leave. */
+  let tryingUntil = -Infinity;
   source.on("config", (config) => {
     if (config.kind !== "video" || !config.width) return;
-    if (config.width > currentWidth) probing = true;
+    if (config.width > currentWidth) tryingUntil = clock.now() - startedAt + 2500;
     currentWidth = config.width;
   });
   source.on("frame", (frame: EncodedFrame) => {
     if (frame.header.streamId !== 0) return;
     const key = (frame.header.flags & MediaFlag.Key) !== 0;
-    frames.push({ at: clock.now() - startedAt, bytes: frame.data.byteLength, key, width: currentWidth, probe: key && probing });
-    if (key) probing = false;
+    const at = clock.now() - startedAt;
+    frames.push({ at, bytes: frame.data.byteLength, key, width: currentWidth, probe: key && at <= tryingUntil });
   });
   let input: MediaStreamTrack;
   let stop: () => void;
@@ -147,7 +147,9 @@ export async function rate(options: { content?: Content; seconds?: number; width
   }
   const keys = frames.filter((f) => f.key && !f.probe);
   const probes = frames.filter((f) => f.probe);
-  const keyGapsMs = keys.slice(1).map((k, i) => k.at - keys[i]!.at);
+  // Gaps between every keyframe, tries included: a viewer waits for any of them.
+  const allKeys = frames.filter((f) => f.key);
+  const keyGapsMs = allKeys.slice(1).map((k, i) => k.at - allKeys[i]!.at);
   const last = frames.filter((f) => f.at >= (seconds - 5) * 1000);
   const msOfB = (bytes: number) => round((bytes * 8) / bitrateKbps);
   return {
@@ -160,6 +162,7 @@ export async function rate(options: { content?: Content; seconds?: number; width
     keyGapMaxMs: keyGapsMs.length ? Math.max(...keyGapsMs) : null,
     // Keyframes once the source has had 5 s to learn the picture.
     keyMsOfB: { max: keys.some((k) => k.at >= 5000) ? msOfB(Math.max(...keys.filter((k) => k.at >= 5000).map((k) => k.bytes))) : null, first: keys.length ? msOfB(keys[0]!.bytes) : null, last: keys.length ? msOfB(keys[keys.length - 1]!.bytes) : null },
+    keyList: allKeys.map((k) => `${round(k.at / 1000)}s:${k.width}:${msOfB(k.bytes)}${k.probe ? "t" : ""}`).join(" "),
     probeKeys: { count: probes.length, maxMsOfB: probes.length ? msOfB(Math.max(...probes.map((p) => p.bytes))) : null },
     fpsLast5s: round(last.length / 5),
     widthLast: frames.length ? frames[frames.length - 1]!.width : null,
