@@ -35,6 +35,8 @@ type Setup = {
   seconds?: number;
   /** When a frame arrives, in ms after its capture; null: it never does. */
   arrival?: (frame: ReceivedFrame) => number | number[] | null;
+  /** Whether a frame arriving this long after its capture came by a replay or a retransmission. */
+  recovered?: (frame: ReceivedFrame, afterMs: number) => boolean;
 };
 
 /**
@@ -67,7 +69,7 @@ async function setup(options: Setup = {}) {
   for (const frame of frames) {
     const after = arrival(frame);
     if (after === null) continue;
-    for (const ms of Array.isArray(after) ? after : [after]) queue.push({ at: frame.header.captureUs / 1000 + ms, frame });
+    for (const ms of Array.isArray(after) ? after : [after]) queue.push({ at: frame.header.captureUs / 1000 + ms, frame: options.recovered?.(frame, ms) ? { ...frame, recovered: true } : frame });
   }
   queue.sort((a, b) => a.at - b.at);
 
@@ -358,6 +360,109 @@ describe("player: repair and catch-up (§10.3, §10.4; PLAN M5)", () => {
       await t.player.close();
     });
   }
+});
+
+describe("player: a replay that arrives past due is played forward, not given up ([D45])", () => {
+  /**
+   * A backup's replay as the overlay sends it: from `fromMs` (relative to the first capture), in
+   * capture order, `speed` times faster than real time, starting at `startMs`; live again once it
+   * has caught up. A share `lossShare` of the replayed frames lose a fragment and come `nackMs`
+   * later, retransmitted (and so do those `lose` picks). Everything before `fromMs` came live.
+   */
+  const replayArrival = (o: { fromMs: number; startMs: number; speed: number; lossShare?: number; lose?: (frame: ReceivedFrame) => boolean; nackMs?: number; seed?: number; before?: "live" | "none" }) => {
+    const random = seeded(o.seed ?? 3);
+    return (frame: ReceivedFrame) => {
+      const captured = frame.header.captureUs / 1000 - FIRST_CAPTURE_MS;
+      if (captured < o.fromMs) return o.before === "none" ? null : PATH;
+      const replayedAt = o.startMs + (captured - o.fromMs) / o.speed;
+      const liveAt = captured + PATH;
+      if (replayedAt <= liveAt) return PATH;
+      const lost = random() < (o.lossShare ?? 0) || (o.lose?.(frame) ?? false);
+      return replayedAt - captured + (lost ? (o.nackMs ?? 80) : 0);
+    };
+  };
+  const recoveredIfLate = (_frame: ReceivedFrame, afterMs: number) => afterMs > PATH + 1;
+  const longestGap = (rendered: Rendered[], fromUs: number) => {
+    let gap = 0;
+    for (let i = 1; i < rendered.length; i++) if ((rendered[i] as Rendered).renderedUs >= fromUs) gap = Math.max(gap, ((rendered[i] as Rendered).renderedUs - (rendered[i - 1] as Rendered).renderedUs) / 1000);
+    return gap;
+  };
+
+  for (const decode of [true, false]) {
+    it(`${decode ? "decoding" : "light"}: a warm repair, its replay at 1.6 times real time, base-layer frames of it retransmitted: the GOP is kept, the freeze is under 400 ms, sound and picture in step after`, async () => {
+      const killMs = 2500;
+      const t = await setup({
+        decode,
+        seconds: 8,
+        // The parent dies at 2.5 s; 200 ms to notice, 30 ms to the backup and back; then it
+        // replays from the last frame heard, at twice real time, losing a fragment of one in twenty.
+        // Every third base-layer frame of it loses a fragment, and comes 100 ms later.
+        arrival: replayArrival({ fromMs: killMs - PATH, startMs: killMs + 230, speed: 1.6, lose: (frame) => frame.header.frameId % 12 === 4, nackMs: 100 }),
+        recovered: recoveredIfLate,
+      });
+      const skips: number[] = [];
+      t.player.on("error", () => undefined);
+      t.run(t.startMs + 8000);
+      void skips;
+      const lost = t.player.stats().video!.lost;
+      assert.equal(lost, 0, `${lost} frames lost`);
+      const gap = longestGap(t.rendered, (t.startMs + killMs - 500) * 1000);
+      assert.ok(gap <= 400, `froze ${gap} ms`);
+      // Caught up: from 2 s after the death, every frame at normal latency.
+      const after = t.rendered.filter((r) => r.renderedUs / 1000 >= t.startMs + killMs + 2000);
+      assert.ok(after.length > 80);
+      for (const r of after) assert.ok(r.latencyMs <= PATH + D + PIPE + 15, `frame ${r.frameId} shown ${r.latencyMs} ms after capture`);
+      if (decode) {
+        const offsets = avOffsetsMs(after);
+        assert.ok(Math.min(...offsets) >= -15 && Math.max(...offsets) <= 45, `offsets ${Math.min(...offsets)}..${Math.max(...offsets)} ms`);
+        // The sound: concealed from the death until the replay comes within D of live (replayed sound
+        // further behind is too late to play: the sound is the clock), about 460 ms here, and no restart.
+        const audio = t.player.debug().audio!;
+        assert.equal(audio.resyncs, 0);
+        assert.ok(audio.concealedMs <= 500, `concealed ${audio.concealedMs} ms`);
+      }
+      await t.player.close();
+    });
+
+    it(`${decode ? "decoding" : "light"}: a join a second into a GOP, its replay from the keyframe at twice real time, 5% retransmitted: the first frame within 400 ms of the first packet, the GOP kept`, async () => {
+      const joinMs = 3000;
+      // The GOP that is current at 3 s began at 2 s (a keyframe every 60 frames).
+      const t = await setup({
+        decode,
+        seconds: 8,
+        arrival: replayArrival({ fromMs: 1990, startMs: joinMs, speed: 2, lossShare: 0.05, lose: (frame) => frame.header.frameId % 12 === 4, seed: 5, before: "none" }),
+        recovered: recoveredIfLate,
+      });
+      t.run(t.startMs + 8000);
+      const first = t.rendered[0]!;
+      const firstPacketMs = t.startMs + joinMs;
+      assert.ok(first.renderedUs / 1000 - firstPacketMs <= 400, `first frame ${first.renderedUs / 1000 - firstPacketMs} ms after the first packet`);
+      // The GOP is kept: what is lost is at most the odd discardable frame whose retransmission came after the frames past it.
+      const lostFrames = t.player.stats().video!.lost;
+      assert.ok(lostFrames <= 6, `${lostFrames} frames lost`);
+      const gap = longestGap(t.rendered, 0);
+      assert.ok(gap <= 400, `froze ${gap} ms while catching up`);
+      const after = t.rendered.filter((r) => r.renderedUs / 1000 >= firstPacketMs + 2500);
+      for (const r of after) assert.ok(r.latencyMs <= PATH + D + PIPE + 15, `frame ${r.frameId} shown ${r.latencyMs} ms after capture`);
+      if (decode) {
+        const offsets = avOffsetsMs(after);
+        assert.ok(offsets.length > 50 && Math.min(...offsets) >= -15 && Math.max(...offsets) <= 45, `offsets ${Math.min(...offsets)}..${Math.max(...offsets)} ms`);
+      }
+      await t.player.close();
+    });
+  }
+
+  it("a replay too slow to catch up before the next keyframe: the GOP is given up as before", async () => {
+    // Replayed at 1.05 times real time, 300 ms behind: it would take six seconds to catch up.
+    const t = await setup({
+      seconds: 8,
+      arrival: replayArrival({ fromMs: 2500 - PATH, startMs: 2800, speed: 1.05, lossShare: 0.2, nackMs: 400, seed: 2 }),
+      recovered: recoveredIfLate,
+    });
+    t.run(t.startMs + 8000);
+    assert.ok(t.player.stats().video!.lost > 0, "a GOP was given up");
+    await t.player.close();
+  });
 });
 
 describe("player: what this viewer can use (PLAN M6)", () => {
