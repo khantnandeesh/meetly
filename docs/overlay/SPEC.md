@@ -963,6 +963,23 @@ between is counted `lost`.
 A frame that arrives after its due time is used only if a later frame needs it, and then
 `decodeOnly`: decoded, not shown.
 
+**[D45] A replay is played forward, not given up.** *(Decided by integrator 2026-11-22.)* A
+join's or a repair's replay arrives already past due, often by 300 ms and more; a fragment of
+it lost and asked for again would find its frame's 150 ms long gone, and the whole GOP would be
+given up for the next keyframe, up to 2 s away. So while a replay is coming (frames marked
+`recovered`, which a replay and a retransmission already are, any within the last 300 ms):
+
+- a missing frame is waited for 300 ms from when playout reached it, not 150 ms past its due
+  time;
+- but only while the replay can still reach the playout point before the next keyframe would
+  be due: the capture time it delivers per second of arrival against the lag it has to make up.
+  A replay that cannot is given up as above;
+- frames played forward past their time are decoded and not shown (§10.4), except that the
+  newest of them that others build on is shown at least every 100 ms, so that the picture
+  skips forward rather than standing still.
+
+Without a replay, nothing of this applies, and §10.4 is as it was.
+
 ### 10.4 Catching up
 
 After a join, a repair or a stall, the buffer may hold more than *D* of media: a replay arrives
@@ -1357,6 +1374,7 @@ Rotating speakers on the overlay. Out of scope.
 | D33 | A frame is played at path + D + audio pipeline; the path followed at once when it grows (integrator, 2026-11-21) | 10.2 |
 | D34 | Audio playout restarts in place when the delay is too far off to adapt a frame a second (integrator, 2026-11-21) | 10.5 |
 | D35 | An Opus frame is stamped with the time of the sound it decodes to: first sample less 6.5 ms (integrator, 2026-11-21) | 9.4 |
+| D45 | A replay is played forward: a missing frame waited for from when playout reached it while the replay can catch up, the newest frame shown every 100 ms (integrator, 2026-11-22) | 10.3 |
 
 Also decided here, with their numbers, because the report gave only the idea: the layer-drop
 rules (§11.3), the jitter buffer's contract (§10), the standby reservation that makes a repair
