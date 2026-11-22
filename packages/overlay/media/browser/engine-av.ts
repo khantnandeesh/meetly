@@ -19,6 +19,7 @@ import { PlayerImpl } from "../player";
 import { createWorkerClock } from "../testing/realClock";
 import { encodingFor, program, round, quantile } from "./common";
 import { picture } from "./rate";
+import { VideoRateController } from "../rateControl";
 
 /** The harness's impairment shim, when the driver bundled it in. */
 type Impair = {
@@ -44,14 +45,44 @@ PlayerImpl.prototype.configure = function (this: Hooked, streams) {
 };
 const proto = PlayerImpl.prototype as unknown as { show: (video: unknown, decoded: DecodedVideo, ...rest: unknown[]) => void };
 const originalShow = proto.show;
+/** At the source: every encoded video frame, as the rate controller is told of it, and each change of its target. */
+const encodedOut: { at: number; bytes: number; key: boolean }[] = [];
+const targets: { at: number; kbps: number }[] = [];
+const rateProto = VideoRateController.prototype as unknown as { encoded: (now: number, bytes: number, key: boolean, temporal: number) => void; setTarget: (kbps: number) => void };
+const originalEncoded = rateProto.encoded;
+rateProto.encoded = function (this: VideoRateController, now, bytes, key, temporal) {
+  encodedOut.push({ at: now, bytes, key });
+  return originalEncoded.call(this, now, bytes, key, temporal);
+};
+const originalSetTarget = rateProto.setTarget;
+rateProto.setTarget = function (this: VideoRateController, kbps) {
+  targets.push({ at: performance.now(), kbps });
+  return originalSetTarget.call(this, kbps);
+};
+
+/** The source's own worst two-second window of encoded video over the last `lastS`, and its targets. */
+function sourceWindows(lastS: number) {
+  const from = performance.now() - lastS * 1000;
+  const out = encodedOut.filter((e) => e.at >= from);
+  let worst = 0;
+  let sum = 0;
+  let start = 0;
+  for (let end = 0; end < out.length; end++) {
+    sum += out[end]!.bytes;
+    while (out[end]!.at - out[start]!.at >= 2000) sum -= out[start++]!.bytes;
+    worst = Math.max(worst, sum);
+  }
+  return { worst2sKbps: round((worst * 8) / 2000), meanKbps: round((out.reduce((t, e) => t + e.bytes, 0) * 8) / (lastS * 1000)), targets: targets.map((t) => `${round((t.at - from) / 1000)}s:${Math.round(t.kbps)}`).join(" ") };
+}
+
 /** Every video frame the player was given once, with when: what the stream came to here. */
-const videoIn: { at: number; bytes: number }[] = [];
+const videoIn: { at: number; bytes: number; captureUs: number }[] = [];
 const seenVideo = new Set<number>();
 const originalPush = PlayerImpl.prototype.push;
 PlayerImpl.prototype.push = function (this: Hooked, frame: ReceivedFrame) {
   if (frame.header.streamId === 0 && !seenVideo.has(frame.header.frameId)) {
     seenVideo.add(frame.header.frameId);
-    videoIn.push({ at: performance.now(), bytes: frame.data.byteLength });
+    videoIn.push({ at: performance.now(), bytes: frame.data.byteLength, captureUs: frame.header.captureUs });
   }
   return originalPush.call(this, frame);
 };
@@ -231,6 +262,17 @@ function results(lastS: number) {
     while (arrived[end]!.at - arrived[start]!.at >= 2000) windowBytes -= arrived[start++]!.bytes;
     worstBytes = Math.max(worstBytes, windowBytes);
   }
+  // The same frames windowed by when they were captured, not when they came: the stream as the
+  // source made it, without what the way here bunched together.
+  const byCapture = [...arrived].sort((a, b) => a.captureUs - b.captureUs);
+  let worstCaptureBytes = 0;
+  windowBytes = 0;
+  start = 0;
+  for (let end = 0; end < byCapture.length; end++) {
+    windowBytes += byCapture[end]!.bytes;
+    while (byCapture[end]!.captureUs - byCapture[start]!.captureUs >= 2_000_000) windowBytes -= byCapture[start++]!.bytes;
+    worstCaptureBytes = Math.max(worstCaptureBytes, windowBytes);
+  }
   const rx = samples.filter((s) => s.up && s.at >= (viewerClock?.now() ?? 0) - lastS * 1000).map((s) => s.up!.rxKbps);
   const debug = player?.debug();
   const sum = (pick: (s: MetricsSample) => number | undefined) => samples.reduce((total, s) => total + (pick(s) ?? 0), 0);
@@ -241,7 +283,7 @@ function results(lastS: number) {
     unpaired: pairs.filter((p) => p === null).length,
     glassToGlassMs: stat(g2g),
     rendered: g2g.length,
-    videoKbps: { mean: round((arrived.reduce((t, v) => t + v.bytes, 0) * 8) / (lastS * 1000)), worst2s: round((worstBytes * 8) / 2000) },
+    videoKbps: { mean: round((arrived.reduce((t, v) => t + v.bytes, 0) * 8) / (lastS * 1000)), worst2s: round((worstBytes * 8) / 2000), worst2sByCapture: round((worstCaptureBytes * 8) / 2000) },
     rxKbps: stat(rx),
     delay: debug ? { applied: round(debug.appliedDelayMs), path: round(debug.pathMs), D: round(debug.playoutDelayMs) } : null,
     audio: debug?.audio ?? null,
@@ -259,4 +301,4 @@ function results(lastS: number) {
   };
 }
 
-(window as unknown as { __av: unknown }).__av = { source, viewer, results };
+(window as unknown as { __av: unknown }).__av = { source, viewer, results, sourceWindows };

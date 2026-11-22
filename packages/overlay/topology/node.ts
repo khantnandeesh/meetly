@@ -178,7 +178,7 @@ class SeenWindow {
  * what order they became decodable, and the newest base-layer one. That last is the "X" of
  * "send me everything after frame X" (SPEC §7.5).
  */
-class DecodeTracker {
+export class DecodeTracker {
   /** Decodable frames, with the keyframe of their GOP. */
   private decodable = new Map<number, number>();
   /** Whole frames waiting for the frame they need, by that frame's id. */
@@ -215,6 +215,8 @@ class DecodeTracker {
   }
   /** When, on the local clock, frames became decodable: the times a player could have shown them. */
   readonly shown: { at: number; id: number }[] = [];
+  /** When each whole frame arrived, decodable or not. */
+  private arrived: { at: number; id: number }[] = [];
 
   constructor(private readonly audio: boolean) {}
 
@@ -222,6 +224,8 @@ class DecodeTracker {
   push(header: { frameId: number; flags: number; refDelta: number; keyDelta: number; temporal: number }, at: number): void {
     const id = header.frameId;
     if (this.decodable.has(id)) return;
+    this.arrived.push({ at, id });
+    if (this.arrived.length > 512) this.arrived.splice(0, 256);
     const key = id - header.keyDelta;
     if (this.audio || (header.flags & MediaFlag.Key) !== 0 || header.refDelta === 0) return this.accept(id, key, header.temporal, at);
     const ref = id - header.refDelta;
@@ -262,8 +266,8 @@ class DecodeTracker {
     let edge: { at: number; id: number } | null = null;
     let previous: number | null = null;
     let longest = 0;
-    let highest = -1;
     let inWindow = 0;
+    const decodedBy = new Set<number>();
     for (const entry of this.shown) {
       if (entry.at > to) break;
       if (entry.at < from) {
@@ -275,15 +279,29 @@ class DecodeTracker {
       previous = entry.at;
       if (edge === null || entry.id > edge.id) {
         inWindow++;
-        if (entry.id > highest) highest = entry.id;
+        decodedBy.add(entry.id);
       }
     }
-    if (inWindow === 0) return { freezeMs: edge ? to - edge.at : 0, lost: 0 };
-    const first = edge ? edge.id + 1 : highest - inWindow + 1;
+    // What should have been decodable: every frame id after the edge up to the newest that had
+    // arrived by `to`, whether or not it could be decoded. A frame that came but never became
+    // decodable (it needed one that was lost) is lost as much as one that never came.
+    let first = edge ? edge.id + 1 : Infinity;
+    let last = -1;
+    for (const id of decodedBy) {
+      if (id < first) first = id;
+      if (id > last) last = id;
+    }
+    for (const entry of this.arrived) {
+      if (entry.at > to || (edge ? entry.id <= edge.id : entry.at < from)) continue;
+      if (!edge && entry.id < first) first = entry.id;
+      if (entry.id > last) last = entry.id;
+    }
+    const freezeMs = inWindow === 0 ? (edge ? to - edge.at : 0) : longest;
+    if (last < 0 || !Number.isFinite(first)) return { freezeMs, lost: 0 };
+    let lost = 0;
     // A frame the parent never sent (a layer it was shedding, SPEC §7.5 step 2, §11.3) is not lost.
-    let shed = 0;
-    for (let id = first; id <= highest; id++) if (!this.decodable.has(id) && neverSent(id)) shed++;
-    return { freezeMs: longest, lost: Math.max(0, highest - first + 1 - inWindow - shed) };
+    for (let id = first; id <= last; id++) if (!decodedBy.has(id) && !neverSent(id)) lost++;
+    return { freezeMs, lost };
   }
 }
 
@@ -859,19 +877,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       if (child.subs.size === 0) continue;
       const sub = child.subs.get(id);
       if (!sub || sub.mode !== "active" || !sub.stripes.includes(header.stripe)) continue;
-      if (hopFlags & HopFlag.Replay && !stream.audio) {
-        // A replay this node is being sent (its own repair) is a replay for its children too
-        // (§11.5): behind live media, within the replay budget, and with the gate's replay
-        // grace. Handed over as it came, it is a burst on every child's channel at once; rule 6
-        // then refuses some of it, and everything that needed those frames, to the next keyframe.
-        if (sub.decisions.get(header.frameId) === false) continue;
-        if (header.temporal > sub.gate.cap.maxTemporal || header.spatial > sub.gate.cap.maxSpatial) continue;
-        sub.decisions.set(header.frameId, true);
-        sub.replay.push(packet);
-        pumpReplay(child, receivedAt);
-        sent = true;
-        continue;
-      }
       let admit = sub.decisions.get(header.frameId);
       if (admit === undefined) {
         const buffered = child.link.bufferedAmount;

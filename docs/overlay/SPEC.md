@@ -1022,6 +1022,23 @@ between is counted `lost`.
 A frame that arrives after its due time is used only if a later frame needs it, and then
 `decodeOnly`: decoded, not shown.
 
+**[D45] A replay is played forward, not given up.** *(Decided by integrator 2026-11-22.)* A
+join's or a repair's replay arrives already past due, often by 300 ms and more; a fragment of
+it lost and asked for again would find its frame's 150 ms long gone, and the whole GOP would be
+given up for the next keyframe, up to 2 s away. So while a replay is coming (frames marked
+`recovered`, which a replay and a retransmission already are, any within the last 300 ms):
+
+- a missing frame is waited for 300 ms from when playout reached it, not 150 ms past its due
+  time;
+- but only while the replay can still reach the playout point before the next keyframe would
+  be due: the capture time it delivers per second of arrival against the lag it has to make up.
+  A replay that cannot is given up as above;
+- frames played forward past their time are decoded and not shown (§10.4), except that the
+  newest of them that others build on is shown at least every 100 ms, so that the picture
+  skips forward rather than standing still.
+
+Without a replay, nothing of this applies, and §10.4 is as it was.
+
 ### 10.4 Catching up
 
 After a join, a repair or a stall, the buffer may hold more than *D* of media: a replay arrives
@@ -1146,12 +1163,12 @@ part.
    which is how far the backlog (channel and pacing queue) stands over the one the keyframe
    found, never more than the keyframe itself. Once its pacing is done the remainder never
    rises again (a backlog that grows back is the link's), and it ends when the backlog is back
-   where it was, or after 4 × the keyframe's own time at *B*. *Decided by integrator 2026-11-21.*
+   where it was, or after 4 × the keyframe's own time at *B*. *Decided by integrator 2026-11-21;
+   the remainder as measured here, decided by integrator 2026-11-22.*
    By the same token, for rule 3 a link *congested* with `lossPct` under 10 and `bufferedBytes`
    less the remainder under 150 ms of *B* is held as *strained*: at 1.1 × *B* a 300 ms keyframe
    keeps the queue delay over 100 ms for 700 ms, and the backlog over 150 ms of *B* for 300 ms,
-   both of which would otherwise drop a layer. *Proposed by the integration engineer, to meet
-   D43's own test; for the integrator to ratify.*
+   both of which would otherwise drop a layer. *Decided by integrator 2026-11-22.*
 7. **Starved:** a link *congested* for 1 s with the cap already at the base layer cannot carry
    the stream at all. The gate then sends only whole GOPs it can start cleanly (it resumes at a
    keyframe), announces `starved`, and the parent tells the child (`layers`, reason
@@ -1192,24 +1209,20 @@ and rule 6's line is 250 ms of *B*. Loss or path delay still count at once. With
 join would end with the joiner's first live frames refused and a layer dropped. *Decided by
 integrator 2026-11-21.*
 
-**Replays reach the child ahead of its live video.** *Proposed by the integration engineer
-2026-11-22, for the integrator to ratify; in the code on overlay-integration.* Three amendments,
-from the first valid gate run (44970866134), where 41 of the 117 joins that took over 1.2 s from
-first packet to first frame, and most repairs that froze over 600 ms, ended in the jitter buffer
-giving the GOP up (§10.3) and waiting for the next keyframe:
+**[D44] Per child, live video waits behind its replay** (decided by integrator 2026-11-22).
+"Live media goes first" stays true of the channel as a whole, but for the child being replayed
+to (a join, a repair), its own live video frames are sent after its replay, in order, within the
+same budget. Live frames that overtake the replay need frames not there and long past due, so
+§10.3 gives the GOP up at once (150 ms past due has already gone) and the replay is wasted: in
+the first valid gate run (44970866134) the joins slow to a first frame, and most repairs that
+froze over 600 ms, ended that way. Audio, control and retransmissions do not wait. What a relay
+receives marked `Replay` (its own repair) it forwards as it comes, as before.
 
-- *Per child, live video waits behind its replay.* "Live media goes first" stays true of the
-  channel as a whole, but for the child being replayed to, its own live frames are sent after its
-  replay, in order, within the same budget. Live frames that overtake the replay need frames not
-  there and long past due, so §10.3 gives the GOP up at once (150 ms past due has already gone)
-  and the replay is wasted. Audio, control and retransmissions do not wait.
-- *A replay a relay is being sent is a replay for its children.* What a relay receives marked
-  `Replay` (its own repair) goes to each child through that child's replay budget and grace, not
-  as live: handed over as it comes it is a burst on every child's channel at once.
-- *A joiner's replay is thinned.* For a join (`fromFrame` −1), what is more than 500 ms behind
-  the newest frame goes as the keyframe and the base layer only: the joiner only decodes it, and
-  no later frame needs a frame above the base layer (§9.2). The replay is smaller and the first
-  frame sooner; the jitter buffer counts a few of the frames left out as lost.
+**A joiner's replay is thinned** (decided by integrator 2026-11-22). For a join (`fromFrame`
+−1), what is more than 500 ms behind the newest frame goes as the keyframe and the base layer
+only: the joiner only decodes it, and no later frame needs a frame above the base layer (§9.2).
+The replay is smaller and the first frame sooner; the jitter buffer counts a few of the frames
+left out as lost.
 
 ### 11.6 Measuring spare uplink
 
@@ -1521,12 +1534,17 @@ Rotating speakers on the overlay. Out of scope.
 | D40 | The gate's clocks are judged as measured against chrony-synced wall clocks, the §4.1 bound only where a shard has no chrony (decided by integrator 2026-11-21) | 12.3 |
 | D41 | The provisional probe lasts 1 s, at the fan-out-2 target (integrator, 2026-11-21) | 8.1 |
 | D42 | A runner is starved when its timers run over 20 ms late at p99; its load is reported, not judged (decided by integrator 2026-11-22) | 12.3 |
-| D43 | Keyframes up to 500 ms of B; paced over their own interval and two more; rule 6 (and rule 3) read the paced remainder as the keyframe's (integrator, 2026-11-21) | 9.2, 4.2, 11.3 |
+| D43 | Keyframes up to 500 ms of B; paced over their own interval and two more; rule 6 (and rule 3) read the paced remainder as the keyframe's (integrator, 2026-11-21; remainder and rule 3, 2026-11-22) | 9.2, 4.2, 11.3 |
+| D44 | Per child, live video waits behind its replay (integrator, 2026-11-22) | 11.5 |
+| D45 | A replay is played forward: a missing frame waited for from when playout reached it while the replay can catch up, the newest frame shown every 100 ms (integrator, 2026-11-22) | 10.3 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
 (§11.5); the probe's target is a full fan-out's cost, and FEEDBACK goes down a link while PROBE
 packets come up it (§11.6).
+
+Also decided by the integrator on 2026-11-22, without a number of their own: a joiner's replay is
+the base layer only beyond 500 ms behind the newest frame (§11.5).
 
 Also decided here, with their numbers, because the report gave only the idea: the layer-drop
 rules (§11.3), the jitter buffer's contract (§10), the standby reservation that makes a repair
