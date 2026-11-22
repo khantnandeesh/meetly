@@ -27,6 +27,10 @@ import type { Placement, TreeNode } from "./treeMap";
 /** WebSocket close codes (SPEC §6.2). Repeated in ./index.ts for callers. */
 const CLOSE = { normal: 1000, badTicket: 4001, full: 4002, kicked: 4003, ended: 4004, badMessage: 4005, replaced: 4006 } as const;
 
+/** How long a joiner waits for a free slot before it is sent over a fan-out (see `overloadForJoiner`). */
+const JOIN_OVER_FANOUT_AFTER_MS = 3_000;
+/** The share of the audience offered a better backup in one second, at most. */
+const BACKUP_ADVICE_SHARE = 0.05;
 /** SPEC §6.5: a grant lives ten minutes and is replaced two minutes before it expires. */
 export const GRANT_LIFE_S = 600;
 export const GRANT_RENEW_S = 120;
@@ -61,7 +65,7 @@ type Conn = {
 };
 
 /** What `attach` keeps with a socket: enough to rebuild `Conn`, and the peer's record, after a restart. */
-type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number };
+type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number; pv?: boolean };
 
 type SessionKey = { kid: string; privateKey: CryptoKey; publicKey: CryptoKey; pub: string; idKey: CryptoKey; epochMs: number };
 type StoredSession = { kid: string; pkcs8: string; pub: string; idSecret: string; epochMs: number };
@@ -80,6 +84,7 @@ class Core implements CoordinatorCore {
   /** Ticket nonces already used, and when each ticket expires (seconds). */
   private readonly nonces = new Map<string, number>();
   private readonly samples: MetricsSample[] = [];
+
   private streams: StreamConfig[] = [];
   private key: SessionKey | null = null;
   private ended: string | null = null;
@@ -101,6 +106,17 @@ class Core implements CoordinatorCore {
     if (stored.session) this.key = await this.importSession(stored.session).catch(() => null);
     await this.ready(fx, now);
     this.ended = stored.ended ?? null;
+    // What the source said the streams are, kept with the session: so that a viewer arriving
+    // before the source has resumed is welcomed with them, and can be placed as soon as the
+    // feeders have reported (found by the harness: joiners admitted just after a restart were
+    // welcomed with no streams, and topology's node takes its streams from `welcome`).
+    if (stored.streams && this.streams.length === 0) {
+      try {
+        this.streams = JSON.parse(stored.streams) as StreamConfig[];
+      } catch {
+        this.streams = [];
+      }
+    }
     for (const [key, value] of Object.entries(stored)) if (key.startsWith("nonce:")) this.nonces.set(key.slice(6), Number(value));
     for (const { conn: id, attachment } of conns) {
       let a: Attachment;
@@ -118,6 +134,7 @@ class Core implements CoordinatorCore {
         // Where it sits is not known until it says so: stale, so not offered, until its next `status`.
         node.lastStatusAt = 0;
         node.grantExp = a.x ?? 0;
+        node.provisional = node.role === "relay" && a.pv === true;
         conn.peer = node.peer;
         this.map.add(node, now);
         this.byIdentity.set(node.identity, node.peer);
@@ -187,7 +204,12 @@ class Core implements CoordinatorCore {
           await this.onNeed(fx, node, message, now);
           break;
         case "status":
-          if (this.map.applyStatus(node, message, now)) await this.serveWaiting(fx, now);
+          // Room may have opened, or (a probe's result in `caps`) someone may now be made a relay
+          // for those waiting (D38): look again at once.
+          {
+            const uplink = node.caps.uplinkKbps;
+            if (this.map.applyStatus(node, message, now) || (node.caps.uplinkKbps !== uplink && this.map.waiting().length > 0)) await this.serveWaiting(fx, now);
+          }
           break;
         case "report":
           await this.onReport(fx, node, message, now);
@@ -334,7 +356,7 @@ class Core implements CoordinatorCore {
 
   private attach(fx: Effect[], conn: Conn, node: TreeNode | null): void {
     const value: Attachment = { i: conn.identity, n: conn.name.slice(0, 64), r: conn.ticketRole, g: conn.region, o: conn.openedAt };
-    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp });
+    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp, ...(node.provisional ? { pv: true } : {}) });
     fx.push({ type: "attach", conn: conn.id, value: JSON.stringify(value) });
   }
 
@@ -450,6 +472,9 @@ class Core implements CoordinatorCore {
           // promoted to make room for a joiner for 20 s (found integrating: overlay.test.ts).
           node = newNode({ peer, identity: conn.identity, name: conn.name, ticketRole: conn.ticketRole, role: grant.role, caps: hello.caps, region: conn.region, conn: conn.id, joinedAt: Math.min(now, grant.iat * 1000) });
           node.lastStatusAt = 0;
+          // A relay here for less than probation can only have been a provisional one (D38): it is
+          // one still, and is confirmed with `role relay` when it passes in full.
+          node.provisional = grant.role === "relay" && now - node.joinedAt < (this.o.params.probationMs ?? 20_000);
         }
       }
     }
@@ -528,6 +553,7 @@ class Core implements CoordinatorCore {
     }
     let placement = this.map.place(node, { want: "parent", exclude: [], now, join: true });
     if (placement.parents.length === 0 && (await this.promoteFor(fx, node, [], now))) placement = this.map.place(node, { want: "parent", exclude: [], now, join: true });
+    if (placement.parents.length === 0) placement = this.overloadForJoiner(node, now);
     if (placement.parents.length === 0) {
       node.waitingSince ??= now;
       return [];
@@ -548,6 +574,29 @@ class Core implements CoordinatorCore {
   }
 
   /**
+   * A joiner that has waited `JOIN_OVER_FANOUT_AFTER_MS` with nowhere to go and nobody to promote
+   * is sent over a fan-out (up to twice it, D37): topology's node takes in a viewer with nothing
+   * to watch, and relief moves it when there is room. Not sooner, so that the slot over a fan-out
+   * does not go to it while the tree's next relay is a probe away. Until then it is offered
+   * nothing at all, not even backups: a node with no parent tries every peer it is offered.
+   */
+  private overloadForJoiner(node: TreeNode, now: number): Placement {
+    node.waitingSince ??= now;
+    if (now - node.waitingSince < JOIN_OVER_FANOUT_AFTER_MS) return { parents: [], backups: [] };
+    // A dead end waits while any leaf, placed or waiting, could still be made a relay: the slot
+    // over a fan-out would hold that relay's place (with a quarter able to relay, it makes the
+    // tree 8-15 deep, or, at the start, leaves nobody able to relay a place to stand).
+    // Nor while the source is the only feeder: its few slots, over its fan-out too, are where the
+    // first relay must stand.
+    if (!node.canRelay && (this.map.couldGrow() || this.map.relayCount() === 0)) return { parents: [], backups: [] };
+    const over = this.map.place(node, { want: "parent", exclude: [], now, join: true, overload: true });
+    if (over.parents.length === 0) return over;
+    // Backups clear of the parent it is sent to: one death must not take both (SPEC §6.6).
+    const backups = this.map.place(node, { want: "backup", exclude: [], now }).backups.filter((hint) => hint.peer !== over.parents[0].peer && !this.map.path(hint.peer).includes(over.parents[0].peer));
+    return { parents: over.parents, backups };
+  }
+
+  /**
    * Makes room for `node` by promoting one eligible leaf that it could hang from (SPEC §6.6,
    * §8.1): a peer outside its own subtree, connected to the source. The spec's rule (free slots
    * under a fifth of the audience) is met over the whole tree; this is the same rule applied to
@@ -555,8 +604,8 @@ class Core implements CoordinatorCore {
    * SPEC §7.5): the slots below the dead relay are cut off with it. True if anyone was promoted.
    */
   private async promoteFor(fx: Effect[], node: TreeNode, exclude: readonly PeerId[], now: number): Promise<boolean> {
-    for (const candidate of this.map.promotableFor(node, exclude, now)) {
-      await this.setRole(fx, candidate, "relay", now);
+    for (const candidate of this.map.promotableFor(node, exclude, now, this.o.provisionalRelays !== false)) {
+      await this.setRole(fx, candidate.node, "relay", now, candidate.provisional);
       return true;
     }
     return false;
@@ -573,7 +622,14 @@ class Core implements CoordinatorCore {
       // fan-out, which takes a `repair` all the same and sheds a layer (SPEC §7.5), and is
       // relieved by promotion and `move`s afterwards. Better than no parent at all.
       if (await this.promoteFor(fx, node, need.exclude, now)) placement = this.map.place(node, { want: "parent", exclude: need.exclude, excludeBelow: true, now });
-      if (placement.parents.length === 0) placement = this.map.place(node, { want: "parent", exclude: need.exclude, excludeBelow: true, now, overload: true });
+      // Over a fan-out only for a peer that had a parent (its `repair` is never refused, SPEC
+      // §7.5): a joiner waits for a slot, so that it does not take one over a fan-out that the
+      // tree's next relay would have hung from.
+      if (placement.parents.length === 0 && node.placedOnce) placement = this.map.place(node, { want: "parent", exclude: need.exclude, excludeBelow: true, now, overload: true });
+      // A joiner with nowhere to go is offered no backups either: the node tries every peer it is
+      // offered as a parent when it has none, and a full one takes in a viewer with nothing to
+      // watch over its fan-out, in the slot the tree's next relay would have hung from.
+      if (placement.parents.length === 0 && !node.placedOnce) placement = this.overloadForJoiner(node, now);
     }
     if (need.want === "parent") {
       if (placement.parents.length === 0) node.waitingSince ??= now;
@@ -649,6 +705,7 @@ class Core implements CoordinatorCore {
     if (sameJson(streams, this.streams)) return;
     const before = this.publishIds().join();
     this.streams = streams;
+    fx.push({ type: "persist", key: "streams", value: streams.length > 0 ? JSON.stringify(streams) : null });
     const idsChanged = this.publishIds().join() !== before;
     for (const other of this.map.nodes.values()) if (other !== node) this.send(fx, other.conn, { t: "streams", streams });
     // The source's grant names the streams it may publish.
@@ -702,13 +759,30 @@ class Core implements CoordinatorCore {
       this.reattach(fx, node);
     }
 
-    // SPEC §6.6, §8.1: who relays.
+    // SPEC §6.6, §8.1: who relays. A relay to be made a leaf is first offered to nobody, and its
+    // children are asked to move (make-before-break), then it is told: when they have gone, or
+    // after `DEMOTE_GRACE_MS`. Its `bye` to them (SPEC §6.6) then finds them elsewhere.
     for (const node of this.map.demotable(now)) {
       node.demotedAt = now;
       node.ineligibleSince = null;
-      await this.setRole(fx, node, "leaf", now);
+      node.demotingSince = now;
+      for (const child of this.map.childrenOf(node.peer)) {
+        const kid = this.map.nodes.get(child);
+        if (!kid || kid.conn === null) continue;
+        let placement = this.map.place(kid, { want: "parent", exclude: [node.peer], now, move: true });
+        if (placement.parents.length === 0 && (await this.promoteFor(fx, kid, [node.peer], now))) placement = this.map.place(kid, { want: "parent", exclude: [node.peer], now, move: true });
+        if (placement.parents.length === 0) continue;
+        kid.lastRebalanceAt = now;
+        this.map.hold(kid, placement, now);
+        this.introduce(kid, placement, now);
+        this.send(fx, kid.conn, { t: "assign", reason: "move", assign: this.assignments(placement) });
+      }
     }
-    for (const node of this.map.promotable(now)) await this.setRole(fx, node, "relay", now);
+    for (const node of this.map.demoted(now)) await this.setRole(fx, node, "leaf", now);
+    // D38: provisional relays at the end of probation become full ones, with a grant that says so.
+    for (const node of this.map.graduating(now)) await this.setRole(fx, node, "relay", now, false);
+    // The fifth-of-the-audience rule makes full relays only: a provisional one is made when someone has nowhere to go (`promoteFor`).
+    for (const entry of this.map.promotable(now, false)) await this.setRole(fx, entry.node, "relay", now, entry.provisional);
 
     if (this.o.moves !== false && this.streams.length > 0) {
       const budget = Math.max(1, Math.ceil(this.map.audience() * MOVE_SHARE));
@@ -719,13 +793,23 @@ class Core implements CoordinatorCore {
       }
     }
     // Relays over their fan-out after taking in repairs (SPEC §7.5): the coordinator "moves
-    // someone". Room is made by promotion if need be, then the excess children are moved.
+    // someone". Room is made by promotion if need be, then the excess children are moved, the
+    // smallest subtrees first, and only to a place no deeper than where they are: a parent over
+    // its fan-out sheds a layer (D37), which costs less than a subtree pushed down.
     if (this.streams.length > 0) {
       for (const relief of this.map.overloaded(now)) {
-        for (const child of relief.excess) {
-          let placement = this.map.place(child, { want: "parent", exclude: [relief.node.peer], now, move: true });
-          if (placement.parents.length === 0 && (await this.promoteFor(fx, child, [], now))) placement = this.map.place(child, { want: "parent", exclude: [relief.node.peer], now, move: true });
-          if (placement.parents.length === 0) break;
+        let moved = 0;
+        for (const child of relief.candidates) {
+          if (moved >= relief.excess) break;
+          // A subtree is never moved deeper than it is (the integrator: no deepening switches); a
+          // peer with nothing below it may be, within the depth the tree needs, to relieve.
+          const alone = this.map.childrenOf(child.peer).size === 0;
+          const fits = (candidate: Placement) => candidate.parents.length > 0 && (candidate.parents[0].depth + 1 <= child.depth || (alone && candidate.parents[0].depth + 1 <= this.map.neededDepth(now) + 1));
+          const options = { want: "parent" as const, exclude: [relief.node.peer], now, move: true };
+          let placement = this.map.place(child, options);
+          if (placement.parents.length === 0 && (await this.promoteFor(fx, child, [], now))) placement = this.map.place(child, options);
+          if (!fits(placement)) continue;
+          moved++;
           child.lastRebalanceAt = now;
           this.map.hold(child, placement, now);
           this.introduce(child, placement, now);
@@ -734,6 +818,18 @@ class Core implements CoordinatorCore {
       }
     }
     await this.serveWaiting(fx, now);
+
+    // Better backups for peers whose warm repair would push their subtree too deep (see
+    // `TreeMap.backupAdvice`). An `assign` "rebalance" with backups only: advice, as SPEC §6.6
+    // has it, which topology's node follows for its backup when the offer is nearer the source.
+    if (this.streams.length > 0) {
+      const budget = Math.max(1, Math.ceil(this.map.audience() * BACKUP_ADVICE_SHARE));
+      for (const advice of this.map.backupAdvice(now, budget)) {
+        advice.node.backupAdviceAt = now;
+        this.introduce(advice.node, advice.placement, now);
+        this.send(fx, advice.node.conn, { t: "assign", reason: "rebalance", assign: this.assignments(advice.placement) });
+      }
+    }
 
     // SPEC §6.6: advice to peers more than two levels deeper than the tree needs.
     if (this.streams.length > 0) {
@@ -762,9 +858,11 @@ class Core implements CoordinatorCore {
     if (conn) this.attach(fx, conn, node);
   }
 
-  private async setRole(fx: Effect[], node: TreeNode, role: OverlayRole, now: number): Promise<void> {
-    this.map.setRole(node, role, now);
-    this.send(fx, node.conn, { t: "role", role, grant: await this.grantFor(node, now) });
+  private async setRole(fx: Effect[], node: TreeNode, role: OverlayRole, now: number, provisional = false): Promise<void> {
+    this.map.setRole(node, role, now, provisional);
+    // SPEC §8.1 [D38]: a provisional relay is told its fan-out; a `role relay` without one confirms a full relay.
+    const grant = await this.grantFor(node, now);
+    this.send(fx, node.conn, { t: "role", role, grant, ...(node.provisional ? { fanout: this.map.fanout(node) } : {}) });
     this.reattach(fx, node);
   }
 

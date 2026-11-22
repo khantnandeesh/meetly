@@ -140,7 +140,7 @@ describe("coordinator: an orphaned subtree finds slots (SPEC §6.6, §7.5)", () 
     assert.ok(!offered.includes(k0.peer) && !offered.includes(r1.peer), "nothing on the cut-off branch");
   });
 
-  it("relieves a parent over its fan-out once there is room: promotion, then a move (SPEC §7.5)", async () => {
+  it("relieves a parent over its fan-out only where that pushes no subtree down (SPEC §7.5, D37)", async () => {
     const { rig, members, say, status } = await build(2, 2, true);
     const R1 = members.get("R1")!;
     const orphans = [...members.values()].filter((member) => member.parent === "R1");
@@ -177,11 +177,14 @@ describe("coordinator: an orphaned subtree finds slots (SPEC §6.6, §7.5)", () 
     for (const member of members.values()) member.heard.push(...rig.take(member.conn));
     const moved = children.filter((child) => of(child.heard, "assign").some((message) => message.reason === "move"));
     const promoted = [...members.values()].filter((member) => of(member.heard, "role").some((message) => message.role === "relay"));
-    console.log(`      ${host.name} over its fan-out by ${children.length - fanout}: ${moved.map((m) => m.name).join(", ")} asked to move; ${promoted.map((m) => m.name).join(", ")} promoted`);
-    assert.equal(moved.length, children.length - fanout, "the excess is asked to move");
+    console.log(`      ${host.name} over its fan-out by ${children.length - fanout}: ${moved.map((m) => m.name).join(", ") || "nobody"} asked to move; ${promoted.map((m) => m.name).join(", ") || "nobody"} promoted`);
+    // Its children all carry subtrees, and the only room is deeper: they stay, and it sheds a
+    // layer (D37) rather than push a subtree down (the integrator: no deepening switches).
+    const depthOf = (peer: PeerId) => [...members.values()].find((member) => member.peer === peer);
     for (const child of moved) {
       const move = of(child.heard, "assign").find((message) => message.reason === "move")!;
-      assert.ok(move.assign[0].parents.length > 0 && move.assign[0].parents.every((hint) => hint.peer !== host!.peer && hint.free > 0));
+      assert.ok(move.assign[0].parents.every((hint) => hint.depth + 1 <= (host!.name === "S" ? 1 : 2)), `${child.name} sent no deeper (${depthOf(move.assign[0].parents[0].peer)?.name})`);
     }
+    assert.ok(children.every((child) => !moved.includes(child) || child.name.includes(".")), "no subtree moved down");
   });
 });

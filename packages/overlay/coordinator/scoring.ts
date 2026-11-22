@@ -7,9 +7,10 @@
  *
  * Owner: E-coordinator.
  */
-import { judgeRelay, parentCost } from "../topology/index";
+import { judgeProvisional, judgeRelay, parentCost } from "../topology/index";
 import type { JudgeRelay, ParentCost } from "../topology/types";
 
-export type Scoring = { judgeRelay: JudgeRelay; parentCost: ParentCost };
+/** `judgeProvisional` (SPEC §8.1 [D38]) is optional so that a test's own scoring may leave it out: then nobody is provisional. */
+export type Scoring = { judgeRelay: JudgeRelay; parentCost: ParentCost; judgeProvisional?: JudgeRelay };
 
-export const scoring = (): Scoring => ({ judgeRelay, parentCost });
+export const scoring = (): Scoring => ({ judgeRelay, parentCost, judgeProvisional });
