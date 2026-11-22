@@ -1,6 +1,6 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation } from "lucide-react";
+import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation, Radio } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
@@ -119,6 +119,11 @@ export default function Home() {
                           </Dropdown.Item>
                         </>
                       )}
+                      <div className="menu-sep" />
+                      <Dropdown.Item className="menu-item" onSelect={() => router.push("/live")}>
+                        <Radio className="size-4 text-muted" aria-hidden="true" />
+                        Go live (beta)
+                      </Dropdown.Item>
                     </Dropdown.Content>
                   </Dropdown.Portal>
                 </Dropdown.Root>
