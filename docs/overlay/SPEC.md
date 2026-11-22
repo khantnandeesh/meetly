@@ -1118,8 +1118,12 @@ The gate of §1 is passed by one run of the harness that meets all of this:
 - **Measures:** repair time p95 over every `repair` event of kind warm, cold or wait; latency
   p95 over every rendered video frame of every viewer; join time p95 over every `join` event.
 - **Valid only if:** at least 100 repair events; no peer failed to start; no machine was starved
-  (event-loop lag under 50 ms at p99 on every shard); and the clocks agree to under 20 ms at
-  p95 (below). A run that is not valid is neither a pass nor a fail.
+  (below); and the clocks agree to under 20 ms at p95 (below). A run that is not valid is neither
+  a pass nor a fail.
+- **A starved machine** **[D42]** is one whose timers ran more than 20 ms late at p99: on every
+  runner, the driver's and each page's 20 ms timers are measured against the moment each was set
+  for. Load average is reported for every runner and judges nothing: it is a proxy, and timer lag
+  is what corrupts the timings.
 - **The clocks** **[D40]**. Each viewer's session clock and the source's are read against their
   machines' wall clocks, synchronised by chrony. A viewer's disagreement is the largest gap
   between the two at any moment of the run, plus both machines' chrony error bounds (|offset| +
@@ -1326,6 +1330,7 @@ Rotating speakers on the overlay. Out of scope.
 | D28 | What the gate's "loss and churn" are | 12.3 |
 | D29 | Light viewers in the harness, with decoding viewers as a check | 13.2 |
 | D40 | The gate's clocks are judged as measured against chrony-synced wall clocks, the §4.1 bound only where a shard has no chrony (decided by integrator 2026-11-21) | 12.3 |
+| D42 | A runner is starved when its timers run over 20 ms late at p99; its load is reported, not judged (decided by integrator 2026-11-22) | 12.3 |
 
 Also decided here, with their numbers, because the report gave only the idea: the layer-drop
 rules (§11.3), the jitter buffer's contract (§10), the standby reservation that makes a repair
