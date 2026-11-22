@@ -811,7 +811,7 @@ fan-out would cost (§11.6) and reads the result from feedback (§11.6). **[D19]
 **[D38] Provisional relays** (decided by integrator 2026-11-21). Probation makes a session's
 first viewers wait: until someone has been in for 20 s nobody may relay, and only the source's
 few slots exist. So a viewer that passes every check of the table but probation and uplink, and
-whose short probe (about 2 s, sized for two children: 2 × 1.15 × *B* / 0.7, the larger of that
+whose short probe (1 s, [D41]; sized for two children: 2 × 1.15 × *B* / 0.7, the larger of that
 and the uplink rule's 2 × 1.15 × *B*) shows the room, may be made a **provisional relay**, with a
 fan-out of 2 whatever its uplink. The `role` message carries `fanout: 2`, and the relay takes no
 more active children than that (a repair or a viewer with nothing to watch over it as §7.5 and
@@ -820,6 +820,14 @@ free slot. One that misbehaves in its first 20 s (its children's loss or STARVED
 demotion below) is demoted, and its children are moved first, make-before-break (`move`). Past
 probation, and with the full probe's result, it is judged as any relay and its fan-out is the
 table's.
+
+**[D41] The provisional probe lasts 1 s** (decided by integrator 2026-11-21), at the same
+fan-out-2 target: the floor E-coordinator found for session-start joins under 3 s. Measured in
+the simulator through the node, with congestion's estimator and probe, on uplinks capped at 2,000,
+4,500 and 8,000 kbps (fan-out 2 needs 3,943 at *B* = 1,200): on the gate mix's "home" profile a
+1 s probe decided eligibility right in every run, within 1% of the target (0.5 s was 3–5% short,
+still right, with less margin). On "bad" no probe of any length shows spare uplink, because the
+link is never *ok*; such a peer is not eligible in any case (loss under 2%, the table above).
 
 **Fan-out** is how many active children a relay takes:
 `min(maxFanout, floor(0.7 × spareUplinkKbps / (1.15 × sessionKbps)))`. The 0.7 leaves room for
@@ -1465,6 +1473,7 @@ Rotating speakers on the overlay. Out of scope.
 | D38 | Provisional relays: fan-out 2 on a short probe, before probation ends, used only when no full relay has a slot (integrator, 2026-11-21) | 8.1 |
 | D39 | The reordering window is max(10 ms, p95 inter-arrival jitter), at most 60 ms (integrator, 2026-11-21) | 4.6 |
 | D40 | The gate's clocks are judged as measured against chrony-synced wall clocks, the §4.1 bound only where a shard has no chrony (decided by integrator 2026-11-21) | 12.3 |
+| D41 | The provisional probe lasts 1 s, at the fan-out-2 target (integrator, 2026-11-21) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
 whether its stream is audio (§11.3 rule 1); a replay's own backlog is not congestion for 500 ms
