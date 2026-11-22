@@ -311,10 +311,15 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
+      # D52: the report is built by the engine the shards ran (its report.ts), not this branch's copy.
+      - name: Merge what the shards merged
+        if: needs.plan.outputs.merge == 'true'
+        run: bash packages/overlay/harness/ci/merge.sh "$RUNNER_TEMP/report-merged.json" "${{ needs.plan.outputs.merge_mode }}" "${{ needs.plan.outputs.integration_sha }}"
       - run: npm ci
       - uses: actions/download-artifact@v6
         with:
