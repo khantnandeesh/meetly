@@ -5,6 +5,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { PacketType, decodeMediaHeader } from "@meetly/overlay";
 import { createLayerGate, createLinkEstimator } from "@meetly/overlay/congestion/index";
 import { createJitterBuffer } from "@meetly/overlay/media/jitterBuffer";
 import { SimNet, VIDEO, type SimPeer } from "@meetly/overlay/topology/sim";
@@ -37,6 +38,38 @@ function watch(net: SimNet, peer: SimPeer) {
 }
 
 describe("node: replays before live, and a joiner's replay thinned", () => {
+  it("a warm repair asks from the newest frame it holds whole, and its audio comes ahead of the video", async () => {
+    const net = new SimNet({ seed: 1, latencyMs: 20, backups: false, keepFrames: true, params: { sourceFanout: 3 }, createLinkEstimator, createLayerGate: createLayerGate as never });
+    const source = net.join("0", "source", []);
+    net.publish(source, { frameBytes: stageBytes });
+    await net.runAsync(300);
+    net.join("1", "relay", ["0"]);
+    await net.runAsync(300);
+    const two = net.join("2", "relay", ["1"], ["0"]);
+    await net.runAsync(300);
+    for (const [a, b] of [["0", "2"], ["1", "2"]]) net.setWire(a, b, { kbps: 2500, queueMs: 1000 }, false);
+    await net.runAsync(3170);
+    const at = net.clock.now();
+    const held = new Set(two.frames.filter((f) => f.header.streamId === 0).map((f) => f.header.frameId));
+    // What the backup replays, in the order it goes.
+    const replayed: { stream: number; frameId: number }[] = [];
+    const link = source.links.get("2")!;
+    const send = link.sendPacket.bind(link);
+    link.sendPacket = (packet, sendClass) => {
+      if (sendClass === "replay" && (packet[0] & 0x0f) === PacketType.Media) replayed.push({ stream: packet[2], frameId: decodeMediaHeader(packet)!.frameId });
+      return send(packet, sendClass);
+    };
+    net.kill("1");
+    await net.runAsync(1500);
+    const video = replayed.filter((r) => r.stream === 0);
+    assert.ok(video.length > 0);
+    assert.ok(!held.has(video[0].frameId), `the replay starts at frame ${video[0].frameId}, which the peer already held whole`);
+    // The audio the peer missed goes before the video it missed.
+    assert.equal(replayed[0].stream, 1, "audio waited behind the video replay");
+    const firstRecovered = (stream: number) => two.frames.find((f) => f.recovered && f.completeAt > at && f.header.streamId === stream)!.completeAt;
+    assert.ok(firstRecovered(1) < firstRecovered(0));
+  });
+
   for (const offset of [30, 50]) {
     it(`a joiner 3 Mbps down, ${offset} frames into the GOP, shows its first frame within 700 ms, keeping the GOP`, async () => {
       const net = new SimNet({ seed: 4, latencyMs: 15, createLinkEstimator, createLayerGate: createLayerGate as never });

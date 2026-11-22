@@ -338,6 +338,7 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
       const played = out[i] as PlayoutFrame;
       if (!played.decodeOnly || (played.frame.header.flags & MediaFlag.Discardable) !== 0) continue;
       played.decodeOnly = false;
+      played.catchUp = true;
       this.lastShownUs = nowUs;
       return;
     }

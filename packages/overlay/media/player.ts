@@ -76,7 +76,7 @@ const LAYER_UP_MAX_MS = 60_000;
 /** A raise that is undone within this long failed. */
 const LAYER_UP_FAILED_MS = 5000;
 
-type PendingDecode = { frameId: number; decodeOnly: boolean; discardable: boolean; at: number };
+type PendingDecode = { frameId: number; decodeOnly: boolean; discardable: boolean; at: number; catchUp: boolean };
 
 /** The least time frames of one stream have taken to get here, over a sliding window: a monotonic deque of (arrival, transit). */
 class PathFloor {
@@ -527,7 +527,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     const { frame, decodeOnly } = playout;
     const { header } = frame;
     if (!this.decoding) {
-      if (!decodeOnly) this.rendered(video, header.frameId, header.captureUs, nowUs);
+      if (!decodeOnly) this.rendered(video, header.frameId, header.captureUs, nowUs, playout.catchUp === true);
       return;
     }
     const backend = video.backend;
@@ -550,7 +550,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       return;
     }
     video.needKey = false;
-    video.pending.set(header.captureUs, { frameId: header.frameId, decodeOnly, discardable, at: this.options.clock.now() });
+    video.pending.set(header.captureUs, { frameId: header.frameId, decodeOnly, discardable, at: this.options.clock.now(), catchUp: playout.catchUp === true });
     try {
       backend.decode({ key, captureUs: header.captureUs, data: frame.data });
     } catch (error) {
@@ -629,7 +629,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
       this.fail("video track", error);
       return;
     }
-    this.rendered(video, pending.frameId, decoded.captureUs, nowUs);
+    this.rendered(video, pending.frameId, decoded.captureUs, nowUs, pending.catchUp);
   }
 
   private dropReady(video: VideoState): void {
@@ -651,7 +651,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     }
   }
 
-  private rendered(video: VideoState, frameId: number, captureUs: number, renderedUs: number): void {
+  private rendered(video: VideoState, frameId: number, captureUs: number, renderedUs: number, catchUp = false): void {
     video.rendered++;
     const previous = video.lastRenderedUs;
     video.lastRenderedUs = renderedUs;
@@ -661,7 +661,7 @@ export class PlayerImpl extends Emitter<PlayerEvents> implements Player {
     } else if (previous !== null && renderedUs - previous > FREEZE_US) {
       this.emit("freeze", video.config.id, (renderedUs - previous) / 1000);
     }
-    this.emit("rendered", video.config.id, frameId, captureUs, renderedUs);
+    this.emit("rendered", video.config.id, frameId, captureUs, renderedUs, catchUp);
   }
 
   /**
