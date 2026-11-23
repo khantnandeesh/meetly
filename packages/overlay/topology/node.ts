@@ -1993,7 +1993,21 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         const key = stream.tracker.keyNear(frameId);
         return key !== null && temporalOfKeyDelta(layers, frameId - key) > record.minCap;
       };
-      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId) || aboveCap(frameId)) : { freezeMs: 0, lost: 0 };
+      // [D55] And a frame of a layer the new parent was not sending at all: the next frame of the
+      // same layer was never sent either (its own feed lacked the layer, so its replay did too).
+      // Only the frame at the switch is in doubt; the link's sequence settles the ones after it.
+      const layerNotSent = (frameId: number) => {
+        if (!stream || layers <= 1) return false;
+        const key = stream.tracker.keyNear(frameId);
+        if (key === null) return false;
+        const layer = temporalOfKeyDelta(layers, frameId - key);
+        if (layer === 0) return false;
+        for (let next = frameId + 1; next <= frameId + (1 << (layers - 1)); next++) {
+          if (temporalOfKeyDelta(layers, next - key) === layer) return stream.tracker.shed.has(next);
+        }
+        return false;
+      };
+      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId) || aboveCap(frameId) || layerNotSent(frameId)) : { freezeMs: 0, lost: 0 };
       metric({
         t: "repair",
         stream: stream?.config.id ?? 0,
