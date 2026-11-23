@@ -33,8 +33,8 @@ export const FORGET_MS = 30_000;
 /** SPEC §8.1: a relay must have been failing for this long before it is demoted. */
 export const DEMOTE_AFTER_MS = 10_000;
 export { PROVISIONAL_FANOUT };
-/** [D49] The most children the source takes while it is the only relay. */
-export const SOURCE_ALONE_FANOUT = 6;
+/** [D49] The most children the source takes (D57: whether or not it is the only relay), if its probe shows the uplink. [D77] 8, was 6. */
+export const SOURCE_ALONE_FANOUT = 8;
 /** D38: a provisional relay that misbehaves this long is made a leaf again, sooner than a full one. */
 export const PROVISIONAL_DEMOTE_AFTER_MS = 3_000;
 /** A relay being made a leaf gives its children this long to move away first (make-before-break). */

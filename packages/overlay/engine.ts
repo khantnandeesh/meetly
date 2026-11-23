@@ -76,8 +76,8 @@ const SHORT_PROBE = { fanout: 2, durationMs: 1000 };
  * for the provisional relays, and each one opened a second sooner is a layer of the tree sooner.
  */
 const PROBE_AFTER_PARENT_MS = 200;
-/** [D49] While it is the only relay the source may take up to six: its probe, toward its first child, is sized for them. */
-const SOURCE_ALONE_FANOUT = 6;
+/** [D49] The source may take up to this many (D57: whether or not it is the only relay): its probe is sized for them. [D77] 8, was 6. */
+const SOURCE_ALONE_FANOUT = 8;
 /** [D75] The source probes toward up to this many of its children, one after another, and keeps the best. */
 const SOURCE_PROBES = 3;
 /** [D75] ... this long apart. */
