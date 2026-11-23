@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { decodeClientMessage, decodeServerMessage, encodeServerMessage } from "@meetly/overlay/protocol";
 import type { ClientMessage, IceServer, PeerId, ServerMessage, ServerMessageOf } from "@meetly/overlay/protocol";
-import { behindTurn } from "../engine";
+import { behindTurn, takeIce } from "../engine";
 import { mintTurn, turnFrom } from "./turn";
 import { Rig, STREAMS, Swarm, leafCaps, relayCaps, seeded } from "./testkit";
 
@@ -355,6 +355,18 @@ describe("coordinator: TURN credentials over a long session (SPEC §6.7 [D82])",
       const grants = of(s.rig.take(who.conn), "grant").filter((message) => message.ice);
       assert.equal(grants.length, 1, "given TURN once it works, not before");
     }
+  });
+
+  it("the engine: a STUN-only answer never strips TURN; a reconnection's servers restart nothing; a refresh restarts", () => {
+    const calls: string[] = [];
+    const links = { setIce: (ice: IceServer[], options?: { restart?: boolean }) => calls.push(`${ice.length}:${options?.restart === true ? "restart" : "keep"}`) };
+    const stun = [{ urls: ["stun:stun.example.org:3478"] }];
+    const withTurn = [...stun, { urls: ["turns:turn.example.org:443?transport=tcp"], username: "u", credential: "c" }];
+    assert.equal(takeIce(links, stun, false), false, "a reconnection's welcome whose mint failed");
+    assert.equal(takeIce(links, stun, true), false);
+    assert.equal(takeIce(links, withTurn, false), true);
+    assert.equal(takeIce(links, withTurn, true), true);
+    assert.deepEqual(calls, ["2:keep", "2:restart"]);
   });
 
   it("does not send ICE servers with no TURN in them: they would take the relay away from links that need it", async () => {

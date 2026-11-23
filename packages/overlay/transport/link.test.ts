@@ -6,7 +6,7 @@ import { CHANNELS, createLinkManager } from "@meetly/overlay/transport/index";
 import { FakeClock } from "@meetly/overlay/transport/fakes";
 import { FakeNet, type FakeDataChannel, type FakePeerConnection } from "@meetly/overlay/transport/fakeRtc";
 import { CONNECT_TIMEOUT_MS, HELLO_TIMEOUT_MS } from "@meetly/overlay/transport/link";
-import { classifyNat } from "@meetly/overlay/transport/nat";
+import { classifyNat, probeNat } from "@meetly/overlay/transport/nat";
 import type { Link, LinkCloseReason, PacketChannel, TransportOptions } from "@meetly/overlay/transport/types";
 
 /** Signalling between managers in one process, as the coordinator would relay it. */
@@ -545,6 +545,30 @@ describe("links: the send queue", () => {
 });
 
 describe("NAT type from gathered candidates (SPEC §8.1)", () => {
+  it("[D82] probes with the STUN servers only: no TURN allocation is paid for it", async () => {
+    const configs: RTCConfiguration[] = [];
+    class Probe {
+      onicecandidate: ((event: { candidate: null }) => void) | null = null;
+      constructor(config: RTCConfiguration) {
+        configs.push(config);
+      }
+      createDataChannel() {}
+      async setLocalDescription() {
+        setTimeout(() => this.onicecandidate?.({ candidate: null }), 0);
+      }
+      close() {}
+    }
+    const global = globalThis as { RTCPeerConnection?: unknown };
+    const before = global.RTCPeerConnection;
+    global.RTCPeerConnection = Probe;
+    try {
+      await probeNat([{ urls: ["stun:a.example.org:3478", "stun:b.example.org:3478"] }, { urls: ["turn:t.example.org:3478", "turns:t.example.org:443"], username: "u", credential: "c" }]);
+    } finally {
+      global.RTCPeerConnection = before;
+    }
+    assert.deepEqual(configs[0].iceServers, [{ urls: "stun:a.example.org:3478" }, { urls: "stun:b.example.org:3478" }]);
+  });
+
   const host = { type: "host", address: "192.168.1.5", port: 5000 };
   const srflx = (port: number, base = 5000) => ({ type: "srflx", address: "203.0.113.9", port, relatedAddress: "192.168.1.5", relatedPort: base });
 

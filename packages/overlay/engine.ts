@@ -35,6 +35,7 @@ import {
   latencyBucket,
   verifyGrant,
   type Capabilities,
+  type IceServer,
   type MetricsEvent,
   type MetricsSample,
   type OverlayParams,
@@ -87,6 +88,18 @@ const GRANT_LEEWAY_S = 60;
 /* ------------------------------ small pieces ------------------------------ */
 
 const hasTurn = (ice: readonly { urls: readonly string[] }[]) => ice.some((server) => server.urls.some((url) => /^turns?:/i.test(url)));
+
+/**
+ * SPEC §5.1 [D82]: ICE servers that arrive after `welcome`, given to the links. Servers with no
+ * TURN (a mint that failed) are not taken: they would take the relay from a peer that needs it.
+ * `refresh` (a `grant`'s, new credentials before the old expire) restarts ICE on links relayed at
+ * this end; a reconnection's `welcome` does not. True when the links took them.
+ */
+export function takeIce(links: { setIce?(ice: IceServer[], options?: { restart?: boolean }): void }, ice: IceServer[], refresh: boolean): boolean {
+  if (!hasTurn(ice)) return false;
+  links.setIce?.(ice, refresh ? { restart: true } : undefined);
+  return true;
+}
 
 /**
  * SPEC §8.1 [D82]: whether this peer is behind TURN: its own candidate on the link to a parent is
@@ -258,12 +271,12 @@ abstract class PeerEngine {
       this.client.on("message", (message) => {
         if (message.t === "streams" && welcome.role !== "source") node.setStreams(message.streams);
         // A refresh before the credentials expire: a relayed link restarts ICE with them.
-        else if (message.t === "grant" && message.ice) links.setIce?.(message.ice, { restart: true });
+        else if (message.t === "grant" && message.ice) takeIce(links, message.ice, true);
       });
       // A reconnection's servers are for links made from now on: no ICE restart. Nor are servers
       // with no TURN taken (a mint that failed): they would take the relay from a peer that needs it.
       this.client.on("welcome", (again) => {
-        if (again !== welcome && hasTurn(again.ice)) links.setIce?.(again.ice);
+        if (again !== welcome) takeIce(links, again.ice, false);
       });
       node.on("probe", (spare) => this.onProbe(spare));
       await this.beforeStart(welcome);
