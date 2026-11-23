@@ -525,12 +525,7 @@ export class TreeMap {
       return { parents: parents.map((candidate) => ({ ...candidate.hint, free: 0 })), backups: [] };
     }
     // D38: a provisional relay only when no full relay (or the source) has a free slot.
-    // D60 as amended: the last slot is kept only while another place exists. A join that would
-    // otherwise wait for a promotion takes it (gate run 45161787212: with the reserve absolute,
-    // every churn joiner waited 4-8 s for its welcome).
-    const reserves = (candidate: Ranked) => (options.join === true && !candidate.node.provisional && candidate.node.role === "relay" && this.fanout(candidate.node) >= 4 ? 1 : 0);
-    const elsewhere = pool.some((candidate) => candidate.free > reserves(candidate) && over(candidate) === 0);
-    const reserved = (candidate: Ranked) => (elsewhere ? reserves(candidate) : 0);
+    const reserved = (candidate: Ranked) => (options.join === true && !candidate.node.provisional && candidate.node.role === "relay" && this.fanout(candidate.node) >= 4 ? 1 : 0);
     const fullRoom = pool.some((candidate) => !candidate.node.provisional && candidate.free > reserved(candidate) && over(candidate) === 0);
     const parents = forParent
       ? pool
