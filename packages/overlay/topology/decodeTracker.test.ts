@@ -27,7 +27,8 @@ describe("DecodeTracker.gap", () => {
   it("nothing lost when every frame came", () => {
     const tracker = new DecodeTracker(false);
     for (let id = 0; id < 40; id++) tracker.push(header(id), at(id));
-    assert.deepEqual(tracker.gap(at(10), at(40)), { freezeMs: 33, lost: 0 });
+    // [D61] and where the gap was: the last frame before the window, the first in it, no keyframe, 33 ms between the rest.
+    assert.deepEqual(tracker.gap(at(10), at(40)), { freezeMs: 33, lost: 0, edgeAt: at(9), firstAt: at(10), firstKey: false, laterGapMs: 33 });
   });
 
   it("a frame that was never sent (a shed layer) is not lost", () => {

@@ -509,7 +509,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       viewersVsWallRangeMs: viewers.filter((p) => p.vsWallRange !== null).map((p) => p.vsWallRange as [number, number]),
     },
     links,
-    tree: [...peers.values()].filter((p) => p.state?.peer).map((p) => ({ peer: p.state!.peer as PeerId, parent: p.state!.parent, index: p.index })),
+    tree: [...peers.values()].filter((p) => p.state?.peer).map((p) => ({ peer: p.state!.peer as PeerId, parent: p.state!.parent, index: p.index, profile: p.profile?.name ?? "clean" })),
     unfinishedJoins,
     decoders: [...peers.values()].filter((p) => p.decode && p.state?.peer).map((p) => p.state!.peer as PeerId),
     impairment,

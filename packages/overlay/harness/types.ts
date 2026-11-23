@@ -232,7 +232,7 @@ export type ShardResult = {
   /** What the churn script did, and to whom. */
   churnLog?: { atS: number; action: string; targets: string[]; peer?: PeerId; sessionMs?: number }[];
   /** Each peer's parent when the run ended, as its page said: who was under whom. */
-  tree?: { peer: PeerId; parent: PeerId | null; index: number }[];
+  tree?: { peer: PeerId; parent: PeerId | null; index: number; profile?: string }[];
   notes?: string[];
 };
 

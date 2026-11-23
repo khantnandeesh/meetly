@@ -278,11 +278,19 @@ export class DecodeTracker {
    * (the last one before `from` is the left edge; with nothing at all after it, the gap runs to
    * `to`), and how many frame ids after that edge, up to the newest seen, never became decodable.
    */
-  gap(from: number, to: number, neverSent: (frameId: number) => boolean = () => false): { freezeMs: number; lost: number } {
+  gap(
+    from: number,
+    to: number,
+    neverSent: (frameId: number) => boolean = () => false,
+  ): { freezeMs: number; lost: number; edgeAt: number | null; firstAt: number | null; firstKey: boolean; laterGapMs: number } {
     let edge: { at: number; id: number } | null = null;
     let previous: number | null = null;
     let longest = 0;
     let inWindow = 0;
+    // [D61] The first frame to become decodable in the window, and the longest gap after it.
+    let firstAt: number | null = null;
+    let firstKey = false;
+    let laterGapMs = 0;
     const decodedBy = new Set<number>();
     for (const entry of this.shown) {
       if (entry.at > to) break;
@@ -292,6 +300,10 @@ export class DecodeTracker {
         continue;
       }
       if (previous !== null) longest = Math.max(longest, entry.at - previous);
+      if (firstAt === null) {
+        firstAt = entry.at;
+        firstKey = this.decodable.get(entry.id) === entry.id;
+      } else if (previous !== null) laterGapMs = Math.max(laterGapMs, entry.at - previous);
       previous = entry.at;
       if (edge === null || entry.id > edge.id) {
         inWindow++;
@@ -313,11 +325,12 @@ export class DecodeTracker {
       if (entry.id > last) last = entry.id;
     }
     const freezeMs = inWindow === 0 ? (edge ? to - edge.at : 0) : longest;
-    if (last < 0 || !Number.isFinite(first)) return { freezeMs, lost: 0 };
+    const detail = { edgeAt: edge ? edge.at : null, firstAt, firstKey, laterGapMs };
+    if (last < 0 || !Number.isFinite(first)) return { freezeMs, lost: 0, ...detail };
     let lost = 0;
     // A frame the parent never sent (a layer it was shedding, SPEC §7.5 step 2, §11.3) is not lost.
     for (let id = first; id <= last; id++) if (!decodedBy.has(id) && !neverSent(id)) lost++;
-    return { freezeMs, lost };
+    return { freezeMs, lost, ...detail };
   }
 }
 
@@ -439,6 +452,10 @@ type RepairRecord = {
   usedCoordinator: boolean;
   /** [D55] The lowest layer cap the parent announced (sub-ack, `layers`) from the repair to its report. */
   minCap: number;
+  /** [D61] Packets marked Replay from the new parent, their bytes, and when the last came (local clock). */
+  replayPackets: number;
+  replayBytes: number;
+  lastReplayAt: number | null;
 };
 
 export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
@@ -882,6 +899,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     }
     if (joinTimes && joinTimes.firstPacket === null) joinTimes.firstPacket = session(receivedAt);
     if (switching?.to === peer) completeSwitch(receivedAt);
+    if (header.hopFlags & HopFlag.Replay) {
+      // [D61] What of a repair was replay, as its child saw it.
+      if (repair && repair.next === peer.id) noteReplay(repair, packet.byteLength, receivedAt);
+      for (const { record } of finishing) if (record.next === peer.id) noteReplay(record, packet.byteLength, receivedAt);
+    }
 
     if (!stream.seen.add(header.frameId, header.fragIndex, header.fragCount)) {
       duplicates++;
@@ -998,7 +1020,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       // The parent is alive but cut off, and is repairing: wait for it (SPEC D17).
       setState("waiting");
       waitingSince = now;
-      repair = { dead: peer.id, next: peer.id, kind: "wait", lastHeard: Number.isFinite(peer.lastMediaAt) ? peer.lastMediaAt : now, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15 };
+      repair = { dead: peer.id, next: peer.id, kind: "wait", lastHeard: Number.isFinite(peer.lastMediaAt) ? peer.lastMediaAt : now, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15, replayPackets: 0, replayBytes: 0, lastReplayAt: null };
       changed();
     } else if (!peer.stalled && wasStalled && state === "waiting") {
       resumeFromWaiting(now);
@@ -1692,7 +1714,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       forgetPending(to, "switch");
     }
     const lastHeard = why === "grace" && repair ? repair.lastHeard : dead.lastHeardAt;
-    repair = { dead: dead.id, next: null, kind: "warm", lastHeard, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15 };
+    repair = { dead: dead.id, next: null, kind: "warm", lastHeard, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15, replayPackets: 0, replayBytes: 0, lastReplayAt: null };
     forgetPending(dead);
     if (why !== "loop") markUnreachable(dead.id, now);
     if (previous && previous !== dead) {
@@ -1970,6 +1992,12 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   /* ------------------------------ metrics ------------------------------ */
 
   /** [D55] A cap the parent announced: kept, at its lowest, by the repair in progress and those not yet reported. */
+  function noteReplay(record: RepairRecord, bytes: number, at: number): void {
+    record.replayPackets++;
+    record.replayBytes += bytes;
+    record.lastReplayAt = at;
+  }
+
   function noteCap(maxTemporal: number): void {
     if (repair) repair.minCap = Math.min(repair.minCap, maxTemporal);
     for (const { record } of finishing) record.minCap = Math.min(record.minCap, maxTemporal);
@@ -2007,7 +2035,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         }
         return false;
       };
-      const measured = stream ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId) || aboveCap(frameId) || layerNotSent(frameId)) : { freezeMs: 0, lost: 0 };
+      const measured = stream
+        ? stream.tracker.gap(record.lastHeard, record.firstPacket! + REPAIR_WINDOW_MS, (frameId) => stream.tracker.shed.has(frameId) || aboveCap(frameId) || layerNotSent(frameId))
+        : { freezeMs: 0, lost: 0, edgeAt: null, firstAt: null, firstKey: false, laterGapMs: 0 };
       metric({
         t: "repair",
         stream: stream?.config.id ?? 0,
@@ -2022,6 +2052,14 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         freezeMs: Math.min(3_600_000, measured.freezeMs),
         framesLost: measured.lost,
         usedCoordinator: record.usedCoordinator,
+        // [D61] Where the freeze went.
+        staleMs: measured.edgeAt === null ? 0 : Math.min(3_600_000, Math.max(0, record.lastHeard - measured.edgeAt)),
+        firstDecodable: measured.firstAt === null ? null : session(measured.firstAt),
+        firstKey: measured.firstKey,
+        laterGapMs: Math.min(3_600_000, measured.laterGapMs),
+        replayPackets: record.replayPackets,
+        replayBytes: record.replayBytes,
+        replayMs: record.lastReplayAt === null || record.firstPacket === null ? 0 : Math.min(3_600_000, Math.max(0, record.lastReplayAt - record.firstPacket)),
       });
     }
     while (switchesFinishing.length > 0 && switchesFinishing[0].until <= now) {
