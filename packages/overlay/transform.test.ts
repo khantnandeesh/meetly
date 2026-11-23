@@ -52,6 +52,30 @@ test("nothing is delivered once the engine has closed, and a step that throws at
   assert.deepEqual(out, [0, 2]);
 });
 
+test("after(): runs once the items before it are delivered, and before the items after it", async () => {
+  const out: string[] = [];
+  const push = inOrder(
+    (n: number) => tick(n === 0 ? 15 : 1).then(() => n),
+    (value) => out.push(`frame ${value}`),
+  );
+  push(0);
+  push(1);
+  push.after(() => out.push("config"));
+  push(2);
+  // The slow first frame holds the configuration back, not the other way round.
+  assert.deepEqual(out, []);
+  await tick(40);
+  assert.deepEqual(out, ["frame 0", "frame 1", "config", "frame 2"]);
+  // Once closed, a later configuration is not announced.
+  let alive = true;
+  const closing = inOrder((n: number) => Promise.resolve(n), () => undefined, { alive: () => alive });
+  let ran = false;
+  alive = false;
+  closing.after(() => (ran = true));
+  await tick(5);
+  assert.equal(ran, false);
+});
+
 test("a stream is announced as SFrame only when the transform encrypts", () => {
   const config = { id: 0, kind: "video", sframe: false } as unknown as StreamConfig;
   assert.equal(markStreamConfig(config, undefined), config);

@@ -647,17 +647,21 @@ class SourceEngine extends PeerEngine {
     // Each frame goes through the application's `frameTransform` when it has one (its
     // encryption: ./transform.ts), in order; one that fails is not sent at all.
     const send = this.options.frameTransform?.send;
-    source.on(
-      "frame",
-      send
-        ? inOrder(send, (frame) => node.publish(frame), { alive: () => this.state !== "closed", onError: (error) => this.options.logger?.warn("overlay", "a frame transform failed; the frame is not sent", error) })
-        : (frame) => node.publish(frame),
-    );
+    const ordered = send
+      ? inOrder(send, (frame) => node.publish(frame), { alive: () => this.state !== "closed", onError: (error) => this.options.logger?.warn("overlay", "a frame transform failed; the frame is not sent", error) })
+      : null;
+    source.on("frame", ordered ?? ((frame) => node.publish(frame)));
+    // A new configuration goes out after the frames encoded before it, as it does without a
+    // transform: frames still being transformed must not reach viewers after it.
     source.on("config", (raw) => {
-      const config = this.mark(raw);
-      node.publishConfig(config);
-      this.streams.set(config.id, config);
-      this.client.sendStreams(source.streams().map(this.mark));
+      const announce = () => {
+        const config = this.mark(raw);
+        node.publishConfig(config);
+        this.streams.set(config.id, config);
+        this.client.sendStreams(source.streams().map(this.mark));
+      };
+      if (ordered) ordered.after(announce);
+      else announce();
     });
     source.on("error", (error) => this.events.emit("error", error));
     // SPEC §11.4: the encoder's target from the source's own uplink and the audience's hint.

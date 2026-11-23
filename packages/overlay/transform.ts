@@ -37,8 +37,14 @@ export function markStreamConfig(config: StreamConfig, transform: FrameTransform
  * in the order the items came. A null result, a rejection, or a step that throws is skipped
  * (`onError` hears of the last two). `alive` is asked before each delivery: false once the engine
  * has closed, so nothing is delivered after.
+ *
+ * `after(run)` runs `run` once every item given so far has been delivered (or skipped), still in
+ * order with what follows: the source's stream configuration goes out this way, so it never
+ * overtakes frames of the configuration before it that are still being transformed.
  */
-export function inOrder<T, U>(step: (item: T) => Promise<U | null>, deliver: (result: U) => void, options: { onError?: (error: unknown) => void; alive?: () => boolean } = {}): (item: T) => void {
+export type Ordered<T> = ((item: T) => void) & { after: (run: () => void) => void };
+
+export function inOrder<T, U>(step: (item: T) => Promise<U | null>, deliver: (result: U) => void, options: { onError?: (error: unknown) => void; alive?: () => boolean } = {}): Ordered<T> {
   let tail: Promise<void> = Promise.resolve();
   const settle = (item: T): Promise<U | null> => {
     try {
@@ -51,7 +57,7 @@ export function inOrder<T, U>(step: (item: T) => Promise<U | null>, deliver: (re
       return Promise.resolve(null);
     }
   };
-  return (item) => {
+  const push = (item: T) => {
     const result = settle(item);
     tail = tail
       .then(() => result)
@@ -60,4 +66,13 @@ export function inOrder<T, U>(step: (item: T) => Promise<U | null>, deliver: (re
       })
       .catch((error: unknown) => options.onError?.(error));
   };
+  return Object.assign(push, {
+    after(run: () => void) {
+      tail = tail
+        .then(() => {
+          if (options.alive?.() ?? true) run();
+        })
+        .catch((error: unknown) => options.onError?.(error));
+    },
+  });
 }
