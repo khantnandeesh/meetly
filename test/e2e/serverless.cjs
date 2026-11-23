@@ -7,7 +7,8 @@
 //
 // with OVERLAY_ADMISSION_SECRET and OVERLAY_SERVER_SECRET (16+ characters each, any value) in a
 // local .dev.vars, and OVERLAY_LOCAL_ONE_NETWORK=1 on a machine with no route out for STUN.
-// Sections: happy scale viewer host home a11y (all by default), and strict-nat (only when named).
+// Sections: happy scale viewer host home a11y (all by default), and strict-nat and strict-host
+// (only when named).
 // LIVE_VIEWERS sets the audience of `scale` (default 12). Every viewer's picture is checked to
 // move: frames counted by the <video> and its pixels changing, not just a <video> being there.
 //
@@ -949,9 +950,40 @@ async function strictNat(browser) {
   for (const p of [host, ...everyone]) await p.ctx.close();
 }
 
-const SECTIONS = { happy, scale, "host-leaves": hostLeaves, viewer, host: hostCases, home, a11y, "strict-nat": strictNat };
+/**
+ * The host on a strict network: every viewer's link to it has the host's relay at the other end.
+ * That is the host's TURN, not theirs: they must still be made relays (SPEC §8.1 [D80]). Judged by
+ * either end, every one of them said it was behind TURN, and the audience stopped at the host's
+ * own fan-out.
+ */
+async function strictHost(browser) {
+  const host = await person(browser, { init: trackPeerConnections(true) });
+  const { id, path } = await goLive(host, "QA strict host");
+  const viewers = [];
+  for (let i = 0; i < 6; i++) {
+    const viewer = await person(browser, { viewport: { width: 960, height: 700 }, init: trackPeerConnections(false) });
+    viewers.push(viewer);
+    await watch(viewer, path);
+    await sleep(400);
+  }
+  const times = await Promise.all(viewers.map((viewer) => untilMoving(viewer.page, 60000)));
+  ok("strict host: every viewer's picture moves, from a host that only connects through TURN", times.every((t) => t !== null), `ms: ${times.join(",")}`);
+  const hostRoutes = await routes(host.page);
+  ok("strict host: the host's links go through its TURN", hostRoutes.links.length > 0 && hostRoutes.links.every((link) => link.startsWith("relay/")), hostRoutes.links.join(" "));
+  let t = null;
+  const grew = await until(async () => {
+    t = await tree(id);
+    return t.viewers === viewers.length && placed(t) === viewers.length && t.nodes.some((node) => !node.source && node.children > 0);
+  }, 90000, 1000);
+  ok("strict host: …and its viewers are still made relays", grew, t && `viewers ${t.viewers}, placed ${placed(t)}, relays ${t.nodes.filter((n) => !n.source && n.children > 0).map((n) => `${n.label}→${n.children}`).join(" ") || "none"}`);
+  await endWebinar(host);
+  noErrors("strict host", [host, ...viewers]);
+  for (const p of [host, ...viewers]) await p.ctx.close();
+}
+
+const SECTIONS = { happy, scale, "host-leaves": hostLeaves, viewer, host: hostCases, home, a11y, "strict-nat": strictNat, "strict-host": strictHost };
 /** Run only when named: they need TURN. */
-const ON_REQUEST = new Set(["strict-nat"]);
+const ON_REQUEST = new Set(["strict-nat", "strict-host"]);
 
 (async () => {
   const wanted = process.argv.slice(2);
