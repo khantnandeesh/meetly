@@ -40,6 +40,27 @@ export type NoticeMode = {
 
 export const DESKTOP_MODE: NoticeMode = { max: 2, info: true };
 
+/** What `dialogHasAttention` reads of a dialog (a DOM Element has all of it). */
+export type DialogLike = {
+  getAttribute(name: string): string | null;
+  checkVisibility?: () => boolean;
+  getClientRects(): { length: number };
+};
+
+/**
+ * Whether a dialog has the person's attention, so news waits (`NoticeMode.info`): one that is
+ * open and drawn. Being in the document is not enough. A page navigated away from stays in it,
+ * hidden (Next keeps it in React <Activity>, display: none), with whatever dialog it had open; and
+ * one caught closing there never leaves, because its exit animation never ends. Neither is seen.
+ */
+export function dialogHasAttention(root: { querySelectorAll(selector: string): ArrayLike<DialogLike> }): boolean {
+  return Array.from(root.querySelectorAll('[role="dialog"]')).some(
+    (dialog) =>
+      dialog.getAttribute("data-state") !== "closed" &&
+      (typeof dialog.checkVisibility === "function" ? dialog.checkVisibility() : dialog.getClientRects().length > 0),
+  );
+}
+
 /** How long an error or a confirmation may wait for room before it is no longer worth saying. */
 export const QUEUE_MS = 6000;
 /** A notification that updates in place (a count going up) changes at most this often. */

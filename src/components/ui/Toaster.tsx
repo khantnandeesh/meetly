@@ -6,6 +6,7 @@ import { DUR, EASE, prefersReducedMotion } from "@/lib/motion";
 import {
   DESKTOP_MODE,
   UPDATE_MS,
+  dialogHasAttention,
   isNews,
   order,
   overflow,
@@ -214,18 +215,22 @@ export function Toaster({ children }: { children: React.ReactNode }) {
     }
     promote();
   }, [commit, forget, promote, showing]);
+  // Only a dialog that is open and on screen counts (see dialogHasAttention): one left behind in a
+  // page navigated away from is still in the document, hidden, and must not silence the next page.
+  const checkDialogs = useCallback(() => {
+    const open = dialogHasAttention(document);
+    if (open === dialogOpen.current) return;
+    dialogOpen.current = open;
+    refit();
+  }, [refit]);
   useEffect(() => {
-    // Dialogs are portalled straight into <body>, so watching its children is enough to know.
-    const check = () => {
-      const open = document.body.querySelector('[role="dialog"]') !== null;
-      if (open === dialogOpen.current) return;
-      dialogOpen.current = open;
-      refit();
-    };
-    const observer = new MutationObserver(check);
+    // Dialogs are portalled straight into <body>, so its children say when one comes or goes.
+    // A page being hidden or shown again changes no children, so news checks again as it arrives.
+    checkDialogs();
+    const observer = new MutationObserver(checkDialogs);
     observer.observe(document.body, { childList: true });
     return () => observer.disconnect();
-  }, [refit]);
+  }, [checkDialogs]);
 
   const api = useMemo<ToastApi>(
     () => ({
@@ -241,6 +246,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
           }
         }
         const toast: Toast = { ...input, priority, id: nextId.current++, leaving: false };
+        if (isNews(priority)) checkDialogs();
         const placed = place(showing(), toast, mode.current);
         if (placed.kind === "drop") return;
         if (placed.kind === "queue") {
@@ -279,7 +285,7 @@ export function Toaster({ children }: { children: React.ReactNode }) {
         refit();
       },
     }),
-    [commit, forget, promote, refit, show, showing, update],
+    [checkDialogs, commit, forget, promote, refit, show, showing, update],
   );
 
   // Opt-in handle for tests and debugging, like window.__meetly: localStorage["meetly:debug"] = "1".

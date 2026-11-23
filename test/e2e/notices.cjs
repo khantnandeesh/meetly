@@ -243,6 +243,41 @@ module.exports = async function notices(browser) {
     await a.ctx.close();
   }
 
+  // Next keeps a page navigated away from in the document, hidden (React <Activity>, display:
+  // none), with whatever dialog it had open. That dialog has nobody's attention: news on the next
+  // page, in the call, still shows.
+  {
+    const a = await H.client(browser);
+    const url = await H.createMeeting(a);
+    // Loaded afresh, then home by the logo: the meeting page is kept, hidden, behind the home page.
+    await a.page.goto(url);
+    await a.page.getByLabel("Your name").waitFor();
+    await a.page.getByRole("link", { name: "Meetly home" }).click();
+    await a.page.getByRole("button", { name: "More ways to start a meeting" }).click();
+    await a.page.getByRole("menuitem", { name: "Schedule…" }).click();
+    await a.page.locator("[data-schedule-dialog]").waitFor();
+    // Back to the meeting with the dialog still open.
+    await a.page.goBack();
+    await a.page.getByLabel("Your name").waitFor();
+    const left = await a.page.evaluate(() => [...document.querySelectorAll("[data-schedule-dialog]")].map((d) => d.checkVisibility()));
+    H.ok("left behind: the home page's open dialog is still in the document, hidden", left.length === 1 && left[0] === false, JSON.stringify(left));
+    await H.join(a, url, "Lee Left");
+    await H.sleep(2800);
+    await a.page.evaluate(() => window.__meetlyToast.push({ priority: "info", title: "News after a dialog left behind" }));
+    H.ok(
+      "left behind: news in the call is not held back by a dialog in a hidden page",
+      await H.until(async () => (await shown(a)).some((t) => t.title === "News after a dialog left behind"), 3000),
+      JSON.stringify((await shown(a)).map((t) => t.title)),
+    );
+    // And one open on this page still has the person's attention.
+    await a.page.keyboard.press("?");
+    await a.page.getByRole("dialog").waitFor();
+    await a.page.evaluate(() => window.__meetlyToast.push({ priority: "info", title: "News under a dialog" }));
+    await H.sleep(700);
+    H.ok("left behind: …while one open in the call still holds news back", !(await shown(a)).some((t) => t.title === "News under a dialog"));
+    await a.ctx.close();
+  }
+
   // Phone, with a sheet open: one line over the top bar, never over the sheet.
   {
     const a = await host(browser, H.PHONE);

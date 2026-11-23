@@ -8,6 +8,7 @@ import {
   createChatPreviewGate,
   crowdSentence,
   deviceError,
+  dialogHasAttention,
   laneSurface,
   order,
   overflow,
@@ -208,4 +209,33 @@ test("status lane: weak, then a knock, then a chat message on a phone: banner, k
   assert.equal(knock.kind, "show");
   showing = [n(1, "action")];
   assert.equal(place(showing, n(2, "info"), mode).kind, "drop");
+});
+
+test("a dialog has your attention only while it is open and on screen", () => {
+  // Stand-ins for DOM elements: their data-state, and whether checkVisibility() says they are drawn.
+  const dialog = (state: string | null, visible: boolean, withCheck = true) => ({
+    getAttribute: (name: string) => (name === "data-state" ? state : null),
+    getClientRects: () => ({ length: visible ? 1 : 0 }),
+    ...(withCheck ? { checkVisibility: () => visible } : {}),
+  });
+  const page = (...dialogs: ReturnType<typeof dialog>[]) => ({
+    querySelectorAll: (selector: string) => {
+      assert.equal(selector, '[role="dialog"]');
+      return dialogs;
+    },
+  });
+  assert.equal(dialogHasAttention(page()), false);
+  assert.equal(dialogHasAttention(page(dialog("open", true))), true);
+  // A dialog without Radix's data-state (any other role="dialog") counts while it is drawn.
+  assert.equal(dialogHasAttention(page(dialog(null, true))), true);
+  // Left open in a page navigated away from: in the document, hidden (display: none).
+  assert.equal(dialogHasAttention(page(dialog("open", false))), false);
+  // Caught mid exit animation (its animationend never fires while hidden), or simply closing.
+  assert.equal(dialogHasAttention(page(dialog("closed", false))), false);
+  assert.equal(dialogHasAttention(page(dialog("closed", true))), false);
+  // A hidden one does not hide the one on screen.
+  assert.equal(dialogHasAttention(page(dialog("open", false), dialog("open", true))), true);
+  // Browsers without checkVisibility(): a hidden element has no boxes.
+  assert.equal(dialogHasAttention(page(dialog("open", false, false))), false);
+  assert.equal(dialogHasAttention(page(dialog("open", true, false))), true);
 });
