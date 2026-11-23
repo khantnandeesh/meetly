@@ -39,11 +39,10 @@ too.
 
 ## Staging
 
-Not set up yet. The plan: `main` becomes identical to `cloudflare-deploy` (a one-time
-fast-forward, pending the founder's decision), so `main` carries the Workers files
-(`wrangler.jsonc`, `open-next.config.ts`, `.env.production`), and a second Worker (for example
-`meetly-staging`, with its own secrets and its own RealtimeKit app or minute limit) is deployed
-by a workflow on every push to `main`. Work in progress is on the `staging-env` branch
+Not set up yet. `main` was fast-forwarded to `cloudflare-deploy` on 2026-11-23, so it now
+carries the Workers files (`wrangler.jsonc`, `open-next.config.ts`, `.env.production`). What is
+still missing is a second Worker (for example `meetly-staging`, with its own secrets and its own
+RealtimeKit app or minute limit), deployed by a workflow on every push to `main`. Work in progress is on the `staging-env` branch
 (`env.staging` in `wrangler.jsonc`, a "Staging" label and `noindex`). Until it is live, step 5
 is a manual check, and this document is updated when it lands.
 
@@ -124,8 +123,7 @@ link to the flaky issue either way.
 ## Branch protection
 
 `main` and `cloudflare-deploy` are protected. Two ways to set it up (an admin of the repository
-does this once). Do the one-time fast-forward of `main` to `cloudflare-deploy` first, if it is
-approved: afterwards nobody can push to either branch directly.
+does this once). Afterwards nobody, admins included, can push to either branch directly.
 
 ### With the script
 

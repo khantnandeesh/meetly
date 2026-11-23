@@ -489,8 +489,9 @@ Bots join with the microphone off; in a meeting where people ask to join, they w
 
 Production is the Cloudflare Worker `meetly` at https://meet.nandeesh.dev, built with
 [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare) from the `cloudflare-deploy`
-branch. That branch is `main` plus the Workers files: `wrangler.jsonc`, `open-next.config.ts`
-and `.env.production` (`NEXT_PUBLIC_RTC_PROVIDER=realtimekit`). GitHub Actions does the rest.
+branch. Since 2026-11-23 `main` holds the same Workers files (`wrangler.jsonc`,
+`open-next.config.ts`, `.env.production` with `NEXT_PUBLIC_RTC_PROVIDER=realtimekit`), and
+`cloudflare-deploy` is `main` as of its last release. GitHub Actions does the rest.
 
 **The release process is in [docs/RELEASING.md](docs/RELEASING.md).** In short: feature branch →
 pull request to `main` (CI must pass) → staging deploys `main` (once set up) → a release pull
@@ -522,8 +523,8 @@ emergency path (deploying with `skip_tests`), rolling back, flaky tests and re-r
 - The Worker's own secrets (`CLOUDFLARE_API_TOKEN` with the Realtime permission, and
   `MEETLY_SESSION_SECRET`) stay on the Worker and are kept by every deploy. The workflows never
   set, read or print them.
-- The workflow files reach `cloudflare-deploy` the same way as everything else: with the next
-  merge of `main`. Until then a push to `cloudflare-deploy` deploys nothing.
+- Workflow changes reach `cloudflare-deploy` the same way as everything else: with the next
+  release pull request from `main`.
 
 ### One-time setup
 
@@ -597,8 +598,8 @@ upload a version without deploying it, but a version's URL "runs one uploaded ve
 your production resources" ([Cloudflare: Version URLs][cf-version-urls]): with Meetly's Worker
 secrets, anyone with a preview link could create billed RealtimeKit meetings and participants.
 Preview URLs are also switched off for this Worker (`"preview_urls": false` in
-`wrangler.jsonc`), pull requests target `main`, which has no Workers configuration, and pull
-requests from forks get no secrets. Cloudflare's Previews, which have their own secrets and
+`wrangler.jsonc`), the deploy job only runs for `cloudflare-deploy`, and pull requests from
+forks get no secrets. Cloudflare's Previews, which have their own secrets and
 bindings, would be the way to add them later.
 
 [cf-gha]: https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/

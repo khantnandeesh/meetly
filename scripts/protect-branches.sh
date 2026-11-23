@@ -17,8 +17,7 @@
 # does not have, so with "strict" the next release PR could never be up to date. Its checks still
 # test the merge result, and deploy.yml runs CI again on the merged commit before deploying.
 #
-# Do the one-time fast-forward of `main` to `cloudflare-deploy` (if approved) BEFORE running
-# this: afterwards nobody, admins included, can push to either branch directly.
+# Afterwards nobody, admins included, can push to either branch directly: changes go through PRs.
 # Same rules by hand in the GitHub UI: docs/RELEASING.md → "Branch protection".
 set -euo pipefail
 
