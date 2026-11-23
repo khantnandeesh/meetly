@@ -43,7 +43,9 @@ Not set up yet. The plan: `main` becomes identical to `cloudflare-deploy` (a one
 fast-forward, pending the founder's decision), so `main` carries the Workers files
 (`wrangler.jsonc`, `open-next.config.ts`, `.env.production`), and a second Worker (for example
 `meetly-staging`, with its own secrets and its own RealtimeKit app or minute limit) is deployed
-by a workflow on every push to `main`. Until it exists, step 5 is a manual check.
+by a workflow on every push to `main`. Work in progress is on the `staging-env` branch
+(`env.staging` in `wrangler.jsonc`, a "Staging" label and `noindex`). Until it is live, step 5
+is a manual check, and this document is updated when it lands.
 
 ## Emergency path: deploying without the tests
 
