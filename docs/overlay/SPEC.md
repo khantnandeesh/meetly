@@ -739,6 +739,38 @@ same day:* only where `maxFanout` is 4 or more. A tree of fan-outs one or two (t
 chain) has no other slot at the parent's depth to relieve the source into, and waits 3 s for the
 probe as before (chain.test.ts formed 1, 1, 2, 2 instead of 1, 2, 3, 4 on a loaded runner).
 
+**[D76] No start-up deadlock: the source is not filled with viewers nobody has probed.**
+*(Integration engineer, 2026-11-23, on the coordinator's decision.)* Gate run 45243574215: the
+first six viewers to reach the source were "slow" (900 kbps). At join nothing told them from
+relays (no probe yet), so they took the source's three slots and the three over its fan-out
+(D37); their probes then found no uplink, the source's own probes toward them (D49, D75) found
+900 kbps, so it stayed at three; with no relay anywhere nobody else could get a parent, so nobody
+could probe or be promoted, and welcome to linked was 60–107 s for the fill's joiners. So:
+
+- *A probe that finds no room counts.* A peer whose measured uplink fails §8.1's uplink rule is a
+  dead end (the coordinator's "could relay one day" is false) until a later probe says otherwise.
+  Before, only what a peer says of itself counted, and a "slow" viewer could relay for the whole
+  session as far as placement, `moves` and the waiting order went.
+- *Not over the source's fan-out before a probe has passed.* A slot over the source's fan-out
+  (D37, the overload placement for a joiner or a repair) goes only to a peer whose probe has
+  passed.
+- *The source's last slot is kept while no relay exists:* for a peer whose probe has passed, or,
+  once every viewer on the source has shown it cannot relay, for one that could.
+- *A dead-end swap.* While no relay exists, a viewer that could relay and has waited
+  `JOIN_OVER_FANOUT_AFTER_MS` with nowhere to go is sent to the source one over its fan-out in
+  place of one of its viewers that cannot relay (as many at once as there are such viewers, never
+  beyond twice the fan-out). Its probe passed, it is made a relay at once (provisional or full,
+  §8.1), and the source's excess goes under it (D67's relief); its probe failed, or `SWAP_MS` (8 s)
+  passed, the coordinator sends the source `peer-gone` naming it ("close any link to it") and it
+  waits, a dead end, for the first relay, while the next viewer waiting has its turn.
+
+In the coordinator's simulator (coordinator/startup.test.ts, the engine's timers, 4 joining a
+second, the source at fan-out 3): six slow viewers first, then 40: before, 6 placed and 40 never;
+now all 46, welcome to a parent p95 8.9 s; 3, 9 and 12 slow first: all placed (9 and 12 never
+were). The cost, at a session's start with good viewers: a joiner with no free slot is no longer
+sent over the source's fan-out after 1 s (D71) but waits for the first relays, a probe away:
+welcome to linked p95 1.0 → 1.3 s at 4 joining a second, 1.6 → 3.5 s at 6.7 (provisional.test.ts).
+
 Budget for the 3 s gate: ticket and socket 200 ms, `welcome` 100 ms, link (ICE and DTLS) 300 ms
 to 2 s, replay and first frame 100 ms. The proof measured 20–45 ms from joining to first frame
 on loopback, where ICE costs nothing; ICE is the whole budget.
@@ -1506,7 +1538,7 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
 | `t` | Fields | |
 | --- | --- | --- |
 | `join` | `start`, `welcome`, `linked`, `firstPacket`, `firstFrame`, `turn` | once per join |
-| `repair` | `stream`, `stripe`, `dead`, `next`, `kind` (warm \| cold \| wait), `lastHeard`, `detected`, `resubscribed`, `firstPacket`, `freezeMs`, `framesLost`, `usedCoordinator`, and [D61] `staleMs?`, `firstDecodable?`, `firstKey?`, `laterGapMs?`, `replayPackets?`, `replayBytes?`, `replayMs?` | once per lost parent |
+| `repair` | `stream`, `stripe`, `dead`, `next`, `kind` (warm \| cold \| wait), `lastHeard`, `detected`, `resubscribed`, `firstPacket`, `freezeMs`, `framesLost`, `usedCoordinator`, and [D61] `staleMs?`, `firstDecodable?`, `firstKey?`, `laterGapMs?`, `replayPackets?`, `replayBytes?`, `replayMs?`, and [D79] `arrivalGapMs?` | once per lost parent |
 | `switch` | `stream`, `stripe`, `from`, `to`, `at`, `freezeMs`, `reason?` | a voluntary change of parent; `reason`: `move` (the coordinator's), `rebalance` (the node's own, §7.6), `starved` (§11.3) |
 | `layer` | `stream`, `peer`, `at`, `maxTemporal`, `reason` | a cap changed |
 | `freeze` | `stream`, `at`, `ms` | rendering stopped, for any reason |
@@ -1559,6 +1591,15 @@ after `firstPacket` its last came. Gate run 45130383283 put first packet to deco
   the switch the link's sequence settles which frames were sent; only the one at the switch is in
   doubt.) *Clarified by the integration engineer 2026-11-23: the smoke test's lost frame, 3 of 9
   runs, with no overload at the new parent.*
+  **[D79] Measured on rendered frames.** *(Integration engineer, 2026-11-23, on the coordinator's
+  decision.)* Until now `freezeMs` was the node's: the longest gap between frames becoming
+  decodable as they arrived (its `DecodeTracker`), not the player's rendering, which comes a
+  playout delay later and leaves out a replay held back until it reaches the playout point
+  (§10.4). A viewer's engine now keeps the times its player rendered frames at and, once it has
+  rendered past a repair's window (or 4 s after it), sends the longest gap between two rendered
+  frames that overlaps the window as `freezeMs`, with the node's measure beside it as
+  `arrivalGapMs` for one round. A gap still open runs to the moment it is measured. The gate's
+  repair time is this `freezeMs`; the harness reports the old measure and the offset between them.
 - **Join time:** `firstFrame − start`: from `connect()` being called to the first frame rendered.
 
 ### 12.3 The gate run
