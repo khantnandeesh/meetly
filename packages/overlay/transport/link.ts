@@ -80,6 +80,70 @@ function adaptChannel(dc: RTCDataChannel): PacketChannel {
   return channel;
 }
 
+/**
+ * [D83] A link's connection, its two channels and an offer for it, made before the peer at the
+ * other end is known: a joiner sends the offer in `hello`, and the coordinator gives it to the
+ * parent it places the joiner under. Nothing is gathered until the link takes it, with the ICE
+ * servers from `welcome` (`setConfiguration`, then `setLocalDescription` of this same offer).
+ */
+export class PreparedOffer {
+  private taken = false;
+  /** @internal */
+  constructor(
+    readonly sdp: string,
+    /** @internal */ readonly pc: RTCPeerConnection,
+    /** @internal */ readonly ctl: RTCDataChannel,
+    /** @internal */ readonly media: RTCDataChannel,
+    /** @internal */ readonly offer: RTCSessionDescriptionInit,
+  ) {}
+
+  /** @internal The link that uses it. Once. */
+  take(): void {
+    if (this.taken) throw new Error("overlay transport: a prepared offer is used once");
+    this.taken = true;
+  }
+
+  get used(): boolean {
+    return this.taken;
+  }
+
+  /** Not used after all (no parent in `welcome`, or a coordinator that did not pass it on). */
+  close(): void {
+    if (this.taken) return;
+    this.taken = true;
+    try {
+      this.pc.close();
+    } catch {
+      // Already closed.
+    }
+  }
+}
+
+/** A prepared offer, or null where there is no WebRTC or it fails: the join then goes as before. */
+export async function prepareOffer(peerConnection?: (config: RTCConfiguration) => RTCPeerConnection): Promise<PreparedOffer | null> {
+  let pc: RTCPeerConnection | null = null;
+  try {
+    pc = peerConnection ? peerConnection({ iceServers: [] }) : new RTCPeerConnection({ iceServers: [] });
+    const made = pc;
+    const channel = (kind: "ctl" | "media") => {
+      const { label, ...init } = CHANNELS[kind];
+      return made.createDataChannel(label, { negotiated: true, ...init });
+    };
+    const ctl = channel("ctl");
+    const media = channel("media");
+    const offer = await pc.createOffer();
+    if (offer.type !== "offer" || !offer.sdp) throw new Error("no offer");
+    return new PreparedOffer(offer.sdp, pc, ctl, media, { type: offer.type, sdp: offer.sdp });
+  } catch {
+    try {
+      pc?.close();
+    } catch {
+      // Already closed.
+    }
+    return null;
+  }
+}
+
 class LinkImpl implements Link {
   readonly peer: PeerId;
   state: LinkState = "connecting";
@@ -120,16 +184,26 @@ class LinkImpl implements Link {
     peer: PeerId,
     private readonly options: TransportOptions,
     private readonly onClosed: (link: LinkImpl) => void,
+    prepared?: PreparedOffer,
   ) {
     this.peer = peer;
     this.polite = options.self > peer;
     this.highWater = options.highWaterBytes ?? DEFAULT_HIGH_WATER_BYTES;
     this.maxQueue = options.maxQueueBytes ?? DEFAULT_MAX_QUEUE_BYTES;
     const config: RTCConfiguration = { iceServers: options.ice.map((server) => ({ urls: server.urls, username: server.username, credential: server.credential })) };
-    this.pc = options.peerConnection ? options.peerConnection(config) : new RTCPeerConnection(config);
+    if (prepared) {
+      prepared.take();
+      this.pc = prepared.pc;
+      try {
+        // Before anything is gathered: the offer was made without them.
+        this.pc.setConfiguration(config);
+      } catch (error) {
+        options.logger?.warn("link", `ICE servers for the prepared link to ${peer} not set`, error);
+      }
+    } else this.pc = options.peerConnection ? options.peerConnection(config) : new RTCPeerConnection(config);
     const wrap = (kind: "ctl" | "media"): PacketChannel => {
       const { label, ...init } = CHANNELS[kind];
-      const channel = adaptChannel(this.pc.createDataChannel(label, { negotiated: true, ...init }));
+      const channel = adaptChannel(prepared ? prepared[kind] : this.pc.createDataChannel(label, { negotiated: true, ...init }));
       return options.wrapChannel ? options.wrapChannel(channel, { peer, kind }) : channel;
     };
     this.ctl = wrap("ctl");
@@ -159,6 +233,20 @@ class LinkImpl implements Link {
     this.connectTimer = options.clock.setTimeout(() => {
       if (this.state === "connecting") this.close("timeout");
     }, CONNECT_TIMEOUT_MS);
+    if (prepared) {
+      // [D83] The other side has this offer already, from the coordinator: it is only applied
+      // here, which starts gathering, and its answer comes as any other.
+      this.makingOffer = true;
+      this.signalling = this.signalling
+        .then(() => this.pc.setLocalDescription(prepared.offer))
+        .catch((error: unknown) => {
+          this.options.logger?.warn("link", `the prepared offer to ${peer} failed`, error);
+          this.close("local");
+        })
+        .finally(() => {
+          this.makingOffer = false;
+        });
+    }
     // A channel made by a test double may be open already.
     if (this.ctl.readyState === "open") this.onCtlOpen();
   }
@@ -178,8 +266,9 @@ class LinkImpl implements Link {
   /* ------------------------------ signalling ------------------------------ */
 
   private async offer(): Promise<void> {
-    // Fired while an offer from the other side is being answered: that answer settles it.
-    if (this.state === "closed" || this.pc.signalingState !== "stable") return;
+    // Fired while an offer from the other side is being answered: that answer settles it. Or
+    // while this side's own is being made, or a prepared one applied (D83).
+    if (this.state === "closed" || this.makingOffer || this.pc.signalingState !== "stable") return;
     try {
       this.makingOffer = true;
       await this.pc.setLocalDescription();
@@ -462,13 +551,20 @@ export function createLinkManager(options: TransportOptions): LinkManager {
   const events = new Emitter<LinkManagerEvents>((error) => options.logger?.error("links", "a listener threw", error));
   const links = new Map<PeerId, LinkImpl>();
 
-  const make = (peer: PeerId): LinkImpl => {
-    const link = new LinkImpl(peer, options, (closed) => {
-      if (links.get(peer) === closed) links.delete(peer);
-    });
+  const make = (peer: PeerId, prepared?: PreparedOffer): LinkImpl => {
+    const link = new LinkImpl(
+      peer,
+      options,
+      (closed) => {
+        if (links.get(peer) === closed) links.delete(peer);
+      },
+      prepared,
+    );
     links.set(peer, link);
     return link;
   };
+  // [D83] Made at once, before any signal can come: the other side's answer may be on its way.
+  if (options.prepared && options.prepared.peer !== options.self && !options.prepared.offer.used) make(options.prepared.peer, options.prepared.offer);
 
   options.signaler.onSignal((from, data) => {
     if (from === options.self) return;

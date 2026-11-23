@@ -115,6 +115,21 @@ export class FakePeerConnection {
     return channel;
   }
 
+  /** The configuration last given, by the factory or by `setConfiguration`. */
+  config: RTCConfiguration | null = null;
+
+  setConfiguration(config: RTCConfiguration): void {
+    if (this.signalingState === "closed") throw new Error("InvalidStateError: closed");
+    this.config = config;
+  }
+
+  /** An offer to apply later (`setLocalDescription` with it); changes nothing yet. */
+  async createOffer(): Promise<FakeDescription> {
+    await Promise.resolve();
+    if (this.signalingState === "closed") throw new Error("InvalidStateError: closed");
+    return { type: "offer", sdp: `fake ${this.id}` };
+  }
+
   async setLocalDescription(): Promise<void> {
     this.busy++;
     await Promise.resolve();

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { PacketType, encodeHeartbeat, encodePeerMessage, packetLinkFields, packetizeFrame, type PeerId, type PeerMessage, type SignalData } from "@meetly/overlay";
-import { CHANNELS, createLinkManager } from "@meetly/overlay/transport/index";
+import { CHANNELS, createLinkManager, prepareOffer } from "@meetly/overlay/transport/index";
 import { FakeClock } from "@meetly/overlay/transport/fakes";
 import { FakeNet, type FakeDataChannel, type FakePeerConnection } from "@meetly/overlay/transport/fakeRtc";
 import { CONNECT_TIMEOUT_MS, HELLO_TIMEOUT_MS } from "@meetly/overlay/transport/link";
@@ -210,6 +210,75 @@ describe("links: making one (SPEC §5.1)", () => {
     await w.run(5);
     assert.equal(b.incoming.length, 1);
     assert.equal(b.incoming[0].peer, "c");
+  });
+});
+
+describe("links: an offer made before the peer is known (SPEC §5.1 [D83])", () => {
+  it("opens with only the answer coming back: the offer reached the other side through the coordinator", async () => {
+    const w = world();
+    const made: FakePeerConnection[] = [];
+    const prepared = (await prepareOffer(() => {
+      const pc = w.net.factory();
+      made.push(pc as unknown as FakePeerConnection);
+      return pc;
+    }))!;
+    assert.ok(prepared);
+    assert.equal(made.length, 1);
+    // Nothing applied yet: no offer counted, nothing gathered.
+    assert.equal(w.net.offers, 0);
+    assert.equal(made[0].signalingState, "stable");
+    const stun = [{ urls: ["stun:stun.example:3478"] }];
+    const a = w.peer("a", { prepared: { peer: "b", offer: prepared }, ice: stun });
+    const b = w.peer("b");
+    const ab = a.manager.get("b")!;
+    assert.ok(ab, "the link is made with the manager, before any signal");
+    const seen = watch(ab);
+    // The ICE servers from welcome, set before the offer is applied.
+    assert.deepEqual(made[0].config?.iceServers, [{ urls: stun[0].urls, username: undefined, credential: undefined }]);
+    // What the coordinator does with hello.offer.
+    w.clock.setTimeout(() => w.inject("a", "b", { sdp: { type: "offer", sdp: prepared.sdp } }), 1);
+    await w.run(40);
+    const ba = b.manager.get("a")!;
+    assert.equal(ab.state, "open");
+    assert.equal(ba.state, "open");
+    assert.deepEqual(seen.states, ["open"]);
+    assert.deepEqual(b.incoming, [ba]);
+    assert.equal(a.manager.connect("b"), ab);
+    assert.equal(w.pcs.get("a"), undefined, "no second connection made");
+    assert.deepEqual(
+      w.signals.filter((s) => s.data.sdp).map((s) => `${s.from}:${s.data.sdp!.type}`),
+      ["b:answer"],
+      "the offer is not sent again",
+    );
+    assert.equal(w.net.offers, 1);
+    assert.equal(prepared.used, true);
+    ab.sendMessage(PATH);
+    await w.run(3);
+    assert.equal(w.channel("b", "ctl").sent[0], encodePeerMessage({ t: "hello", v: 1, peer: "b", grant: "grant-of-b" }));
+  });
+
+  it("an offer not used is closed, and a used one is not taken twice", async () => {
+    const w = world();
+    const made: FakePeerConnection[] = [];
+    const factory = () => {
+      const pc = w.net.factory();
+      made.push(pc as unknown as FakePeerConnection);
+      return pc;
+    };
+    const unused = (await prepareOffer(factory))!;
+    unused.close();
+    assert.equal(made[0].signalingState, "closed");
+    assert.equal(unused.used, true);
+    // A manager given one already closed makes nothing of it.
+    const a = w.peer("a", { prepared: { peer: "b", offer: unused } });
+    assert.equal(a.manager.get("b"), undefined);
+    // No WebRTC at all: null, and the join goes as before.
+    assert.equal(
+      await prepareOffer(() => {
+        throw new Error("no RTCPeerConnection");
+      }),
+      null,
+    );
   });
 });
 

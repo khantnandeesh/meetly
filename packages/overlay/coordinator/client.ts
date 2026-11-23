@@ -46,6 +46,8 @@ class Client implements CoordinatorClient {
 
   private socket: WebSocket | null = null;
   private caps: Capabilities | null = null;
+  /** [D83] The offer for the first `hello`, until `welcome`. */
+  private offer: string | undefined;
   private welcomed: ServerMessageOf<"welcome"> | null = null;
   private currentGrant = "";
   private up = false;
@@ -116,11 +118,14 @@ class Client implements CoordinatorClient {
     return this.currentGrant;
   }
 
-  async connect(caps: Capabilities): Promise<ServerMessageOf<"welcome">> {
+  /** `offer`: an SDP offer for the link to whichever parent this peer gets (D83); sent in the first `hello` only. */
+  async connect(caps: Capabilities, offer?: string): Promise<ServerMessageOf<"welcome">> {
     if (this.finished) throw new CoordinatorError("left", "closed");
     if (this.joined || this.socket) throw new Error("coordinator: connect() called twice");
     this.caps = caps;
+    this.offer = offer;
     const welcome = await this.attempt();
+    this.offer = undefined;
     this.joined = true;
     return welcome;
   }
@@ -157,7 +162,7 @@ class Client implements CoordinatorClient {
           this.socket = mine;
           mine.onopen = () => {
             const resume = this.welcomed ? { peer: this.welcomed.peer, grant: this.currentGrant } : undefined;
-            mine.send(encodeClientMessage({ t: "hello", v: PROTOCOL_VERSION, caps: this.caps!, ...(resume ? { resume } : {}) }));
+            mine.send(encodeClientMessage({ t: "hello", v: PROTOCOL_VERSION, caps: this.caps!, ...(resume ? { resume } : this.offer ? { offer: this.offer } : {}) }));
           };
           mine.onmessage = (event: MessageEvent) => {
             if (this.socket !== mine || typeof event.data !== "string") return;

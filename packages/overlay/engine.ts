@@ -29,7 +29,7 @@ import { RENDER_SETTLE_MS, RenderTimes } from "./media/renderGaps";
 import { createOverlayNode, judgeRelay } from "./topology/index";
 import { relayFanout } from "./topology/scoring";
 import type { NodeStats, NodeStatus, OverlayNode } from "./topology/types";
-import { createLinkManager, probeNat } from "./transport/index";
+import { createLinkManager, prepareOffer, probeNat } from "./transport/index";
 import type { LinkManager } from "./transport/types";
 import {
   emptyHistogram,
@@ -187,6 +187,8 @@ abstract class PeerEngine {
   private probeTimer: (() => void) | null = null;
   protected startedAt = 0;
   protected welcomedAt = 0;
+  /** Whether this side is placed under a parent at its join, and so offers its first link in `hello` (D83). */
+  protected readonly joinsAParent: boolean = false;
 
   constructor(protected readonly options: OverlayConnectOptions) {
     this.events = new Emitter(options.logger);
@@ -213,17 +215,30 @@ abstract class PeerEngine {
     this.setState("connecting");
     this.startedAt = this.clock.now();
     try {
-      this.caps = { ...(await gatherCapabilities()), ...this.options.capabilities };
-      const welcome = await this.client.connect(this.caps);
+      // [D83] A viewer's first link is offered in `hello`, made meanwhile.
+      const [caps, prepared] = await Promise.all([gatherCapabilities(), this.joinsAParent ? prepareOffer() : Promise.resolve(null)]);
+      this.caps = { ...caps, ...this.options.capabilities };
+      let welcome: ServerMessageOf<"welcome">;
+      try {
+        welcome = await this.client.connect(this.caps, prepared?.sdp);
+      } catch (error) {
+        prepared?.close();
+        throw error;
+      }
       this.welcome = welcome;
       this.welcomedAt = this.clock.now();
       for (const stream of welcome.streams) this.streams.set(stream.id, stream);
-      const key = await importGrantPublicKey(welcome.key.pub);
+      const offered = prepared && welcome.offered !== undefined ? { peer: welcome.offered, offer: prepared } : undefined;
+      if (!offered) prepared?.close();
+      // The key is imported while the links are made: the manager must listen for signals before
+      // this task ends, for the answer to the offer above.
+      const key = importGrantPublicKey(welcome.key.pub);
       const room = welcome.room;
       const links = createLinkManager({
         self: welcome.peer,
         grant: () => this.client.grant(),
-        verifyPeer: async (peer, grant) => (await verifyGrant(grant, key, { room, peer, now: welcome.epochMs + this.client.sessionClock.now(), leewayS: GRANT_LEEWAY_S })) !== null,
+        verifyPeer: async (peer, grant) => (await verifyGrant(grant, await key, { room, peer, now: welcome.epochMs + this.client.sessionClock.now(), leewayS: GRANT_LEEWAY_S })) !== null,
+        prepared: offered,
         signaler: this.client.signaler,
         ice: welcome.ice,
         clock: this.clock,
@@ -231,6 +246,7 @@ abstract class PeerEngine {
         wrapChannel: this.options.wrapChannel,
       });
       this.links = links;
+      await key;
       const node = createOverlayNode({
         self: welcome.peer,
         links,
@@ -518,6 +534,7 @@ abstract class PeerEngine {
 /* ------------------------------ the viewer ------------------------------ */
 
 class ViewerEngine extends PeerEngine {
+  protected override readonly joinsAParent = true;
   private player: Player | null = null;
   private readonly decode: boolean;
   /** [D65] Integrity failures per peer the frame came from. */
