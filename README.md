@@ -491,15 +491,20 @@ Production is the Cloudflare Worker `meetly` at https://meet.nandeesh.dev, built
 [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare) from the `cloudflare-deploy`
 branch. That branch is `main` plus the Workers files: `wrangler.jsonc`, `open-next.config.ts`
 and `.env.production` (`NEXT_PUBLIC_RTC_PROVIDER=realtimekit`). GitHub Actions does the rest.
-**To release, merge `main` into `cloudflare-deploy` and push** (or merge a pull request from
-`main` into `cloudflare-deploy`).
+
+**The release process is in [docs/RELEASING.md](docs/RELEASING.md).** In short: feature branch →
+pull request to `main` (CI must pass) → staging deploys `main` (once set up) → a release pull
+request from `main` to `cloudflare-deploy`, merged with **Create a merge commit** → Deploy runs
+CI again and deploys to production. Both branches are protected: nobody, admins included, pushes
+to them directly (`scripts/protect-branches.sh` sets this up). The same document covers the
+emergency path (deploying with `skip_tests`), rolling back, flaky tests and re-running a job.
 
 ### What runs when
 
 | When | Workflow | What it does |
 | --- | --- | --- |
-| A pull request, or a push to any branch except `cloudflare-deploy` | **CI** (`.github/workflows/ci.yml`) | `npm ci`; `next typegen` and `tsc --noEmit`; lint; `npm test`; `next build` once with `NEXT_PUBLIC_RTC_PROVIDER=livekit` and once with `realtimekit`; all twelve browser-test suites (`node test/e2e/run.cjs`) in Chromium against a LiveKit build and the official `livekit-server` release run with `--dev`. If the browser tests fail, their screenshots and the server logs are attached to the run as an artifact. A newer push to the same branch or pull request cancels the run it replaces. |
-| A push to `cloudflare-deploy`, or **Actions → Deploy → Run workflow** on `cloudflare-deploy` | **Deploy** (`deploy.yml`) | The same CI jobs. Only if all of them pass: in the `production` environment, `npx opennextjs-cloudflare build`, `npx opennextjs-cloudflare deploy`, then a smoke test of https://meet.nandeesh.dev. The run's summary shows the URL and the new Worker version id. |
+| A pull request, or a push to any branch except `cloudflare-deploy` | **CI** (`.github/workflows/ci.yml`) | `npm ci`; `next typegen` and `tsc --noEmit`; lint; `npm test`; `next build` once with `NEXT_PUBLIC_RTC_PROVIDER=livekit` and once with `realtimekit`; every browser-test suite (`node test/e2e/run.cjs`) in Chromium against a LiveKit build and the official `livekit-server` release run with `--dev`. A suite that fails is run once more; if it then passes, the job passes and the suite is reported as "flaky: passed on retry" in the log, as a warning and in the run's summary. If the browser tests fail, their screenshots and the server logs are attached to the run as an artifact. A newer push to the same branch or pull request cancels the run it replaces. |
+| A push to `cloudflare-deploy` (a merged release pull request), or **Actions → Deploy → Run workflow** on `cloudflare-deploy` | **Deploy** (`deploy.yml`) | The same CI jobs (skipped only by the emergency `skip_tests` input, docs/RELEASING.md). Only if all of them pass: in the `production` environment, `npx opennextjs-cloudflare build`, `npx opennextjs-cloudflare deploy`, then a smoke test of https://meet.nandeesh.dev. The run's summary shows the URL and the new Worker version id. |
 | **Actions → Rollback → Run workflow** | **Rollback** (`rollback.yml`) | Lists the Worker's recent deployments and versions, or puts an earlier version back (see below). |
 
 - Deploys never overlap, and a rollback never overlaps a deploy. A deploy that arrives while
@@ -580,7 +585,7 @@ Cloudflare keeps every uploaded version of the Worker (the latest 100, and anyth
   ([Wrangler: rollback][wrangler-rollback]).
 
 A rollback does not change the code: the next push to `cloudflare-deploy` deploys whatever is
-there, so revert or fix the bad commit on `main` and merge it across. If one of the Worker's
+there, so revert or fix the bad commit on `main` with a pull request and release again. If one of the Worker's
 secrets was changed after the older version was deployed, Wrangler asks for confirmation (the
 workflow confirms); the run's log says so. Pages opened before a rollback may still ask for the
 newer version's scripts until they are reloaded ([Cloudflare: Version skew][cf-skew]).

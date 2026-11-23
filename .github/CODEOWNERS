@@ -1,0 +1,5 @@
+# Who is asked to review what. Every pull request asks the founder; reviews are not required to
+# merge (branch protection asks for 0 approvals), so this routes review requests and nothing else.
+# Add an owner per path when someone else owns an area, for example:
+#   /packages/overlay/  @someone
+*                     @khantnandeesh
