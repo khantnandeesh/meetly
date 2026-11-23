@@ -474,6 +474,15 @@ Under the coordinator's origin. The four `rooms` routes other than `ws` need
 
 The Node entry point also serves `GET …/metrics` (every sample received) to the harness.
 
+**[D63] A session whose source has gone without `/end` ends by itself.** *(Integration engineer,
+2026-11-23.)* A host whose tab crashes or whose network goes never calls `/end`, and its viewers
+were left in an open session forever. Once a session has had a source (it said what the streams
+are), the coordinator keeps, with the session, since when no source has been connected; when that
+reaches `SOURCE_GONE_END_MS` (3 minutes) it ends the session as `/end` does, with `source-left`.
+A source that comes back in time (a resume, or the same identity) clears it, and the count starts
+again from its next loss. Three minutes rides out a browser restart or a network change, and the
+coordinator's own outage (30 s in the gate); a coordinator restart does not reset the count.
+
 WebSocket close codes: 4001 bad ticket, 4002 full, 4003 kicked, 4004 ended, 4005 bad message,
 4006 replaced by a newer socket of the same peer.
 
@@ -1656,6 +1665,7 @@ Rotating speakers on the overlay. Out of scope.
 | D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23); withdrawn the same day, false alarms under fan-out 6 | 7.4 |
 | D60 | A join leaves a full relay's last slot (fan-out 4 or more) to repairs (integrator, 2026-11-23) | 6.6, 8.1 |
 | D61 | A `repair` event carries where its freeze went: stale before, first decodable, later gap, the replay's size and time (integration engineer, 2026-11-23) | 12.1 |
+| D63 | A session whose source has been gone 3 minutes without `/end` is ended with `source-left` (integration engineer, 2026-11-23) | 6.2 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
