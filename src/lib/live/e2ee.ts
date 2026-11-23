@@ -15,9 +15,15 @@
 /** The fragment's parameters: `#k=<the AES key>&s=<the host's public signing key>`. */
 export const KEY_PARAM = "k";
 export const SIGNER_PARAM = "s";
+/**
+ * The viewers' pass (`a=`, src/lib/live/server.ts): not part of the encryption, but it rides with
+ * the key so that the id alone does not get a viewer's ticket. The server sees it, never the key.
+ */
+export const PASS_PARAM = "a";
 const KEY_BYTES = 32;
 /** An uncompressed P-256 point: 0x04, x, y. */
 const PUBLIC_KEY_BYTES = 65;
+const PASS_BYTES = 16;
 
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -59,22 +65,25 @@ export async function newWebinarKey(): Promise<Uint8Array> {
 
 /**
  * The keys as the link's fragment carries them, without the "#": `k=<43 base64url characters>`,
- * then `&s=<87>` with the host's public signing key.
+ * then `&s=<87>` with the host's public signing key, then `&a=<22>` with the viewers' pass.
  */
-export function keyFragment(raw: Uint8Array, publicKey?: Uint8Array | null): string {
+export function keyFragment(raw: Uint8Array, publicKey: Uint8Array, pass: string): string {
   if (raw.byteLength !== KEY_BYTES) throw new RangeError("a webinar key is 32 bytes");
-  if (publicKey && (publicKey.byteLength !== PUBLIC_KEY_BYTES || publicKey[0] !== 4)) throw new RangeError("a public key is an uncompressed P-256 point");
-  return `${KEY_PARAM}=${toBase64Url(raw)}${publicKey ? `&${SIGNER_PARAM}=${toBase64Url(publicKey)}` : ""}`;
+  if (publicKey.byteLength !== PUBLIC_KEY_BYTES || publicKey[0] !== 4) throw new RangeError("a public key is an uncompressed P-256 point");
+  if (!exactly(pass, PASS_BYTES)) throw new RangeError("a viewers' pass is 16 bytes of base64url");
+  return `${KEY_PARAM}=${toBase64Url(raw)}&${SIGNER_PARAM}=${toBase64Url(publicKey)}&${PASS_PARAM}=${pass}`;
 }
 
 /**
  * What a viewer's link says of the key, from `location.hash`:
  * - "none": the link has no key (it was shared without its end, or typed by hand);
- * - "malformed": it has one, but not a whole one (cut short when it was copied, or edited);
- * - "ok": a key, which may still be the wrong one; only the video can tell (`wrong-key`). With
- *   the host's public signing key when the link has one; a broken one makes the link "malformed".
+ * - "malformed": it has one, but not a whole one (cut short when it was copied, or edited), or
+ *   without the host's public signing key or the viewers' pass beside it. Every link the host
+ *   shares has all three, so one without the signing key is not played unsigned: a link cut
+ *   down to `k=` alone would otherwise let any relay holding the key pass off its own frames;
+ * - "ok": a key, which may still be the wrong one; only the video can tell (`wrong-key`).
  */
-export type LinkKey = { t: "none" } | { t: "malformed" } | { t: "ok"; raw: Uint8Array; publicKey: Uint8Array | null };
+export type LinkKey = { t: "none" } | { t: "malformed" } | { t: "ok"; raw: Uint8Array; publicKey: Uint8Array; pass: string };
 
 /** Exactly `length` bytes of canonical base64url, or null. */
 function exactly(value: string, length: number): Uint8Array | null {
@@ -94,14 +103,23 @@ export function keyFromHash(hash: string): LinkKey {
   const value = params.get(KEY_PARAM);
   if (value === null) return { t: "none" };
   const raw = exactly(value.trim(), KEY_BYTES);
-  const signer = params.get(SIGNER_PARAM);
-  const publicKey = signer === null ? null : exactly(signer.trim(), PUBLIC_KEY_BYTES);
-  if (!raw || (signer !== null && (!publicKey || publicKey[0] !== 4))) return { t: "malformed" };
-  return { t: "ok", raw, publicKey };
+  const publicKey = exactly((params.get(SIGNER_PARAM) ?? "").trim(), PUBLIC_KEY_BYTES);
+  const pass = (params.get(PASS_PARAM) ?? "").trim();
+  if (!raw || !publicKey || publicKey[0] !== 4 || !exactly(pass, PASS_BYTES)) return { t: "malformed" };
+  return { t: "ok", raw, publicKey, pass };
 }
 
 /** The link without its fragment: what may be shown or sent anywhere that is not the share itself. */
 export const withoutKey = (url: string) => url.replace(/#.*$/, "");
+
+/** Whether localStorage["meetly:debug"] is "1": the app's opt-in handle for tests and debugging. */
+export function debugHandles(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem("meetly:debug") === "1";
+  } catch {
+    return false;
+  }
+}
 
 /**
  * With localStorage["meetly:debug"] = "1" (the app's opt-in test handle), the encryption's
@@ -109,7 +127,7 @@ export const withoutKey = (url: string) => url.replace(/#.*$/, "");
  */
 export function exposeE2eeStats(stats: () => object): void {
   try {
-    if (localStorage.getItem("meetly:debug") !== "1") return;
+    if (!debugHandles()) return;
     (window as unknown as { __meetlyE2ee?: { stats: () => object } }).__meetlyE2ee = { stats };
   } catch {
     // Storage blocked: no handle.

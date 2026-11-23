@@ -22,18 +22,45 @@ const LIVE_LINK = /\/live\/([a-z]{3}-[a-z]{4}-[a-z]{3})(\?|#|$)/;
  * host's page is made to use it (`useKey`): the browser's AES-GCM key generation returns it.
  */
 const EARLY_KEY = Buffer.alloc(32, 7).toString("base64url");
+/** The same for the host's signing key pair (`&s=…`): made here, and given to the host's page. */
+const EARLY_SIGNER = require("node:crypto").generateKeyPairSync("ec", { namedCurve: "P-256" });
+const EARLY_PRIVATE = EARLY_SIGNER.privateKey.export({ format: "jwk" });
+const EARLY_PUBLIC = EARLY_SIGNER.publicKey.export({ format: "jwk" });
+const EARLY_PUB = Buffer.concat([Buffer.from([4]), Buffer.from(EARLY_PUBLIC.x, "base64url"), Buffer.from(EARLY_PUBLIC.y, "base64url")]).toString("base64url");
+/** The early link's fragment, given the webinar's viewers' pass (from POST /api/live). */
+const earlyFragment = (pass) => `#k=${EARLY_KEY}&s=${EARLY_PUB}&a=${pass}`;
 const useKey = `(() => {
   const raw = Uint8Array.from(atob(${JSON.stringify(Buffer.alloc(32, 7).toString("base64"))}), (c) => c.charCodeAt(0));
+  const priv = ${JSON.stringify(EARLY_PRIVATE)};
+  const pub = ${JSON.stringify(EARLY_PUBLIC)};
   const generate = crypto.subtle.generateKey.bind(crypto.subtle);
-  crypto.subtle.generateKey = (algorithm, extractable, usages) =>
-    algorithm && algorithm.name === "AES-GCM" ? crypto.subtle.importKey("raw", raw, "AES-GCM", true, usages) : generate(algorithm, extractable, usages);
+  crypto.subtle.generateKey = async (algorithm, extractable, usages) => {
+    if (algorithm && algorithm.name === "AES-GCM") return crypto.subtle.importKey("raw", raw, "AES-GCM", true, usages);
+    if (algorithm && algorithm.name === "ECDSA") {
+      const curve = { name: "ECDSA", namedCurve: "P-256" };
+      return { privateKey: await crypto.subtle.importKey("jwk", priv, curve, true, ["sign"]), publicKey: await crypto.subtle.importKey("jwk", pub, curve, true, ["verify"]) };
+    }
+    return generate(algorithm, extractable, usages);
+  };
 })();`;
 
 /** Console errors and page errors, per page, so each section can say none were raised. */
 const consoleErrors = new Map();
 
-async function person(browser, { viewport = WIDE, permissions = ["camera", "microphone"], init } = {}) {
+/**
+ * `debug` (on by default): localStorage["meetly:debug"], with which the host's page puts the full
+ * share link on its button (`data-link`) for these tests to read; without it only the copy has it.
+ */
+async function person(browser, { viewport = WIDE, permissions = ["camera", "microphone"], init, debug = true } = {}) {
   const ctx = await browser.newContext({ viewport, permissions });
+  if (debug)
+    await ctx.addInitScript(() => {
+      try {
+        localStorage.setItem("meetly:debug", "1");
+      } catch {
+        // about:blank has no storage.
+      }
+    });
   if (init) await ctx.addInitScript(init);
   const page = await ctx.newPage();
   const errors = [];
@@ -148,7 +175,7 @@ async function happy(browser) {
   );
   ok("host preview shows the camera", previewMoves);
   const { link, id, path } = await goLive(host, "QA happy path");
-  ok("share link carries the signed title, and the end-to-end key in its fragment", /\?title=QA%20happy%20path&ts=[\w-]{20,}#k=[\w-]{43}&s=[\w-]{87}$/.test(link), link);
+  ok("share link carries the signed title, and the end-to-end key in its fragment", /\?title=QA%20happy%20path&ts=[\w-]{20,}#k=[\w-]{43}&s=[\w-]{87}&a=[\w-]{22}$/.test(link), link);
   ok("host page is titled after the webinar", (await page.locator('[data-testid="webinar-title"]').innerText()) === "QA happy path");
   await page.click('[data-testid="share-link"]');
   await page.getByText("Copied").waitFor({ timeout: 5000 });
@@ -347,7 +374,7 @@ async function viewer(browser) {
   /* the link before anyone is live: the wait, then the picture on its own */
   const created = await api("/api/live", { title: "QA early" });
   const early = await person(browser);
-  await early.page.goto(`${BASE}/live/${created.id}?title=${encodeURIComponent(created.title.title)}&ts=${created.title.sig}#k=${EARLY_KEY}`);
+  await early.page.goto(`${BASE}/live/${created.id}?title=${encodeURIComponent(created.title.title)}&ts=${created.title.sig}${earlyFragment(created.viewerPass)}`);
   ok("before the host is live: “Not started yet”", await early.page.getByText("Not started yet").waitFor({ timeout: 15000 }).then(() => true, () => false));
   await early.page.click('[data-testid="watch"]');
   ok("…Watch: “Waiting for the host to go live”", await early.page.getByText("Waiting for the host to go live").waitFor({ timeout: 20000 }).then(() => true, () => false));
@@ -418,8 +445,26 @@ async function viewer(browser) {
   await tampered.page.goto(`${BASE}/live/not-a-code`);
   ok("an invalid id shows the not-found page", (await tampered.page.locator('meta[name="robots"][content*="noindex"]').count()) > 0 && (await tampered.page.locator('[data-testid="live-notice"]').count()) === 0);
   ok("…and so is its tree", (await fetch(`${BASE}/api/live/NOT-AN-ID/tree`)).status === 404);
-  await tampered.page.goto(`${BASE}/live/zzz-zzzz-zzz#k=${EARLY_KEY}`);
+  await tampered.page.goto(`${BASE}/live/zzz-zzzz-zzz${earlyFragment("A".repeat(22))}`);
   ok("a well-formed id nobody made reads as not started", await tampered.page.getByText("Not started yet").waitFor({ timeout: 15000 }).then(() => true, () => false));
+  // The id alone, without the link's pass, gets no viewer's place; nor does another webinar's pass.
+  const viewerTicket = (pass) => fetch(`${BASE}/api/live/${created.id}/ticket`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ role: "viewer", pass }) });
+  ok("a viewer's ticket without the link's pass is refused", (await viewerTicket(undefined)).status === 403);
+  ok("…or with another webinar's pass", (await viewerTicket(other.viewerPass)).status === 403);
+  ok("…and given with it", (await viewerTicket(created.viewerPass)).status === 200);
+  const turnedAway = await person(browser);
+  await turnedAway.page.goto(`${BASE}/live/${created.id}${earlyFragment(other.viewerPass)}`);
+  await turnedAway.page.locator('[data-testid="watch"]:not([disabled])').waitFor({ timeout: 20000 });
+  await turnedAway.page.click('[data-testid="watch"]');
+  ok("a link with another webinar's pass is turned away with “Can't decrypt”", (await turnedAway.page.locator('[data-testid="live-key-problem"]').getAttribute("data-problem", { timeout: 20000 }).catch(() => null)) === "wrong");
+  noErrors("viewer turned away", [turnedAway], /status of 403/);
+  await turnedAway.ctx.close();
+  // A link cut down to its key alone is broken, not played unsigned (a new document, not a hash change).
+  await tampered.page.goto("about:blank");
+  await tampered.page.goto(`${BASE}/live/${created.id}#k=${EARLY_KEY}`);
+  ok("a link with only the key says it can't decrypt, with no Watch", (await tampered.page.locator('[data-testid="live-key-problem"]').getAttribute("data-problem", { timeout: 20000 }).catch(() => null)) === "wrong" && (await tampered.page.locator('[data-testid="watch"]').count()) === 0);
+  const huge = await fetch(`${BASE}/api/live/${created.id}/ticket`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ role: "viewer", pass: created.viewerPass, filler: "x".repeat(10000) }) });
+  ok("a request body over 4 KB is refused", huge.status === 413, String(huge.status));
   const end = await fetch(`${BASE}/api/live/${created.id}/end`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hostKey: "nope" }) });
   ok("ending without the host key is refused", end.status === 403, String(end.status));
   const ticket = await fetch(`${BASE}/api/live/${created.id}/ticket`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ role: "source", hostKey: other.hostKey }) });
@@ -468,6 +513,26 @@ async function hostCases(browser) {
       ok("host, denied then allowed, Try again: the preview comes", await host.page.locator('[data-testid="go-live"]:not([disabled])').waitFor({ timeout: 15000 }).then(() => true, () => false));
     }
     noErrors(`host ${kind}`, [host]);
+    await host.ctx.close();
+  }
+
+  /* the full link is in the copy only: not in the page, where anything reading the DOM would find its key */
+  {
+    const host = await person(browser, { debug: false, permissions: ["camera", "microphone", "clipboard-read", "clipboard-write"] });
+    await host.page.goto(`${BASE}/live`);
+    await host.page.locator('[data-testid="go-live"]:not([disabled])').waitFor({ timeout: 30000 });
+    await host.page.click('[data-testid="go-live"]');
+    const share = host.page.locator('[data-testid="share-link"]');
+    await share.waitFor({ timeout: 30000 });
+    const html = await host.page.content();
+    await share.click();
+    await host.page.getByText("Copied").waitFor({ timeout: 5000 });
+    const copied = await host.page.evaluate(() => navigator.clipboard.readText());
+    const key = /#k=([\w-]{43})&s=[\w-]{87}&a=[\w-]{22}$/.exec(copied)?.[1];
+    ok("host: Copy link gives the full link, key and all", !!key, copied.replace(/#.*/, "#…"));
+    ok("…which is nowhere in the page", (await share.getAttribute("data-link")) === null && !!key && !html.includes(key));
+    await endWebinar(host);
+    noErrors("host link copy", [host]);
     await host.ctx.close();
   }
 

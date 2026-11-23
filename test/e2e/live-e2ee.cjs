@@ -30,7 +30,7 @@ function ok(name, pass, detail) {
 /**
  * Installed in every page before its scripts: a tap on every RTCDataChannel (what this browser
  * sends and receives, as the bytes are), keeping media packets (version 1, type 0). `tamper`
- * flips one payload byte in every 40th video packet this page receives, before the engine sees
+ * flips one payload byte in every 10th video packet this page receives, before the engine sees
  * it: a parent that alters frames. Only frames no other frame needs (DISCARDABLE) are altered, so
  * the picture plays on around the dropped ones; altering a frame others build on freezes the
  * picture until the next keyframe, as losing it would. A tampering page that relays passes its
@@ -327,8 +327,9 @@ const tapStats = (page) => page.evaluate(() => { const { keyframes, ...rest } = 
     await share.waitFor({ timeout: 30_000 });
     const link = await share.getAttribute("data-link");
     const keyB64 = /#k=([A-Za-z0-9_-]{43})(&|$)/.exec(link)?.[1];
-    const pubB64 = /&s=([A-Za-z0-9_-]{87})$/.exec(link)?.[1];
-    ok("the share link carries a 256-bit key and the host's public signing key in its fragment", !!keyB64 && !!pubB64, link?.replace(/#k=.*/, "#k=<43 chars>&s=<87 chars>"));
+    const pubB64 = /&s=([A-Za-z0-9_-]{87})(&|$)/.exec(link)?.[1];
+    const passB64 = /&a=([A-Za-z0-9_-]{22})$/.exec(link)?.[1];
+    ok("the share link carries a 256-bit key, the host's public signing key and the viewers' pass in its fragment", !!keyB64 && !!pubB64 && !!passB64, link?.replace(/#k=.*/, "#k=<43 chars>&s=<87 chars>&a=<22 chars>"));
     if (!keyB64 || !pubB64) throw new Error("no key in the link");
     const shown = await share.innerText();
     ok("the link as shown on the host's page leaves the key out", !shown.includes(keyB64));
@@ -360,6 +361,18 @@ const tapStats = (page) => page.evaluate(() => { const { keyframes, ...rest } = 
     const cutProblem = await cut.page.getByTestId("live-key-problem").getAttribute("data-problem", { timeout: 20_000 }).catch(() => null);
     ok("a link whose key was cut short says it can't decrypt", cutProblem === "wrong", cutProblem ? (await cut.page.getByTestId("live-key-problem").innerText()).split("\n")[0] : "no state");
 
+    // The id alone (it is in the path, on the host's screen, in logs) gets no viewer's place: the
+    // ticket needs the link's pass, and a link with another pass says it can't be used.
+    const id = /\/live\/([a-z-]+)/.exec(link)[1];
+    const byIdAlone = await fetch(`${BASE}/api/live/${id}/ticket`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ role: "viewer" }) });
+    ok("a viewer's ticket for the id alone, without the link's pass, is refused", byIdAlone.status === 403, String(byIdAlone.status));
+    const forged = await person(browser, log);
+    people.push(forged);
+    await forged.page.goto(link.replace(/&a=[^&]*/, `&a=${"A".repeat(22)}`));
+    await forged.page.getByTestId("watch").click({ timeout: 30_000 });
+    const forgedProblem = await forged.page.getByTestId("live-key-problem").getAttribute("data-problem", { timeout: 20_000 }).catch(() => null);
+    ok("a link with the key but another pass is turned away, and says so", forgedProblem === "wrong" && (await forged.page.getByTestId("live-video").count()) === 0, forgedProblem ?? "no state");
+
     const stranger = await person(browser, log);
     people.push(stranger);
     const otherKey = Buffer.from(Array.from({ length: 32 }, (_, i) => (i * 37 + 11) & 0xff)).toString("base64url");
@@ -383,7 +396,7 @@ const tapStats = (page) => page.evaluate(() => { const { keyframes, ...rest } = 
       const raw = new Uint8Array(await crypto.subtle.exportKey("raw", pair.publicKey));
       return btoa(String.fromCharCode(...raw)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     });
-    await misled.page.goto(link.replace(/&s=.*$/, `&s=${otherPub}`));
+    await misled.page.goto(link.replace(/&s=[^&]*/, `&s=${otherPub}`));
     await misled.page.getByTestId("watch").click({ timeout: 30_000 });
 
     // Everyone with the key sees the picture advance.
@@ -457,6 +470,9 @@ const tapStats = (page) => page.evaluate(() => { const { keyframes, ...rest } = 
     );
     if (forwardedTampered > 0) {
       ok("a relay's altered frames are dropped by its children too", droppedDownstream > 0, `the tampering viewer relayed ${forwardedTampered} altered packets; other viewers dropped ${droppedDownstream} frames as tampered`);
+    } else {
+      // Not a pass: said, so a run where it was not exercised does not read as one where it held.
+      console.log("SKIP  a relay's altered frames are dropped by its children too  — the tampering viewer relayed nothing in this run");
     }
     const captured = viewers.find((v) => v !== viewers[1]);
     const proof = await tryKeyframe(captured.page, keyB64, pubB64);

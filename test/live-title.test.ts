@@ -36,6 +36,21 @@ test("titles are one line of at most 80 characters, and lengths read as lengths"
   assert.equal(cleanTitle("a\n\tb"), "a b");
   assert.equal(cleanTitle("x".repeat(200)).length, 80);
   assert.equal(cleanTitle(42), "");
+  // Characters, not UTF-16 units: an emoji at the limit is kept whole or left out, never halved,
+  // and a link can always be made of the result (encodeURIComponent throws on half an emoji).
+  const emoji = cleanTitle(`${"x".repeat(79)}😀😀`);
+  assert.equal(emoji, `${"x".repeat(79)}😀`);
+  for (const raw of [`${"y".repeat(79)}😀`, "\uD83D", "a\uDE00b", `${"z".repeat(319)}😀tail`]) {
+    assert.doesNotThrow(() => viewerLink("https://meet.example", "abc-defg-hij", { title: cleanTitle(raw), sig: "c2ln" }), raw);
+  }
+  assert.equal(cleanTitle("a\uDE00b"), "ab");
+  // No invisible characters to make a title read as something else; emoji sequences stay joined.
+  assert.equal(cleanTitle("Pay‮gnp.exe"), "Paygnp.exe");
+  assert.equal(cleanTitle("Zero​width⁦ and⁩ bidi﻿"), "Zerowidth and bidi");
+  assert.equal(cleanTitle("Family 👨‍👩‍👧 day"), "Family 👨‍👩‍👧 day");
+  // A huge input is cut before any of it is looked at.
+  assert.equal(cleanTitle(" ".repeat(1_000_000) + "late"), "");
+  assert.equal(cleanTitle("ok" + " ".repeat(1_000_000)), "ok");
   assert.equal(durationWords(1), "1 second");
   assert.equal(durationWords(35), "35 seconds");
   assert.equal(durationWords(12 * 60 + 3), "12 min");

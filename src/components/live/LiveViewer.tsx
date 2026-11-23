@@ -110,7 +110,12 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
   const decryptor = useRef<SFrameDecryptor | null>(null);
   /** Frames that did not open, or were not the host's, and were dropped, not played: counted. */
   const [dropped, setDropped] = useState(0);
-  const keyProblem = linkKey?.t === "none" ? KEY_PROBLEM.missing : linkKey?.t === "malformed" || phase.t === "wrong-key" ? KEY_PROBLEM.wrong : null;
+  // The link's key is read while nothing is connected. Once "Watch" is pressed, the session goes
+  // on with the key it started with: an address bar edited meanwhile does not hide a picture
+  // that keeps playing (and relaying) behind the message.
+  const unconnected = phase.t === "checking" || phase.t === "notice" || phase.t === "stuck";
+  const keyProblem =
+    unconnected && linkKey?.t === "none" ? KEY_PROBLEM.missing : (unconnected && linkKey?.t === "malformed") || phase.t === "wrong-key" ? KEY_PROBLEM.wrong : null;
 
   const tree = useLiveTree(phase.t === "over" || keyProblem ? null : id);
   const ownKey = useOwnKey(peer);
@@ -191,10 +196,12 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
     setPhase({ t: "joining" });
     setHasPicture(false);
     setDropped(0);
+    let passRefused = false;
     try {
       const { createOverlayViewer, createSFrameDecryptor, importSFrameKey, importSFrameVerifier, sframeTransform } = await import("@meetly/overlay");
-      // The host's public signing key, when the link has one: then only frames the host signed play.
-      const verifier = linkKey.publicKey ? await importSFrameVerifier(linkKey.publicKey).catch(() => null) : undefined;
+      // The host's public signing key: only frames the host signed play (a link has it, or is malformed).
+      const verifier = await importSFrameVerifier(linkKey.publicKey).catch(() => null);
+      const pass = linkKey.pass;
       if (verifier === null) {
         setPhase({ t: "wrong-key" });
         return;
@@ -204,9 +211,11 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
       const opener = createSFrameDecryptor(await importSFrameKey(linkKey.raw), {
         verifier,
         onOutcome: (outcome) => {
-          if ((outcome !== "wrong-key" && outcome !== "forged") || viewer.current !== overlay) return;
+          // Unencrypted frames count too: with a key in hand, a picture in the clear is never played,
+          // so a stream of them would otherwise end as "can't get the video on this network".
+          if ((outcome !== "wrong-key" && outcome !== "forged" && outcome !== "unencrypted") || viewer.current !== overlay) return;
           const stats = opener.stats();
-          if (stats.ok > 0 || stats["wrong-key"] + stats.forged < WRONG_KEY_AFTER) return;
+          if (stats.ok > 0 || stats["wrong-key"] + stats.forged + stats.unencrypted < WRONG_KEY_AFTER) return;
           // Nothing has played: this link's keys are not the webinar's. Its place goes back.
           viewer.current = null;
           setPeer(null);
@@ -221,9 +230,15 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
         frameTransform: sframeTransform({ decryptor: opener }),
         coordinatorUrl: coordinatorUrl(id),
         ticket: async () => {
-          const answer = await postJson<{ ticket: string; identity: string }>(`/api/live/${id}/ticket`, { role: "viewer", identity: identity.current });
-          identity.current = answer.identity;
-          return answer.ticket;
+          try {
+            const answer = await postJson<{ ticket: string; identity: string }>(`/api/live/${id}/ticket`, { role: "viewer", pass, identity: identity.current });
+            identity.current = answer.identity;
+            return answer.ticket;
+          } catch (error) {
+            // The link's pass is not this webinar's: the link was edited or put together by hand.
+            if (error instanceof LiveRequestError && error.status === 403) passRefused = true;
+            throw error;
+          }
         },
       });
       viewer.current = overlay;
@@ -247,6 +262,10 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
     } catch (error) {
       await viewer.current?.close().catch(() => undefined);
       viewer.current = null;
+      if (passRefused) {
+        setPhase({ t: "wrong-key" });
+        return;
+      }
       setPhase((current) =>
         current.t === "over"
           ? current

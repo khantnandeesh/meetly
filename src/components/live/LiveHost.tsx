@@ -4,13 +4,13 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { CircleAlert, LoaderCircle, Mic, MicOff, Radio, Square, Video, VideoOff } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import type { OverlaySource } from "@meetly/overlay";
 import { CopyIcon } from "@/components/ui/CopyIcon";
 import { Tip } from "@/components/ui/Tip";
 import { copyText, useCopied } from "@/lib/hooks";
 import { LIVE_VIEWER_CAP, audience } from "@/lib/live/tree";
-import { exposeE2eeStats, newWebinarKey, withoutKey } from "@/lib/live/e2ee";
+import { debugHandles, exposeE2eeStats, newWebinarKey, withoutKey } from "@/lib/live/e2ee";
 import { TITLE_MAX, cleanTitle, durationWords, viewerLink } from "@/lib/live/webinar";
 import { CTRL, Card, FocusedHeading, HowItWorks, LiveChip, LiveHeader, ServerlessNote, WebinarHeading, coordinatorUrl, postJson, useLiveTree, useOwnKey } from "./shared";
 import { WhoIsConnected } from "./WhoIsConnected";
@@ -26,6 +26,9 @@ type Phase =
   | { t: "ended"; id: string; message: string; seconds: number | null };
 
 type SignedTitle = { title: string; sig: string } | null;
+
+/** The debug flag is read once per render; nothing announces a change to it. */
+const noSubscription = () => () => {};
 
 /** "the one viewer", "both viewers", "all 7 viewers". */
 const everyone = (n: number) => (n === 1 ? "the one viewer" : n === 2 ? "both viewers" : `all ${n} viewers`);
@@ -74,7 +77,7 @@ export function LiveHost() {
    * The webinar's end-to-end key (src/lib/live/e2ee.ts), made in this browser when it goes live.
    * It is only ever in the share link's fragment, which browsers never send to a server.
    */
-  const [mediaKey, setMediaKey] = useState<{ key: Uint8Array; publicKey: Uint8Array } | null>(null);
+  const [mediaKey, setMediaKey] = useState<{ key: Uint8Array; publicKey: Uint8Array; pass: string } | null>(null);
   const titleId = useId();
 
   const id = phase.t === "live" || phase.t === "ending" || phase.t === "ended" ? phase.id : null;
@@ -86,8 +89,18 @@ export function LiveHost() {
   // The largest audience so far, for the summary at the end (adjusted while rendering, not in an effect).
   if (onAir && watching > peak) setPeak(watching);
 
-  const shareUrl = id && mediaKey ? viewerLink(location.origin, id, signed, mediaKey.key, mediaKey.publicKey) : "";
+  const shareUrl = id && mediaKey ? viewerLink(location.origin, id, signed, mediaKey) : "";
   const copyLink = useCopied(() => copyText(shareUrl));
+  const debug = useSyncExternalStore(noSubscription, debugHandles, () => false);
+
+  // Whether this page is still shown: a camera that arrives after it has gone is stopped.
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const askForMedia = useCallback(async () => {
     setPhase({ t: "asking" });
@@ -106,6 +119,11 @@ export function LiveHost() {
     for (const constraints of attempts) {
       try {
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (!mounted.current) {
+          // The host left the page while the browser was asking: the camera is let go at once.
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
         setNoMicrophone(stream.getAudioTracks().length === 0);
         setMedia(stream);
         setPhase({ t: "ready" });
@@ -176,9 +194,13 @@ export function LiveHost() {
   async function goLive() {
     if (!media) return;
     setError(null);
+    setConfirmEnd(false);
+    setThenHome(false);
     setPhase({ t: "starting" });
+    /** The source closed for good (ended or stopped) before going live finished: the phase says so already. */
+    let closedEarly = false;
     try {
-      const created = await postJson<{ id: string; hostKey: string; title: SignedTitle }>("/api/live", { title: cleanTitle(title) });
+      const created = await postJson<{ id: string; hostKey: string; viewerPass: string; title: SignedTitle }>("/api/live", { title: cleanTitle(title) });
       // The key lives as long as this page: a reload is a new webinar (beta).
       hostKey.current = created.hostKey;
       setSigned(created.title ?? null);
@@ -190,7 +212,7 @@ export function LiveHost() {
       const { signer, publicKey } = await generateSFrameSigner();
       const encryptor = createSFrameEncryptor(await importSFrameKey(key), { signer });
       exposeE2eeStats(() => encryptor.stats());
-      setMediaKey({ key, publicKey });
+      setMediaKey({ key, publicKey, pass: created.viewerPass });
       const overlay = createOverlaySource({
         frameTransform: sframeTransform({ encryptor }),
         coordinatorUrl: coordinatorUrl(created.id),
@@ -200,9 +222,13 @@ export function LiveHost() {
       const started = { at: 0 };
       overlay.on("closed", (reason) => {
         if (reason === "left") return;
-        // Over for good: the camera is let go, as it is when the host ends it.
+        closedEarly = true;
+        // Over for good: the camera is let go, as it is when the host ends it, and an End dialog
+        // that was open goes with the webinar (it would open again on the next one otherwise).
         media.getTracks().forEach((track) => track.stop());
         setMedia(null);
+        setConfirmEnd(false);
+        setThenHome(false);
         setPhase({
           t: "ended",
           id: created.id,
@@ -211,10 +237,13 @@ export function LiveHost() {
         });
       });
       await overlay.connect();
+      // Ended or stopped while connecting: the ended state stands, and the camera is already let go.
+      if (closedEarly) return;
       setPeer(overlay.status()?.path[0] ?? null);
       const video = media.getVideoTracks()[0];
       const audio = media.getAudioTracks()[0];
       await overlay.publish(audio ? { video, audio } : { video });
+      if (closedEarly) return;
       started.at = Date.now();
       setSince(started.at);
       setPeak(0);
@@ -222,6 +251,8 @@ export function LiveHost() {
     } catch (e) {
       await source.current?.close().catch(() => undefined);
       source.current = null;
+      // A failure because it closed for good is already said by the ended state ("Start another").
+      if (closedEarly) return;
       setError(e instanceof Error ? e.message : "Couldn’t go live.");
       setPhase({ t: "ready" });
     }
@@ -464,7 +495,9 @@ export function LiveHost() {
                   <button
                     type="button"
                     onClick={copyLink.copy}
-                    data-link={shareUrl}
+                    // The full link, key and all, is in the page only for tests (meetly:debug):
+                    // otherwise only the copy holds it, out of reach of whatever reads the DOM.
+                    data-link={debug ? shareUrl : undefined}
                     className="btn btn-secondary h-12 w-full justify-between rounded-xl bg-surface-2 px-3.5 text-sm"
                     data-testid="share-link"
                   >
