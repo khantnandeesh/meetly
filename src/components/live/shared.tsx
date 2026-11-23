@@ -15,11 +15,14 @@ export function BetaTag() {
   );
 }
 
-/** `narrow`: as wide as the viewer's page (`max-w-5xl`), so the logo lines up with the video. */
-export function LiveHeader({ narrow = false }: { narrow?: boolean }) {
+/**
+ * `narrow`: as wide as the viewer's page (`max-w-5xl`), so the logo lines up with the video.
+ * `onLeave`: given the logo's in-app navigation, which it may cancel (the host's page, while live).
+ */
+export function LiveHeader({ narrow = false, onLeave }: { narrow?: boolean; onLeave?: (event: { preventDefault: () => void }) => void }) {
   return (
     <header className={`mx-auto flex w-full items-center justify-between gap-3 px-4 py-5 sm:px-8 ${narrow ? "max-w-5xl" : "max-w-6xl"}`}>
-      <Logo />
+      <Logo onNavigate={onLeave} />
     </header>
   );
 }

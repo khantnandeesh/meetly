@@ -3,6 +3,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { CircleAlert, LoaderCircle, Mic, MicOff, Radio, Square, Video, VideoOff } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { OverlaySource } from "@meetly/overlay";
 import { CopyIcon } from "@/components/ui/CopyIcon";
@@ -60,6 +61,9 @@ export function LiveHost() {
   const [micOn, setMicOn] = useState(true);
   const [camOn, setCamOn] = useState(true);
   const [confirmEnd, setConfirmEnd] = useState(false);
+  /** The End dialog was opened by the logo: once it ends, the host goes home. */
+  const [thenHome, setThenHome] = useState(false);
+  const router = useRouter();
   /** When it went live (this browser's clock), for the timer and the summary. */
   const [since, setSince] = useState<number | null>(null);
   const [peak, setPeak] = useState(0);
@@ -127,7 +131,7 @@ export function LiveHost() {
   }, [media, phase.t]);
 
   // Leaving the page ends the webinar: closing or reloading the tab (the browser asks first while
-  // it is on), or following a link away from it. A reload is a new webinar (the key lives as long
+  // it is on), or following a link away from it (the logo asks first: askBeforeLeaving). A reload is a new webinar (the key lives as long
   // as the page), so without the end, viewers would be left on the last frame of one that can
   // never come back. `sendBeacon` still goes out as the page unloads.
   const liveId = phase.t === "live" ? phase.id : null;
@@ -238,6 +242,17 @@ export function LiveHost() {
     media?.getTracks().forEach((track) => track.stop());
     setMedia(null);
     setPhase({ t: "ended", id: liveId, message: "Your webinar has ended", seconds: since ? Math.round((Date.now() - since) / 1000) : null });
+    if (thenHome) router.push("/");
+  }
+
+  // Following the logo while live would end the webinar without a word (leaving the page ends it),
+  // so it asks first with the End dialog, as closing or reloading the tab asks. Opening the logo in
+  // a new tab or window leaves this page alone, so that is not asked about (Link's onNavigate).
+  function askBeforeLeaving(event: { preventDefault: () => void }) {
+    if (phase.t !== "live") return;
+    event.preventDefault();
+    setThenHome(true);
+    setConfirmEnd(true);
   }
 
   const name = signed?.title ?? cleanTitle(title);
@@ -271,7 +286,7 @@ export function LiveHost() {
 
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
-      <LiveHeader />
+      <LiveHeader onLeave={askBeforeLeaving} />
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 pb-16 sm:px-8 lg:gap-6">
         {before ? (
           <WebinarHeading
@@ -402,7 +417,13 @@ export function LiveHost() {
               <>
                 <div className="flex flex-wrap items-center justify-between gap-3" role="group" aria-label="Host controls">
                   {switches}
-                  <Dialog.Root open={confirmEnd} onOpenChange={setConfirmEnd}>
+                  <Dialog.Root
+                    open={confirmEnd}
+                    onOpenChange={(open) => {
+                      setConfirmEnd(open);
+                      if (!open) setThenHome(false);
+                    }}
+                  >
                     <Dialog.Trigger className="btn ctrl-danger" disabled={phase.t === "ending"} data-testid="end-live">
                       {phase.t === "ending" ? <LoaderCircle className="anim-spin size-4" aria-hidden="true" /> : <Square className="size-4 fill-current" aria-hidden="true" />}
                       {phase.t === "ending" ? "Ending…" : "End webinar"}
@@ -430,7 +451,7 @@ export function LiveHost() {
                             Cancel
                           </Dialog.Close>
                           <button className="btn ctrl-danger" onClick={() => void end()} data-testid="end-live-confirm">
-                            End for everyone
+                            {thenHome ? "End and leave" : "End for everyone"}
                           </button>
                         </div>
                       </Dialog.Content>

@@ -293,7 +293,8 @@ async function scale(browser) {
 /* ------------------------------------------------------------------ 3b. the host leaves the page */
 
 async function hostLeaves(browser) {
-  // Closing the tab, reloading or following a link away ends it: the end goes out as the page goes.
+  // Closing the tab, reloading or following the logo away ends it, each after asking (the browser's
+  // own prompt, or the End dialog for the logo).
   for (const how of ["close", "reload", "link"]) {
     const host = await person(browser);
     const { id, path } = await goLive(host, `QA host ${how}`);
@@ -305,10 +306,30 @@ async function hostLeaves(browser) {
       asked = dialog.type() === "beforeunload";
       void dialog.accept();
     });
+    if (how === "link") {
+      // The logo asks first, with the End dialog; Cancel stays live.
+      await host.page.locator("header a[href='/']").click();
+      const dialog = host.page.getByRole("dialog", { name: "End this webinar?" });
+      ok("host link: the logo asks first, with the End dialog", await dialog.waitFor({ timeout: 5000 }).then(() => true, () => false));
+      ok("…its button reads “End and leave”", (await host.page.locator('[data-testid="end-live-confirm"]').innerText()).trim() === "End and leave");
+      await host.page.getByRole("button", { name: "Cancel" }).click();
+      await sleep(500);
+      ok("…Cancel: still live, still on the page, the viewer still watching", (await dialog.count()) === 0 && /\/live$/.test(host.page.url()) && (await host.page.locator('[data-testid="host-viewers"]').count()) === 1 && (await untilMoving(viewer.page, 10000)) !== null);
+      // A plain End afterwards is not "End and leave".
+      await host.page.click('[data-testid="end-live"]');
+      await dialog.waitFor();
+      ok("…End itself still reads “End for everyone”", (await host.page.locator('[data-testid="end-live-confirm"]').innerText()).trim() === "End for everyone");
+      await host.page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+    }
     const at = Date.now();
     if (how === "close") await host.page.close({ runBeforeUnload: true });
     else if (how === "reload") await host.page.reload();
-    else await host.page.locator("header a[href='/']").click();
+    else {
+      await host.page.locator("header a[href='/']").click();
+      await host.page.click('[data-testid="end-live-confirm"]');
+      ok("host link: End and leave goes home", await host.page.waitForURL(`${BASE}/`, { timeout: 15000 }).then(() => true, () => false), host.page.url());
+    }
     const ended = await viewer.page.locator('[data-testid="live-over"]').waitFor({ timeout: 15000 }).then(() => true, () => false);
     ok(`host ${how}: viewer sees “This webinar has ended”`, ended, `after ${Date.now() - at} ms; tree ${JSON.stringify(await tree(id)).slice(0, 80)}`);
     if (how !== "link") ok(`host ${how}: the browser asked first`, asked);
