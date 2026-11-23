@@ -1562,6 +1562,17 @@ would spend them all on something that is not under test.
   sixteen viewers do not sit where 180 do (run 45130383283: 21% of decoding samples at depth 2,
   12% of light ones), while latency grows about 40 ms a hop; unweighed, that run's 20 ms apart
   was the depth mix (10 ms weighed). *Decided by integrator 2026-11-23.*
+  **[D70] Compared between siblings.** *(Integration engineer, 2026-11-23.)* Each decoding
+  viewer's sample is set against the light viewers with the same parent and the same network
+  profile in the same 2 s, and the check is the p50 of those differences (each sample's mean
+  latency, every bucket at its middle), still within 15 ms. The depth mix was not all: sixteen
+  peers pooled sit wherever their own sixteen links put them. Sixteen *light* viewers drawn at
+  random and taken for decoders came out more than 15 ms from the rest by D58's measure in 40%
+  (gate run 45211601384) and 21% (45202616067) of 2,000 draws, 95% of them within −40…+30 ms:
+  the 0–30 ms swings between runs were that. Paired, the same draws never came out more than
+  15 ms apart (95% within ±10 ms), and the real decoders were 1.5 and 4.7 ms from their light
+  siblings in those runs (D58 said 30 and 10). With fewer than 30 paired samples the check falls
+  back to D58's, and the report gives both.
 - **One source**, encoding Chromium's fake camera, on shard 0.
 - Several pages per browser process.
 
@@ -1803,6 +1814,7 @@ Rotating speakers on the overlay. Out of scope.
 | D67 | A parent's children do not crowd one backup; the source crowded is the last backup offered; peers standing by on it beyond its room are advised to one at the parent's depth; the source's excess child goes one level down (integration engineer, 2026-11-23) | 6.6 |
 | D68 | Frames the source skips for want of room are spread over the key interval; the keyframe's room is reserved in the window it lands in (integration engineer, 2026-11-23) | 9.2 |
 | D69 | Stalls are reported: `silence` events, the tick's lateness, the source's longest gap between published frames (integration engineer, 2026-11-23) | 12.1 |
+| D70 | The honesty check pairs each decoding viewer with its light siblings (same parent, network profile and 2 s); the p50 of the differences within 15 ms (integration engineer, 2026-11-23) | 13.2 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
