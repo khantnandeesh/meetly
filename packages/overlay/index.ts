@@ -21,6 +21,7 @@ export * from "./protocol";
 export * from "./runtime";
 export type * from "./types";
 export type { FrameTransform } from "./transform";
+export { FrameIntegrityError } from "./transform";
 export * from "./media/sframe";
 
 export type OverlayConnectOptions = {

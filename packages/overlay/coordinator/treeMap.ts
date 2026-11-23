@@ -20,6 +20,14 @@ import type { Scoring } from "./scoring";
 export const HOLD_MS = 10_000;
 /** A peer reported dead by a child, or one that refused a link, is not offered for this long. */
 export const SUSPECT_MS = 3_000;
+/**
+ * [D65] A relay reported for changed frames (`parent-bad`) by this many different children within
+ * `BAD_REPORT_WINDOW_MS` is offered to nobody, and promoted by nobody, for `DISTRUST_MS`. One
+ * report alone is not enough: a single viewer must not be able to push a relay out.
+ */
+export const BAD_REPORTS_TO_DISTRUST = 2;
+export const BAD_REPORT_WINDOW_MS = 60_000;
+export const DISTRUST_MS = 10 * 60_000;
 /** SPEC §6.6: a peer whose socket has been closed this long is forgotten. */
 export const FORGET_MS = 30_000;
 /** SPEC §8.1: a relay must have been failing for this long before it is demoted. */
@@ -71,6 +79,10 @@ export type TreeNode = Omit<PeerRecord, "conn"> & {
   /** When it lost or left a parent, lately. */
   parentChanges: number[];
   suspectUntil: number;
+  /** [D65] Children that reported it for changed frames (`parent-bad`), and when. */
+  badReports: Map<PeerId, number>;
+  /** [D65] Not offered to anyone, nor promoted, until then: reported by enough children. */
+  distrustedUntil: number;
   /** Peers a link to which failed, and until when not to offer them again. */
   avoid: Map<PeerId, number>;
   /** Since when it has been without anyone to connect to, or null. */
@@ -122,6 +134,8 @@ export function newNode(init: Pick<TreeNode, "peer" | "identity" | "name" | "tic
     held: new Map(),
     parentChanges: [],
     suspectUntil: 0,
+    badReports: new Map(),
+    distrustedUntil: 0,
     avoid: new Map(),
     waitingSince: null,
     lastAssignAt: 0,
@@ -379,6 +393,7 @@ export class TreeMap {
   offerable(node: TreeNode, now: number): boolean {
     if (node.role === "leaf" || node.conn === null || node.demotingSince !== null) return false;
     if (this.isStale(node, now) || node.suspectUntil > now) return false;
+    if (node.role !== "source" && node.distrustedUntil > now) return false;
     return node.role === "source" || (node.parent !== null && node.depth !== DEPTH_UNKNOWN && this.reachesSource(node.peer));
   }
 
@@ -620,7 +635,7 @@ export class TreeMap {
     const out: { node: TreeNode; provisional: boolean }[] = [];
     for (const node of this.nodes.values()) {
       if (node === asker || node.role !== "leaf" || !node.canRelay || node.conn === null || node.parent === null || node.depth === DEPTH_UNKNOWN) continue;
-      if (exclude.includes(node.peer) || this.isStale(node, now) || now - node.demotedAt < REPROMOTE_AFTER_MS || node.suspectUntil > now) continue;
+      if (exclude.includes(node.peer) || this.isStale(node, now) || now - node.demotedAt < REPROMOTE_AFTER_MS || node.suspectUntil > now || node.distrustedUntil > now) continue;
       const path = this.path(node.peer);
       if (path.includes(asker.peer) || path[path.length - 1] !== this.source || exclude.some((peer) => path.includes(peer))) continue;
       if (this.judge(node, now).eligible && node.verdict.fanout > 0) out.push({ node, provisional: false });

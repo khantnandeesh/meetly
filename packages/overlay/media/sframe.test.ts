@@ -17,6 +17,12 @@ import {
   mediaPayload,
   packetizeFrame,
   sframeTransform,
+  signStreamConfig,
+  verifyStreamConfig,
+  FrameIntegrityError,
+  decodePeerMessage,
+  encodePeerMessage,
+  type StreamConfig,
   type EncodedFrame,
   type FrameHeader,
   type ReceivedFrame,
@@ -246,6 +252,81 @@ test("the engine's hook: an encryptor marks streams as SFrame, a decryptor drops
   assert.equal(source.receive, undefined);
   const sealed = await source.send!(frame());
   assert.deepEqual((await viewer.receive!(received(sealed)))!.data, frame().data);
-  assert.equal(await viewer.receive!(received({ ...sealed, data: sealed.data.subarray(1) })), null);
+  // [D65] What a relay changed rejects, so that the engine can count it against that relay; dropped all the same.
+  await assert.rejects(viewer.receive!(received({ ...sealed, data: sealed.data.subarray(1) })), FrameIntegrityError);
   assert.deepEqual(outcomes, ["ok", "tampered"]);
+});
+
+test("[D65] tampered, forged and unencrypted frames reject as integrity failures; a missing or wrong key does not", async () => {
+  const key = await importSFrameKey(rawKey(11));
+  const other = await importSFrameKey(rawKey(12));
+  const { signer, publicKey } = await generateSFrameSigner();
+  const verifier = await importSFrameVerifier(publicKey);
+  const signed = await createSFrameEncryptor(key, { signer }).encrypt(frame());
+  const unsigned = await createSFrameEncryptor(key).encrypt(frame());
+  const viewer = sframeTransform({ decryptor: createSFrameDecryptor(key, { verifier }) });
+  const outcome = (error: unknown) => (error instanceof FrameIntegrityError ? error.outcome : "other");
+  assert.ok(await viewer.receive!(received(signed)));
+  assert.equal(await viewer.receive!(received({ ...signed, data: signed.data.subarray(2) })).catch(outcome), "tampered");
+  assert.equal(await viewer.receive!(received(unsigned)).catch(outcome), "forged");
+  assert.equal(await viewer.receive!(received(frame())).catch(outcome), "unencrypted");
+  // Another webinar's key, or none: nothing a relay did. Dropped without blame.
+  assert.equal(await sframeTransform({ decryptor: createSFrameDecryptor(other) }).receive!(received(signed)), null);
+  assert.equal(await sframeTransform({ decryptor: createSFrameDecryptor(null) }).receive!(received(signed)), null);
+});
+
+const CONFIG: StreamConfig = {
+  id: 0,
+  kind: "video",
+  configId: 3,
+  codec: "vp8",
+  bitrateKbps: 1200,
+  width: 1280,
+  height: 720,
+  fps: 30,
+  scalability: "L1T3",
+  keyIntervalFrames: 60,
+  stripes: [{ index: 0, kind: "data", temporal: [0, 1, 2] }],
+  sframe: true,
+  description: "AAECAw",
+};
+
+test("[D66] a stream configuration signed by the source is the source's, and nothing changed in it is", async () => {
+  const key = await importSFrameKey(rawKey(13));
+  const { signer, publicKey } = await generateSFrameSigner();
+  const verifier = await importSFrameVerifier(publicKey);
+  const signed = await signStreamConfig(CONFIG, { key, signer });
+  assert.ok(signed.sig?.startsWith("s."));
+  // It survives the wire: the protocol keeps `sig`, and the field order does not matter.
+  const wired = decodePeerMessage(encodePeerMessage({ t: "config", stream: signed }));
+  assert.equal(wired?.t, "config");
+  const back = (wired as { stream: StreamConfig }).stream;
+  assert.equal(await verifyStreamConfig(back, { key, verifier }), true);
+  assert.equal(await verifyStreamConfig(Object.fromEntries(Object.entries(back).reverse()) as StreamConfig, { key, verifier }), true);
+  for (const changed of [{ description: "AAECBA" }, { codec: "vp9" }, { configId: 4 }, { scalability: "L1T1" }, { sig: undefined }]) {
+    assert.equal(await verifyStreamConfig({ ...signed, ...changed }, { key, verifier }), false, JSON.stringify(changed));
+  }
+  // A configuration tagged with the key alone (anyone with the link can) is not the source's.
+  assert.equal(await verifyStreamConfig(await signStreamConfig(CONFIG, { key }), { key, verifier }), false);
+  // Another signer's is not either.
+  const stranger = await generateSFrameSigner();
+  assert.equal(await verifyStreamConfig(await signStreamConfig(CONFIG, { signer: stranger.signer }), { key, verifier }), false);
+});
+
+test("[D66] with the key only, a configuration is checked by its tag; with nothing, anything goes", async () => {
+  const key = await importSFrameKey(rawKey(14));
+  const tagged = await signStreamConfig(CONFIG, { key });
+  assert.ok(tagged.sig?.startsWith("g."));
+  assert.equal(await verifyStreamConfig(tagged, { key }), true);
+  assert.equal(await verifyStreamConfig({ ...tagged, description: "AAECBA" }, { key }), false);
+  assert.equal(await verifyStreamConfig(tagged, { key: await importSFrameKey(rawKey(15)) }), false);
+  assert.equal(await verifyStreamConfig(CONFIG, { key }), false, "unsigned");
+  assert.equal(await verifyStreamConfig(CONFIG, {}), true, "no key, no check");
+  // The hook: the source signs, the viewer checks.
+  const { signer, publicKey } = await generateSFrameSigner();
+  const source = sframeTransform({ encryptor: createSFrameEncryptor(key, { signer }), config: { key, signer } });
+  const viewer = sframeTransform({ decryptor: createSFrameDecryptor(key), config: { key, verifier: await importSFrameVerifier(publicKey) } });
+  const announced = await source.signConfig!(CONFIG);
+  assert.equal(await viewer.verifyConfig!(announced), true);
+  assert.equal(await viewer.verifyConfig!({ ...announced, width: 640 }), false);
 });

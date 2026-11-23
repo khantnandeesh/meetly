@@ -38,11 +38,12 @@ import {
   type MetricsEvent,
   type MetricsSample,
   type OverlayParams,
+  type PeerId,
   type ServerMessageOf,
   type StreamConfig,
 } from "./protocol";
 import type { Listenable, Logger, SessionClock, Unsubscribe } from "./runtime";
-import { inOrder, markStreamConfig } from "./transform";
+import { FrameIntegrityError, inOrder, integrityCounter, markStreamConfig } from "./transform";
 import type { OverlayConnectOptions, OverlayEvents, OverlaySource, OverlayState, OverlayViewer } from "./index";
 
 /** SPEC D18, when the session's params do not say: nobody relays before this long; the probe waits for it too. */
@@ -77,6 +78,13 @@ const PROBE_AFTER_PARENT_MS = 200;
 const SOURCE_ALONE_FANOUT = 6;
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
+/**
+ * [D65] Frames from one peer that fail their integrity checks (tampered, forged, stripped of their
+ * encryption: media/sframe.ts), this many within `INTEGRITY_WINDOW_MS`, and a viewer leaves that
+ * parent. A frame over DTLS is not damaged by the network: only a relay changes one.
+ */
+export const INTEGRITY_FAILURES_TO_LEAVE = 5;
+export const INTEGRITY_WINDOW_MS = 2000;
 /** The source applies SPEC §11.4's uplink rule once a second. */
 const RATE_EVERY_MS = 1000;
 /** §11.4: the source never goes below this. */
@@ -487,6 +495,10 @@ abstract class PeerEngine {
 class ViewerEngine extends PeerEngine {
   private player: Player | null = null;
   private readonly decode: boolean;
+  /** [D65] Integrity failures per peer the frame came from. */
+  private readonly integrity = integrityCounter(INTEGRITY_FAILURES_TO_LEAVE, INTEGRITY_WINDOW_MS);
+  /** [D66] Configurations are checked one after another, so that an older one never lands last. */
+  private configChecks: Promise<void> = Promise.resolve();
   private glassToGlass = emptyHistogram();
   /** [D46] Frames shown during a [D45] catch-up: counted apart from the latency. */
   private catchUpAge = emptyHistogram();
@@ -514,7 +526,14 @@ class ViewerEngine extends PeerEngine {
     node.on(
       "frame",
       receive
-        ? inOrder(receive, (frame) => player.push(frame), { alive: () => this.state !== "closed", onError: (error) => this.options.logger?.warn("overlay", "a frame transform failed; the frame is dropped", error) })
+        ? inOrder(receive, (frame) => player.push(frame), {
+            alive: () => this.state !== "closed",
+            onError: (error, frame) => {
+              // [D65] Changed on the way: counted against the peer it came from.
+              if (error instanceof FrameIntegrityError) this.noteIntegrityFailure(frame?.from ?? null);
+              else this.options.logger?.warn("overlay", "a frame transform failed; the frame is dropped", error);
+            },
+          })
         : (frame) => player.push(frame),
     );
     // §10.2: D follows the link to the parent: congestion's estimate of what arrives.
@@ -547,9 +566,32 @@ class ViewerEngine extends PeerEngine {
   }
 
   protected override onConfig(config: StreamConfig): void {
+    // [D66] With a `verifyConfig`, only the source's own configuration is used; one that is not
+    // counts against the parent it came down from (D65).
+    const verify = this.options.frameTransform?.verifyConfig;
+    if (!verify) return this.useConfig(config);
+    this.configChecks = this.configChecks.then(async () => {
+      const genuine = await verify(config).catch(() => false);
+      if (this.state === "closed") return;
+      if (genuine) return this.useConfig(config);
+      this.options.logger?.warn("overlay", `stream ${config.id}: a configuration that is not the source's was ignored`);
+      this.noteIntegrityFailure(this.node?.status().stripes[0]?.parent ?? null, INTEGRITY_FAILURES_TO_LEAVE);
+    });
+  }
+
+  private useConfig(config: StreamConfig): void {
     const known = this.streams.get(config.id);
     super.onConfig(config);
     if (!known || known.configId !== config.configId) void this.player?.configure([...this.streams.values()]).catch((error: unknown) => this.events.emit("error", error instanceof Error ? error : new Error(String(error))));
+  }
+
+  /** [D65] One more integrity failure from `peer` (`weight` of them, for a forged configuration): too many, and the node leaves it. */
+  private noteIntegrityFailure(peer: PeerId | null, weight = 1): void {
+    if (!peer || !this.node) return;
+    const now = this.clock.now();
+    let over = false;
+    for (let i = 0; i < weight && !over; i++) over = this.integrity.note(peer, now);
+    if (over && this.node.rejectParent(peer)) this.options.logger?.warn("overlay", `left parent ${peer}: its frames failed their integrity checks`);
   }
 
   protected sideOfSample(sample: MetricsSample): void {
@@ -654,14 +696,15 @@ class SourceEngine extends PeerEngine {
     // A new configuration goes out after the frames encoded before it, as it does without a
     // transform: frames still being transformed must not reach viewers after it.
     source.on("config", (raw) => {
-      const announce = () => {
-        const config = this.mark(raw);
+      const announce = async () => {
+        const config = await this.announced(raw);
         node.publishConfig(config);
         this.streams.set(config.id, config);
-        this.client.sendStreams(source.streams().map(this.mark));
+        this.client.sendStreams(await Promise.all(source.streams().map(this.announced)));
       };
-      if (ordered) ordered.after(announce);
-      else announce();
+      const failed = (error: unknown) => this.events.emit("error", error instanceof Error ? error : new Error(String(error)));
+      if (ordered) ordered.after(() => announce().catch(failed));
+      else void announce().catch(failed);
     });
     source.on("error", (error) => this.events.emit("error", error));
     // SPEC §11.4: the encoder's target from the source's own uplink and the audience's hint.
@@ -677,13 +720,19 @@ class SourceEngine extends PeerEngine {
 
   /** A stream's configuration as announced: `sframe` when the transform encrypts. */
   private readonly mark = (config: StreamConfig) => markStreamConfig(config, this.options.frameTransform);
+  /** [D66] And signed, when the transform signs configurations. */
+  private readonly announced = async (raw: StreamConfig): Promise<StreamConfig> => {
+    const config = this.mark(raw);
+    const sign = this.options.frameTransform?.signConfig;
+    return sign ? sign(config) : config;
+  };
 
   async publish(input: ProgramInput): Promise<void> {
     const node = this.node;
     const source = this.source;
     if (!node || !source) throw new Error("overlay: publish() before connect()");
     await source.start(input);
-    const streams = source.streams().map(this.mark);
+    const streams = await Promise.all(source.streams().map(this.announced));
     for (const config of streams) {
       node.publishConfig(config);
       this.streams.set(config.id, config);

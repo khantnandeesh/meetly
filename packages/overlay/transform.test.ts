@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { inOrder, markStreamConfig } from "./transform";
+import { FrameIntegrityError, inOrder, integrityCounter, markStreamConfig } from "./transform";
 import type { StreamConfig } from "./protocol";
 
 /** The engine's frame hook (transform.ts): steps run together, results come out in order. */
@@ -82,4 +82,37 @@ test("a stream is announced as SFrame only when the transform encrypts", () => {
   assert.equal(markStreamConfig(config, { receive: async (f) => f }), config);
   assert.equal(markStreamConfig(config, { sframe: true, send: async (f) => f }).sframe, true);
   assert.equal(config.sframe, false);
+});
+
+test("[D66] after() with a run that awaits holds back what follows until it is done", async () => {
+  const out: string[] = [];
+  const push = inOrder((n: number) => Promise.resolve(n), (value) => out.push(`frame ${value}`));
+  push(0);
+  push.after(async () => {
+    await tick(10);
+    out.push("config");
+  });
+  push(1);
+  await tick(30);
+  assert.deepEqual(out, ["frame 0", "config", "frame 1"]);
+});
+
+test("[D65] onError hears which item failed; integrityCounter says when a peer has sent too many", async () => {
+  const failed: unknown[] = [];
+  const push = inOrder(
+    (n: number) => (n === 1 ? Promise.reject(new FrameIntegrityError("tampered")) : Promise.resolve(n)),
+    () => undefined,
+    { onError: (error, item) => failed.push([error instanceof FrameIntegrityError ? error.outcome : "other", item]) },
+  );
+  push(0);
+  push(1);
+  await tick(5);
+  assert.deepEqual(failed, [["tampered", 1]]);
+
+  const counter = integrityCounter(3, 1000);
+  assert.deepEqual([counter.note("a", 0), counter.note("b", 10), counter.note("a", 20)], [false, false, false]);
+  assert.equal(counter.note("a", 1500), false, "the first two have left the window");
+  assert.equal(counter.note("a", 1600), false);
+  assert.equal(counter.note("a", 1700), true, "three within a second");
+  assert.equal(counter.note("a", 1800), false, "and the count starts again");
 });

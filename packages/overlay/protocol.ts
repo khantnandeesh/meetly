@@ -808,6 +808,8 @@ const streamConfig = object({
   sframe: bool,
   /** Codec-specific decoder configuration (`VideoDecoderConfig.description`), base64url. */
   description: optional(str(8192)),
+  /** [D66] The source's authentication of this configuration (media/sframe.ts): "s." or "g.", then base64url. */
+  sig: optional(str(256)),
 });
 export type StreamConfig = Infer<typeof streamConfig>;
 
@@ -1212,7 +1214,7 @@ const clientMessage = tagged({
   },
   /** Something happened in the overlay that the coordinator should know, after the fact. */
   report: {
-    event: oneOf("parent-dead", "parent-switch", "backup-lost", "link-failed", "child-gone"),
+    event: oneOf("parent-dead", "parent-switch", "backup-lost", "link-failed", "child-gone", "parent-bad"),
     stream: streamId,
     stripe: stripeIndex,
     /** Who it is about. */

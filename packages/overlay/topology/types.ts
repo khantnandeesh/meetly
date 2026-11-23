@@ -160,7 +160,7 @@ export interface CoordinatorPort {
   /** False while the socket is down. Repair must work regardless (SPEC §7.5). */
   readonly connected: boolean;
   need(stream: number, stripe: number, want: "parent" | "backup", exclude: PeerId[]): Promise<Assignment | null>;
-  report(event: "parent-dead" | "parent-switch" | "backup-lost" | "link-failed" | "child-gone", stream: number, stripe: number, peer: PeerId, next?: PeerId | null): void;
+  report(event: "parent-dead" | "parent-switch" | "backup-lost" | "link-failed" | "child-gone" | "parent-bad", stream: number, stripe: number, peer: PeerId, next?: PeerId | null): void;
   /** `assign` and `role` messages the coordinator sends unasked. */
   onAssign(listener: (assignments: Assignment[], reason: "join" | "need" | "rebalance" | "move") => void): () => void;
   /** `fanout`, when given, caps the active children this peer takes as a relay (a provisional relay, SPEC §8.1 [D38]). */
@@ -210,6 +210,12 @@ export interface OverlayNode extends Listenable<OverlayNodeEvents> {
   /** The playout delay in force (*D*, SPEC §10.2) and the media held ahead of playout, in ms: reported upstream in FEEDBACK (SPEC §4.5). */
   setPlayout(playoutDelayMs: number, bufferMs: number): void;
   status(): NodeStatus;
+  /**
+   * [D65] The application found frames from `peer` changed on the way (integrity checks failed):
+   * if it is this node's parent, and not the source, the node reports it (`parent-bad`), rules it
+   * out for `BAD_PARENT_MS`, and repairs to another parent. True if it did.
+   */
+  rejectParent(peer: PeerId): boolean;
   /** The estimates of the links to direct children: the source feeds them to its rate controller. */
   childEstimates(): LinkEstimate[];
   /** The node's counters since the last call (they start again from zero), for the metrics sample. */

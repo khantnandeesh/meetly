@@ -42,8 +42,8 @@
  * be checked a GOP late. It costs 64 bytes a frame (about 41 kbit/s more) and, in Chromium, about
  * 0.07 ms to sign and 0.13 ms to verify a frame.
  */
-import { MediaFlag, MEDIA_E2E_HEADER_BYTES, MEDIA_HEADER_BYTES, encodeMediaHeader, type FrameHeader } from "../protocol";
-import type { FrameTransform } from "../transform";
+import { MediaFlag, MEDIA_E2E_HEADER_BYTES, MEDIA_HEADER_BYTES, encodeMediaHeader, type FrameHeader, type StreamConfig } from "../protocol";
+import { FrameIntegrityError, type FrameTransform } from "../transform";
 import type { EncodedFrame } from "../types";
 
 export const SFRAME_VERSION = 1;
@@ -261,15 +261,115 @@ export function createSFrameDecryptor(key: SFrameKey | null, options: SFrameDecr
   };
 }
 
+/* ------------------------------ the stream configuration [D66] ------------------------------ */
+
+/**
+ * [D66] A stream's configuration is authenticated as its frames are. Frames carry `configId` in
+ * their authenticated header, but the configuration itself (codec, its `description`, the layers)
+ * travels down the tree from relay to relay, and a relay could change it and leave its children
+ * unable to decode. So the source puts `sig` on each configuration it announces, over the
+ * configuration's canonical form (its fields in sorted order, `sig` left out):
+ *
+ * - with a signer: "s." and the ECDSA P-256 signature, base64url (only the source can make it);
+ * - with the key only: "g." and a 12-byte random IV and the AES-GCM tag over the canonical form
+ *   as associated data, base64url (anyone with the link can make it, as with frames).
+ *
+ * A viewer with the source's public key accepts only an "s." signature that holds. One with the
+ * key only accepts a "g." tag that holds, and an "s." signature it cannot check (as it plays
+ * signed frames it cannot check).
+ */
+const CONFIG_SIG_ECDSA = "s.";
+const CONFIG_SIG_GMAC = "g.";
+
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([key, v]) => key !== "sig" && v !== undefined);
+    entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([key, v]) => `${JSON.stringify(key)}:${canonical(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+const configBytes = (config: StreamConfig) => bytes(utf8.encode(`meetly-stream-config\n${canonical(config)}`));
+
+function base64url(data: Uint8Array): string {
+  let text = "";
+  for (const byte of data) text += String.fromCharCode(byte);
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromBase64url(text: string): Uint8Array | null {
+  try {
+    const raw = atob(text.replace(/-/g, "+").replace(/_/g, "/"));
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** [D66] The configuration with its `sig`: the signer's when there is one, else the key's tag. */
+export async function signStreamConfig(config: StreamConfig, parts: { key?: SFrameKey | null; signer?: CryptoKey; random?: (out: Uint8Array<ArrayBuffer>) => void }): Promise<StreamConfig> {
+  const body = configBytes(config);
+  if (parts.signer) return { ...config, sig: CONFIG_SIG_ECDSA + base64url(new Uint8Array(await crypto.subtle.sign(ECDSA, parts.signer, body))) };
+  if (!parts.key) return config;
+  const iv = new Uint8Array(12);
+  (parts.random ?? ((out: Uint8Array<ArrayBuffer>) => void crypto.getRandomValues(out)))(iv);
+  const tag = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv, additionalData: body, tagLength: 128 }, parts.key.aes, new Uint8Array(0)));
+  return { ...config, sig: CONFIG_SIG_GMAC + base64url(concat(iv, tag)) };
+}
+
+/** [D66] Whether a configuration is the source's, as far as this viewer can tell (see above). */
+export async function verifyStreamConfig(config: StreamConfig, parts: { key?: SFrameKey | null; verifier?: CryptoKey }): Promise<boolean> {
+  if (!parts.verifier && !parts.key) return true;
+  const sig = config.sig ?? "";
+  const body = configBytes(config);
+  if (sig.startsWith(CONFIG_SIG_ECDSA)) {
+    const raw = fromBase64url(sig.slice(CONFIG_SIG_ECDSA.length));
+    if (!raw || raw.byteLength !== SFRAME_SIGNATURE_BYTES) return false;
+    if (!parts.verifier) return true;
+    return crypto.subtle.verify(ECDSA, parts.verifier, bytes(raw), body).catch(() => false);
+  }
+  if (parts.verifier || !parts.key || !sig.startsWith(CONFIG_SIG_GMAC)) return false;
+  const raw = fromBase64url(sig.slice(CONFIG_SIG_GMAC.length));
+  if (!raw || raw.byteLength !== 12 + 16) return false;
+  return crypto.subtle
+    .decrypt({ name: "AES-GCM", iv: bytes(raw.slice(0, 12)), additionalData: body, tagLength: 128 }, parts.key.aes, bytes(raw.slice(12)))
+    .then(() => true)
+    .catch(() => false);
+}
+
+/** [D65] What a relay can have done to a frame: these reject `receive` with a `FrameIntegrityError`. */
+const RELAYS_DOING: ReadonlySet<SFrameOutcome> = new Set<SFrameOutcome>(["tampered", "forged", "unencrypted"]);
+
 /**
  * The engine's hook (`OverlayConnectOptions.frameTransform`) for an encryptor at the source, a
- * decryptor at a viewer, or both.
+ * decryptor at a viewer, or both. [D65] A frame a relay changed rejects `receive` with a
+ * `FrameIntegrityError` (it is dropped all the same). [D66] Given `config` (the key, and the
+ * signer at the source or the source's public key at a viewer), stream configurations are signed
+ * and checked.
  */
-export function sframeTransform(parts: { encryptor?: SFrameEncryptor; decryptor?: SFrameDecryptor }): FrameTransform {
-  const { encryptor, decryptor } = parts;
+export function sframeTransform(parts: {
+  encryptor?: SFrameEncryptor;
+  decryptor?: SFrameDecryptor;
+  config?: { key?: SFrameKey | null; signer?: CryptoKey; verifier?: CryptoKey };
+}): FrameTransform {
+  const { encryptor, decryptor, config } = parts;
   return {
     sframe: !!encryptor,
     ...(encryptor ? { send: (frame: EncodedFrame) => encryptor.encrypt(frame) } : {}),
-    ...(decryptor ? { receive: async <F extends EncodedFrame>(frame: F) => (await decryptor.decrypt(frame)).frame } : {}),
+    ...(decryptor
+      ? {
+          receive: async <F extends EncodedFrame>(frame: F) => {
+            const { outcome, frame: out } = await decryptor.decrypt(frame);
+            if (RELAYS_DOING.has(outcome)) throw new FrameIntegrityError(outcome);
+            return out;
+          },
+        }
+      : {}),
+    ...(encryptor && config && (config.signer || config.key) ? { signConfig: (c: StreamConfig) => signStreamConfig(c, { key: config.key, signer: config.signer }) } : {}),
+    ...(decryptor && config && (config.verifier || config.key) ? { verifyConfig: (c: StreamConfig) => verifyStreamConfig(c, { key: config.key, verifier: config.verifier }) } : {}),
   };
 }

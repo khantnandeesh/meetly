@@ -96,6 +96,8 @@ export const BACKUP_REJECT_MS = 10_000;
  * the source sent five of its six children, and 182 peers below them, into cold repairs).
  */
 export const SOURCE_SILENT_MS = 1_000;
+/** [D65] A parent rejected for changed frames is not tried again for this long. */
+export const BAD_PARENT_MS = 10 * 60_000;
 /** A parent takes a peer with nothing to watch over its fan-out, up to this many times it. */
 export const OVER_FANOUT_FACTOR = 2;
 /** One replay a second per child and stream (SPEC §14). */
@@ -1708,7 +1710,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ losing the parent ------------------------------ */
 
-  function parentDied(now: number, why: "silent" | "closed" | "leaving" | "loop" | "grace"): void {
+  function parentDied(now: number, why: "silent" | "closed" | "leaving" | "loop" | "grace" | "bad"): void {
     const dead = parent;
     if (!dead) return;
     moveTo = [];
@@ -1730,12 +1732,14 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     // sees its socket, offers it again if it is there.
     const isSource = dead.depth === 0 || dead.id === sourceId;
     if (why !== "loop" && !isSource) markUnreachable(dead.id, now);
+    // [D65] A parent that sent changed frames is ruled out for longer than one that went silent.
+    if (why === "bad") unreachable.set(dead.id, now + BAD_PARENT_MS);
     if (previous && previous !== dead) {
       const older = previous;
       previous = null;
       release(older);
     }
-    if (dead.link.state === "open" && why !== "loop" && why !== "leaving") {
+    if (dead.link.state === "open" && why !== "loop" && why !== "leaving" && why !== "bad") {
       // Perhaps only a stall. Ask it to stand by instead: if it is alive it says so, and becomes
       // the new backup (SPEC §7.4). If it is dead, nothing comes back and the link is dropped.
       previous = dead;
@@ -2409,6 +2413,15 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     },
 
     status,
+
+    rejectParent(peer) {
+      // [D65] Only the parent, and never the source (D64): nobody else has the stream.
+      if (!parent || parent.id !== peer || parent.depth === 0 || peer === sourceId || stopping) return false;
+      coordinator.report("parent-bad", primaryId(), 0, peer);
+      logger?.warn("node", `${self}: parent ${peer} sent frames that failed their integrity checks; leaving it`);
+      parentDied(clock.now(), "bad");
+      return true;
+    },
 
     childEstimates(): LinkEstimate[] {
       const now = clock.now();

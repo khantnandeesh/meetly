@@ -21,7 +21,7 @@ import {
 import type { Assignment, Capabilities, ClientMessage, ClientMessageOf, MetricsSample, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
 import type { ConnId, ConnMeta, CoordinatorCore, CoordinatorCoreOptions, CoreRequest, CoreResponse, Effect, RoomSnapshot, RoomStats } from "./types";
 import { scoring } from "./scoring";
-import { DEPTH_UNKNOWN, FORGET_MS, MOVE_SHARE, REBALANCE_EVERY_MS, SUSPECT_MS, TreeMap, newNode } from "./treeMap";
+import { BAD_REPORTS_TO_DISTRUST, BAD_REPORT_WINDOW_MS, DEPTH_UNKNOWN, DISTRUST_MS, FORGET_MS, MOVE_SHARE, REBALANCE_EVERY_MS, SUSPECT_MS, TreeMap, newNode } from "./treeMap";
 import type { Placement, TreeNode } from "./treeMap";
 
 /** WebSocket close codes (SPEC §6.2). Repeated in ./index.ts for callers. */
@@ -683,6 +683,15 @@ class Core implements CoordinatorCore {
           // If its socket is gone as well, it is gone. If not, it is not offered until it speaks again.
           if (about.conn === null) this.forget(fx, about);
           else about.suspectUntil = now + SUSPECT_MS;
+        }
+        break;
+      case "parent-bad":
+        // [D65] A child found the frames from this relay changed. Enough different children, and
+        // nobody offers it again for a while; it is never the source (D64: nobody else has the stream).
+        if (about && about.role !== "source" && about.peer !== node.peer) {
+          for (const [reporter, at] of about.badReports) if (now - at > BAD_REPORT_WINDOW_MS) about.badReports.delete(reporter);
+          about.badReports.set(node.peer, now);
+          if (about.badReports.size >= BAD_REPORTS_TO_DISTRUST) about.distrustedUntil = now + DISTRUST_MS;
         }
         break;
       case "child-gone":
