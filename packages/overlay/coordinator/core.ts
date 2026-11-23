@@ -27,8 +27,14 @@ import type { Placement, TreeNode } from "./treeMap";
 /** WebSocket close codes (SPEC §6.2). Repeated in ./index.ts for callers. */
 const CLOSE = { normal: 1000, badTicket: 4001, full: 4002, kicked: 4003, ended: 4004, badMessage: 4005, replaced: 4006 } as const;
 
-/** How long a joiner waits for a free slot before it is sent over a fan-out (see `overloadForJoiner`). */
-const JOIN_OVER_FANOUT_AFTER_MS = 3_000;
+/**
+ * How long a joiner waits for a free slot before it is sent over a fan-out (see `overloadForJoiner`).
+ * [D71] 1 s, was 3: at a session's start the first relays are a NAT check and a probe away (about
+ * 4 s), joiners come at 4 a second, and every one that came before them waited the whole 3 s (gate
+ * run 45225920753: 21 of the first 199 joins over 2 s from welcome to linked). The source's excess
+ * is now relieved one level down as soon as a relay has room (D67).
+ */
+const JOIN_OVER_FANOUT_AFTER_MS = 1_000;
 /** The share of the audience offered a better backup in one second, at most. */
 const BACKUP_ADVICE_SHARE = 0.05;
 /** SPEC §6.5: a grant lives ten minutes and is replaced two minutes before it expires. */
