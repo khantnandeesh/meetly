@@ -25,6 +25,7 @@ import type { CoordinatorClient } from "./coordinator/types";
 import { createLayerGate, createLinkEstimator, createSourceRateController, createUplinkProbe } from "./congestion/index";
 import { DEFAULT_ENCODING, createPlayer, createProgramSource, probeDecoders } from "./media/index";
 import type { Player, ProgramEncoding, ProgramInput, ProgramSource } from "./media/types";
+import { RENDER_SETTLE_MS, RenderTimes } from "./media/renderGaps";
 import { createOverlayNode, judgeRelay } from "./topology/index";
 import { relayFanout } from "./topology/scoring";
 import type { NodeStats, NodeStatus, OverlayNode } from "./topology/types";
@@ -242,7 +243,7 @@ abstract class PeerEngine {
         logger: this.options.logger,
       });
       this.node = node;
-      node.on("metric", (event) => this.pending.push(event));
+      node.on("metric", (event) => this.onMetric(event));
       // The node's only error is "no parent could be found; rejoining": a state it comes back from
       // by itself, not the end of this peer. It is logged and goes in the metrics sample.
       node.on("error", (error) => {
@@ -312,6 +313,11 @@ abstract class PeerEngine {
     });
   }
   protected lastUp: NodeStats["up"] = null;
+
+  /** A metrics event from the node: into the next sample (a viewer holds `repair` back, D79). */
+  protected onMetric(event: MetricsEvent): void {
+    this.pending.push(event);
+  }
 
   /**
    * [D50] The B a relay is sized by: the session's streams together, as the coordinator's
@@ -528,6 +534,40 @@ class ViewerEngine extends PeerEngine {
   private counted = { rendered: 0, dropped: 0, lost: 0, playedMs: 0, concealedMs: 0, underruns: 0 };
   private firstFrameAt: number | null = null;
   private joinReported = false;
+  /** [D79] When the player rendered each video stream's frames, and `repair` events waiting to be measured on them. */
+  private readonly renders = new Map<number, RenderTimes>();
+  private readonly repairsAwaiting: Extract<MetricsEvent, { t: "repair" }>[] = [];
+
+  /**
+   * [D79] A `repair` event's `freezeMs` is the node's: frames becoming decodable as they arrive.
+   * SPEC §12.2's repair time is the longest gap between rendered frames in the same window, and
+   * that is what goes out as `freezeMs`, once the player has rendered past the window; the node's
+   * goes with it as `arrivalGapMs`.
+   */
+  protected override onMetric(event: MetricsEvent): void {
+    if (event.t === "repair" && this.player) {
+      this.repairsAwaiting.push(event);
+      this.settleRepairs();
+    } else super.onMetric(event);
+  }
+
+  private settleRepairs(): void {
+    if (this.repairsAwaiting.length === 0) return;
+    const nowMs = this.client.sessionClock.now();
+    for (let i = 0; i < this.repairsAwaiting.length; ) {
+      const event = this.repairsAwaiting[i];
+      const renders = this.renders.get(event.stream);
+      const end = (event.firstPacket ?? event.resubscribed) + 1000;
+      const last = renders?.last() ?? null;
+      if ((last === null || last <= end) && nowMs < end + RENDER_SETTLE_MS) {
+        i++;
+        continue;
+      }
+      this.repairsAwaiting.splice(i, 1);
+      const gap = renders?.longestGap(event.lastHeard, end, nowMs) ?? null;
+      this.pending.push(gap === null ? event : { ...event, freezeMs: Math.min(3_600_000, Math.max(0, Math.round(gap))), arrivalGapMs: event.freezeMs });
+    }
+  }
 
   constructor(options: OverlayConnectOptions & { decode?: boolean }) {
     super(options);
@@ -564,6 +604,10 @@ class ViewerEngine extends PeerEngine {
       } else this.glassToGlass[latencyBucket((renderedUs - captureUs) / 1000)]++;
       if (this.lastRenderedUs !== null) this.frameGap[latencyBucket((renderedUs - this.lastRenderedUs) / 1000)]++;
       this.lastRenderedUs = renderedUs;
+      let renders = this.renders.get(_stream);
+      if (!renders) this.renders.set(_stream, (renders = new RenderTimes()));
+      renders.add(renderedUs / 1000);
+      if (this.repairsAwaiting.length > 0) this.settleRepairs();
     });
     player.on("firstFrame", () => {
       this.firstFrameAt ??= this.clock.now();
@@ -616,6 +660,7 @@ class ViewerEngine extends PeerEngine {
   protected sideOfSample(sample: MetricsSample): void {
     const player = this.player;
     if (!player) return;
+    this.settleRepairs();
     const stats = player.stats();
     sample.playoutDelayMs = Math.min(3_600_000, Math.max(0, stats.playoutDelayMs));
     if (stats.video) {

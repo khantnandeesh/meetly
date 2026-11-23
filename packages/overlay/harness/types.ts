@@ -260,8 +260,10 @@ export type SwarmReport = {
   durationS: number;
   /** From `join` events: `firstFrame - start`. */
   joinMs: Quantiles;
-  /** From `repair` events: `freezeMs`. */
+  /** From `repair` events: `freezeMs` (D79: gaps between rendered frames, SPEC §12.2). */
   repairMs: Quantiles;
+  /** [D79] From `repair` events: `arrivalGapMs`, or `freezeMs` where absent: the old measure, gaps between frames decodable on arrival. */
+  repairArrivalMs?: Quantiles;
   /** From every rendered frame of every viewer. */
   glassToGlassMs: Quantiles;
   /** The same, split by depth in the tree. */

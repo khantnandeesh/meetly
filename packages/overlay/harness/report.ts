@@ -88,6 +88,9 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
 
   const join = emptyHistogram();
   const repair = emptyHistogram();
+  // [D79] The old measure, for one round: gaps between frames decodable on arrival.
+  const repairArrival = emptyHistogram();
+  const repairOffsets: number[] = [];
   const glass = emptyHistogram();
   const catchUpAge = emptyHistogram();
   const glassDecoding = emptyHistogram();
@@ -181,6 +184,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
       }
       else if (event.t === "repair") {
         repair[latencyBucket(event.freezeMs)]++;
+        repairArrival[latencyBucket(event.arrivalGapMs ?? event.freezeMs)]++;
+        if (event.arrivalGapMs !== undefined) repairOffsets.push(event.freezeMs - event.arrivalGapMs);
         repairs[event.kind]++;
         if (event.usedCoordinator) repairs.usedCoordinator++;
         repairs.framesLost += event.framesLost;
@@ -311,6 +316,13 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
 
   const joinMs = histogramQuantiles(join);
   const repairMs = histogramQuantiles(repair);
+  const repairArrivalMs = histogramQuantiles(repairArrival);
+  if (repairOffsets.length > 0) {
+    const offsets = exactQuantiles(repairOffsets);
+    notes.push(
+      `repair time (D79) is measured on rendered frames (SPEC §12.2); the old measure, frames decodable on arrival, p95 ${repairArrivalMs.p95 ?? "-"} ms against ${repairMs.p95 ?? "-"}; rendered minus arrival per repair p50 ${offsets.p50} ms, p95 ${offsets.p95} ms, over ${repairOffsets.length} of ${repairMs.n}`,
+    );
+  }
   const glassToGlassMs = histogramQuantiles(glass);
   const checks: GateCheck[] = [
     // A scenario that expects no repair is not failed for having none to time.
@@ -382,6 +394,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     durationS: Math.max(0, ...shards.map((shard) => shard.durationS ?? (shard.endedAt - shard.startedAt) / 1000)),
     joinMs,
     repairMs,
+    repairArrivalMs,
     glassToGlassMs,
     glassToGlassDecoding: decodingQ,
     glassToGlassLight: lightQ,
@@ -443,6 +456,7 @@ export function renderReport(report: SwarmReport): string {
   lines.push("| Measure (ms) | n | p50 | p95 | p99 | max | Proof (7 peers, clean) |", "| --- | ---: | ---: | ---: | ---: | ---: | --- |");
   lines.push(row("Join time", report.joinMs, "18–45"));
   lines.push(row("Repair time", report.repairMs, "206–209 warm, 225–227 cold"));
+  if (report.repairArrivalMs?.n) lines.push(row("Repair time, frames decodable on arrival (D79: the old measure, not the gate's)", report.repairArrivalMs, ""));
   lines.push(row("Glass-to-glass latency", report.glassToGlassMs, ""));
   lines.push(row("Freezes (over 200 ms)", report.freezeMs, ""));
   for (const [depth, q] of Object.entries(report.glassToGlassByDepth)) if (q.n > 0) lines.push(row(`Latency at depth ${depth === "255" ? "unknown" : depth}`, q, ""));

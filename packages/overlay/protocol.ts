@@ -1090,6 +1090,13 @@ const metricsEvent = tagged({
     replayPackets: optional(int(0, 0xffffffff)),
     replayBytes: optional(int(0, 0xffffffff)),
     replayMs: optional(durationMs),
+    /**
+     * [D79] The node's own measure, kept beside `freezeMs` for a round: the longest gap between
+     * frames becoming decodable as they arrived, in the same window. A viewer with a player sends
+     * the rendered measure as `freezeMs` and this beside it; a peer without one sends only `freezeMs`,
+     * which is then this.
+     */
+    arrivalGapMs: optional(durationMs),
   },
   /** A voluntary change of parent. */
   /**
