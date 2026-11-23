@@ -3,7 +3,7 @@
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronRight, LoaderCircle, Presentation, ServerOff, X } from "lucide-react";
 import Link from "next/link";
-import { useId } from "react";
+import { useId, type RefObject } from "react";
 import { LIVE_VIEWER_CAP } from "@/lib/live/tree";
 import { SERVERLESS_LINE } from "@/lib/live/webinar";
 
@@ -21,7 +21,8 @@ const chevron = "mt-2.5 hidden size-5 shrink-0 text-faint transition-transform g
  * - Serverless (beta): Live (/live, packages/overlay), whose video goes browser to browser. Its
  *   limits are said up front: the audience cap, one person on camera, viewers relaying.
  *
- * The focus opens on the first kind that can be chosen, not on Close.
+ * The focus opens on the first kind that can be chosen, not on Close. Closed, it goes back to
+ * `returnFocus`: the dialog opens from a menu item, which is gone by then.
  */
 export function WebinarTypeDialog({
   open,
@@ -29,12 +30,14 @@ export function WebinarTypeDialog({
   standardOffered,
   startingStandard,
   onStandard,
+  returnFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   standardOffered: boolean;
   startingStandard: boolean;
   onStandard: () => void;
+  returnFocus?: RefObject<HTMLElement | null>;
 }) {
   const unavailable = useId();
   return (
@@ -46,6 +49,11 @@ export function WebinarTypeDialog({
           onOpenAutoFocus={(event) => {
             event.preventDefault();
             (event.currentTarget as HTMLElement).querySelector<HTMLElement>("[data-webinar-type]:not([aria-disabled])")?.focus();
+          }}
+          onCloseAutoFocus={(event) => {
+            if (!returnFocus?.current) return;
+            event.preventDefault();
+            returnFocus.current.focus();
           }}
           className="dialog fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-3xl bg-surface shadow-[inset_0_0_0_1px_var(--border-strong),0_30px_80px_-20px_rgb(0_0_0/0.8)]"
         >

@@ -2,7 +2,7 @@
 
 import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
@@ -37,6 +37,7 @@ export default function Home() {
   const toast = useToast();
   const webinarsOffered = useWebinarsOffered();
   const [choosingWebinar, setChoosingWebinar] = useState(false);
+  const moreWays = useRef<HTMLButtonElement>(null);
   async function startWebinar() {
     setStarting(true);
     try {
@@ -94,6 +95,7 @@ export default function Home() {
                 </button>
                 <Dropdown.Root onOpenChange={setMenuOpen}>
                   <Dropdown.Trigger
+                    ref={moreWays}
                     className="btn btn-primary group w-11 rounded-l-md px-0"
                     aria-label="More ways to start a meeting"
                     disabled={starting || preparing}
@@ -142,6 +144,7 @@ export default function Home() {
         standardOffered={webinarsOffered}
         startingStandard={starting}
         onStandard={() => void startWebinar()}
+        returnFocus={moreWays}
       />
     </div>
   );
