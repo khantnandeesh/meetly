@@ -180,10 +180,14 @@ jobs:
           # up; the rest are started together, and one that does not come up is done without.
           url=$(bash packages/overlay/harness/ci/tunnel.sh "$PORT" "$OUT/cloudflared.log")
           echo "$url" > tunnel-1.url
+          # Wait for these, not for every job of this shell: the coordinator above is one too, and a
+          # bare `wait` held the rendezvous until it exited, after the run (gate run 45189520195).
+          pids=()
           for i in $(seq 2 "$TUNNELS"); do
             ( bash packages/overlay/harness/ci/tunnel.sh "$PORT" "$OUT/cloudflared-$i.log" > "tunnel-$i.url" || rm -f "tunnel-$i.url" ) &
+            pids+=("$!")
           done
-          wait
+          [ "${#pids[@]}" -eq 0 ] || wait "${pids[@]}"
           urls=$(cat tunnel-*.url | jq -R . | jq -cs .)
           echo "tunnels: $(echo "$urls" | jq length) of $TUNNELS"
           jq -n --arg url "$url" --argjson urls "$urls" --argjson startAt "$start_at" --arg secret "$secret" --slurpfile layout "$OUT/layout.json" \
