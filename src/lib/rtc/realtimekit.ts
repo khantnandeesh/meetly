@@ -35,6 +35,7 @@ import type {
   LocalEffects,
   LocalMedia,
   LocalSource,
+  MeetingStart,
   NewPoll,
   ParticipantRole,
   RtcCall,
@@ -277,6 +278,7 @@ const identityOf = (peer: { customParticipantId?: string; userId: string; id: st
 export class RealtimeKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "realtimekit" as const;
   readonly mode: CallMode;
+  readonly meetingStart: MeetingStart;
 
   /** Replaced only when a new role brings a new token (see `switchRole`). */
   private grant: Grant;
@@ -391,6 +393,7 @@ export class RealtimeKitCall extends RtcEmitter implements RtcCall {
     this.api = api;
     this.effects = effects;
     this.mode = grant.mode ?? "meeting";
+    this.meetingStart = grant.meetingStart ?? null;
     this.cohosts = grant.coHosts ?? [];
     this.gate = grant.access ?? "open";
     this.pinId = grant.pin ?? null;

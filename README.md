@@ -230,6 +230,29 @@ One policy for every notification in a call, in `src/lib/notices.ts` (tested in
 - Sounds follow the same lines: one knock per burst of requests, presence sounds only up to eight
   people, and above 24 a raised hand is heard only by the host and co-hosts.
 
+## How long the meeting has run
+
+Beside the clock, bottom left ("12:44 PM · 23:15 | code"; in a webinar's audience "● Live · 23:15 ·
+250 watching"), and beside the code in a phone's top bar: minutes and seconds, then hours past the
+first one (`MeetingTimer.tsx`, `src/lib/meetingTime.ts`). On narrow large screens the clock gives way
+first, then the timer; on a crowded phone top bar the timer steps aside whole rather than cut
+anything short. A screen reader hears it as a timer named in whole minutes, never announced.
+
+It counts from when the meeting began, which our server works out once, when /api/token lets
+someone in, and sends as `started` (milliseconds ago, so the browser's clock does not matter).
+Nothing asks again while the meeting runs.
+
+- LiveKit: the room is made at "New meeting" and kept for a day after everyone leaves, so its own
+  creation time is not when the meeting began. Instead whoever is let into the empty room begins
+  it, and that moment is written into the room's record (`startedAt`, `meetingAge` in
+  `src/lib/host.server.ts`).
+- RealtimeKit: the active session's `started_at` (`GET /meetings/{id}/active-session`). A join
+  reads that once and shares it with its other questions (who is host, how many are watching);
+  no session means the meeting begins with this person.
+
+When it can't be known (a meeting that began before the start was recorded, or Cloudflare would
+not answer) the timer counts from when you joined and is named "Time since you joined".
+
 ## Connection quality and using less data
 
 When your own connection has been poor for ten seconds in a row, one chip appears at the top of
@@ -312,8 +335,12 @@ and the host has not joined for thirty days.
 is everyone watching. In a webinar the interface says "webinar" wherever a meeting would be named
 ("Leave webinar", "End webinar for everyone", "You left the webinar").
 
-"New webinar" (under the arrow next to New meeting on the home page) makes a link whose record
-says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
+"New webinar…" (under the arrow next to New meeting on the home page) asks which kind
+(`WebinarTypeDialog.tsx`): **Standard webinar**, described here, or **Serverless webinar (beta)**,
+whose video goes browser to browser and never through a media server (`/live`, `src/components/live/`,
+`packages/overlay`; up to 50 viewers, one person on camera). Standard can be chosen only while
+webinars are on (`MEETLY_WEBINARS_ENABLED`); otherwise it is shown, disabled, with the reason.
+"Standard webinar" makes a link whose record says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
 and a meeting's link cannot become a webinar. The browser that made it is the host. Everyone else
 joins the audience: they watch and listen, raise a hand, react and vote in polls, and have no
 microphone, camera, screen share or tile. Chat is read-only for them ("Only speakers and hosts can
@@ -390,7 +417,7 @@ that in hand:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `MEETLY_WEBINARS_ENABLED` | on | Set to `0`, `false`, `off` or `no` to switch webinars off at once: "New webinar" is no longer offered, the server refuses to start one or to let anyone into one ("Webinars are paused right now."), and the watchdog ends the ones running. Ordinary meetings are not affected. It is read on every request, so on the Worker a change to the variable takes effect with the next request, without a rebuild. |
+| `MEETLY_WEBINARS_ENABLED` | on | Set to `0`, `false`, `off` or `no` to switch webinars off at once: "Standard webinar" can no longer be chosen, the server refuses to start one or to let anyone into one ("Webinars are paused right now."), and the watchdog ends the ones running. Ordinary meetings are not affected. It is read on every request, so on the Worker a change to the variable takes effect with the next request, without a rebuild. |
 | `MEETLY_WEBINAR_MINUTE_LIMIT` | 5000 | The most participant-minutes one webinar session may use. At 80% the host and co-hosts are told roughly how long is left; past it the session is ended for everyone ("This webinar reached its free time limit.") and its link stops letting anyone in. |
 
 The watchdog (`src/lib/costGuard.server.ts`) runs once a minute on the Cloudflare Worker, as a
@@ -466,17 +493,23 @@ Bots join with the microphone off; in a meeting where people ask to join, they w
 
 Production is the Cloudflare Worker `meetly` at https://meet.nandeesh.dev, built with
 [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare) from the `cloudflare-deploy`
-branch. That branch is `main` plus the Workers files: `wrangler.jsonc`, `open-next.config.ts`
-and `.env.production` (`NEXT_PUBLIC_RTC_PROVIDER=realtimekit`). GitHub Actions does the rest.
-**To release, merge `main` into `cloudflare-deploy` and push** (or merge a pull request from
-`main` into `cloudflare-deploy`).
+branch. Since 2026-11-23 `main` holds the same Workers files (`wrangler.jsonc`,
+`open-next.config.ts`, `.env.production` with `NEXT_PUBLIC_RTC_PROVIDER=realtimekit`), and
+`cloudflare-deploy` is `main` as of its last release. GitHub Actions does the rest.
+
+**The release process is in [docs/RELEASING.md](docs/RELEASING.md).** In short: feature branch →
+pull request to `main` (CI must pass) → staging deploys `main` (once set up) → a release pull
+request from `main` to `cloudflare-deploy`, merged with **Create a merge commit** → Deploy runs
+CI again and deploys to production. Both branches are protected: nobody, admins included, pushes
+to them directly (`scripts/protect-branches.sh` sets this up). The same document covers the
+emergency path (deploying with `skip_tests`), rolling back, flaky tests and re-running a job.
 
 ### What runs when
 
 | When | Workflow | What it does |
 | --- | --- | --- |
-| A pull request, or a push to any branch except `cloudflare-deploy` | **CI** (`.github/workflows/ci.yml`) | `npm ci`; `next typegen` and `tsc --noEmit`; lint; `npm test`; `next build` once with `NEXT_PUBLIC_RTC_PROVIDER=livekit` and once with `realtimekit`; all twelve browser-test suites (`node test/e2e/run.cjs`) in Chromium against a LiveKit build and the official `livekit-server` release run with `--dev`. If the browser tests fail, their screenshots and the server logs are attached to the run as an artifact. A newer push to the same branch or pull request cancels the run it replaces. |
-| A push to `cloudflare-deploy`, or **Actions → Deploy → Run workflow** on `cloudflare-deploy` | **Deploy** (`deploy.yml`) | The same CI jobs. Only if all of them pass: in the `production` environment, `npx opennextjs-cloudflare build`, `npx opennextjs-cloudflare deploy`, then a smoke test of https://meet.nandeesh.dev. The run's summary shows the URL and the new Worker version id. |
+| A pull request, or a push to any branch except `cloudflare-deploy` | **CI** (`.github/workflows/ci.yml`) | `npm ci`; `next typegen` and `tsc --noEmit`; lint; `npm test`; `next build` once with `NEXT_PUBLIC_RTC_PROVIDER=livekit` and once with `realtimekit`; every browser-test suite (`node test/e2e/run.cjs`) in Chromium against a LiveKit build and the official `livekit-server` release run with `--dev`. A suite that fails is run once more; if it then passes, the job passes and the suite is reported as "flaky: passed on retry" in the log, as a warning and in the run's summary. If the browser tests fail, their screenshots and the server logs are attached to the run as an artifact. A newer push to the same branch or pull request cancels the run it replaces. |
+| A push to `cloudflare-deploy` (a merged release pull request), or **Actions → Deploy → Run workflow** on `cloudflare-deploy` | **Deploy** (`deploy.yml`) | The same CI jobs (skipped only by the emergency `skip_tests` input, docs/RELEASING.md). Only if all of them pass: in the `production` environment, `npx opennextjs-cloudflare build`, `npx opennextjs-cloudflare deploy`, then a smoke test of https://meet.nandeesh.dev. The run's summary shows the URL and the new Worker version id. |
 | **Actions → Rollback → Run workflow** | **Rollback** (`rollback.yml`) | Lists the Worker's recent deployments and versions, or puts an earlier version back (see below). |
 
 - Deploys never overlap, and a rollback never overlaps a deploy. A deploy that arrives while
@@ -494,8 +527,8 @@ and `.env.production` (`NEXT_PUBLIC_RTC_PROVIDER=realtimekit`). GitHub Actions d
 - The Worker's own secrets (`CLOUDFLARE_API_TOKEN` with the Realtime permission, and
   `MEETLY_SESSION_SECRET`) stay on the Worker and are kept by every deploy. The workflows never
   set, read or print them.
-- The workflow files reach `cloudflare-deploy` the same way as everything else: with the next
-  merge of `main`. Until then a push to `cloudflare-deploy` deploys nothing.
+- Workflow changes reach `cloudflare-deploy` the same way as everything else: with the next
+  release pull request from `main`.
 
 ### One-time setup
 
@@ -557,7 +590,7 @@ Cloudflare keeps every uploaded version of the Worker (the latest 100, and anyth
   ([Wrangler: rollback][wrangler-rollback]).
 
 A rollback does not change the code: the next push to `cloudflare-deploy` deploys whatever is
-there, so revert or fix the bad commit on `main` and merge it across. If one of the Worker's
+there, so revert or fix the bad commit on `main` with a pull request and release again. If one of the Worker's
 secrets was changed after the older version was deployed, Wrangler asks for confirmation (the
 workflow confirms); the run's log says so. Pages opened before a rollback may still ask for the
 newer version's scripts until they are reloaded ([Cloudflare: Version skew][cf-skew]).
@@ -569,8 +602,8 @@ upload a version without deploying it, but a version's URL "runs one uploaded ve
 your production resources" ([Cloudflare: Version URLs][cf-version-urls]): with Meetly's Worker
 secrets, anyone with a preview link could create billed RealtimeKit meetings and participants.
 Preview URLs are also switched off for this Worker (`"preview_urls": false` in
-`wrangler.jsonc`), pull requests target `main`, which has no Workers configuration, and pull
-requests from forks get no secrets. Cloudflare's Previews, which have their own secrets and
+`wrangler.jsonc`), the deploy job only runs for `cloudflare-deploy`, and pull requests from
+forks get no secrets. Cloudflare's Previews, which have their own secrets and
 bindings, would be the way to add them later.
 
 [cf-gha]: https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/
@@ -587,3 +620,34 @@ bindings, would be the way to add them later.
 Any Node host works (Vercel is the simplest). Set `NEXT_PUBLIC_RTC_PROVIDER` and that
 provider's variables (see above) on the host, for the build as well as at run time. The site
 must be served over HTTPS for browsers to allow camera and microphone access.
+
+### Cloudflare Workers
+
+The app also builds for Cloudflare Workers with [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare)
+(`wrangler.jsonc`, `open-next.config.ts`). `npm run dev` / `build` / `start` are unchanged.
+
+```bash
+npm run preview   # build .open-next/ and run it locally in workerd (http://localhost:8787)
+npm run deploy    # build and deploy the `meetly` Worker (workers.dev + meet.nandeesh.dev)
+```
+
+`npm run deploy` needs `wrangler login` or `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers"
+template covers it). Secrets are set once per Worker with `npx wrangler secret put <NAME>` and are
+read as `process.env.<NAME>`; non-secret values go under `vars` in `wrangler.jsonc`. This branch
+builds with `NEXT_PUBLIC_RTC_PROVIDER=realtimekit` (`.env.production`) and needs two secrets:
+`CLOUDFLARE_API_TOKEN` (Realtime permission) and `MEETLY_SESSION_SECRET` (any long random string).
+
+In Workers Builds use build command `npx opennextjs-cloudflare build` and deploy command
+`npx opennextjs-cloudflare deploy`. Plain `wrangler deploy` skips the page-cache step and every
+page then returns 500. For local
+preview, put them in `.dev.vars` (git-ignored).
+
+The Worker's entry is `custom-worker.ts`, not OpenNext's `.open-next/worker.js` directly: it
+passes every request to OpenNext's handler and adds a `scheduled` handler, the webinar cost
+guard, which the Cron Trigger in `wrangler.jsonc` (`triggers.crons`) runs once a minute (see
+"Webinar costs" above). `MEETLY_WEBINARS_ENABLED` and `MEETLY_WEBINAR_MINUTE_LIMIT` are `vars`
+there. To switch webinars off at once, set `MEETLY_WEBINARS_ENABLED` to `0` in the dashboard
+(Workers → meetly → Settings → Variables), which deploys that change straight away, and then in
+`wrangler.jsonc`, or the next deploy turns them back on. `npx wrangler dev --test-scheduled`
+runs the handler locally on `/__scheduled`; without `CLOUDFLARE_API_TOKEN` in `.dev.vars` it
+does nothing and logs `"skipped":"not-configured"`.

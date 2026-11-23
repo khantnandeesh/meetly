@@ -33,6 +33,11 @@ yarn-error.log*
 # env files (can opt-in for committing if needed)
 .env*
 
+# cloudflare
+/.open-next/
+/.wrangler/
+.dev.vars*
+
 # vercel
 .vercel
 
@@ -46,6 +51,7 @@ next-env.d.ts
 
 # stray test output
 /undefined/
+!.env.production
 
 # copied from node_modules by scripts/copy-effects.mjs
 /public/effects/

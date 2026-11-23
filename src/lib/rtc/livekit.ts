@@ -67,6 +67,7 @@ import type {
   LocalEffects,
   LocalMedia,
   LocalSource,
+  MeetingStart,
   NewPoll,
   ParticipantRole,
   RtcCall,
@@ -331,6 +332,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   readonly provider = "livekit" as const;
   readonly native: Room;
   readonly mode: CallMode;
+  readonly meetingStart: MeetingStart;
   switching: "cohost" | "audience" | null = null;
   /** Reconnecting on purpose, with a new token (see `switchRole`): not the call ending. */
   private swapping = false;
@@ -399,6 +401,7 @@ class LiveKitCall extends RtcEmitter implements RtcCall {
   ) {
     super();
     this.mode = grant.mode ?? "meeting";
+    this.meetingStart = grant.meetingStart ?? null;
     const noiseSuppression = choices.noiseSuppression !== false;
     const unavailable = typeof document === "undefined" ? null : blurUnavailable();
     this.fx = {

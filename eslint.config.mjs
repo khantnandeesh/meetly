@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Cloudflare build output:
+    ".open-next/**",
+    ".wrangler/**",
     // Other agents' checkouts (each with its own build output) are not this project's source.
     ".claude/**",
     // Agent skills installed with `npx skills add` (third-party guidance and example code).
@@ -56,6 +59,13 @@ const eslintConfig = defineConfig([
         },
       ],
     },
+  },
+  {
+    // The one exception: Live (beta), /live and /live/<id>, with the route that signs its tickets.
+    // It is the overlay's first use in the app, shipped ahead of the integration step and its
+    // tests on purpose. Only these files may import the package, so no other page bundles it.
+    files: ["src/app/live/**", "src/app/api/live/**", "src/components/live/**", "src/lib/live/**"],
+    rules: { "no-restricted-imports": "off" },
   },
   {
     // The overlay engine is framework-agnostic: no React, no Next.js, nothing of the app's, and

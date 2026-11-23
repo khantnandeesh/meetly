@@ -8,6 +8,7 @@ import type { RtcTile } from "@/lib/rtc/types";
 import { useStageParticipants, useWatchingCount } from "@/lib/useWebinar";
 import { ChatPanel, SaveChatButton } from "./ChatPanel";
 import { HostProvider, useHost } from "./HostTools";
+import { PhoneTimer } from "./MeetingTimer";
 import { ModerationNotices } from "./ModerationNotices";
 import { PeoplePanel } from "./PeoplePanel";
 import { PollToasts } from "./Polls";
@@ -136,18 +137,22 @@ function Audience({ code }: { code: string }) {
       <ReactionFeed />
       {phone && (
         <header className="flex items-center justify-between gap-2 px-3 pt-[max(0.5rem,env(safe-area-inset-top))]">
-          <button
-            onClick={copied.copy}
-            aria-label={`Copy webinar link, code ${code}`}
-            className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
-          >
-            <LogoMark className="size-7 shrink-0" />
-            <span className="truncate">{copied.copied ? "Copied" : code}</span>
-            <CopyIcon copied={copied.copied} />
-            <span className="sr-only" role="status">
-              {copied.copied ? "Link copied" : ""}
-            </span>
-          </button>
+          <div className="@container flex min-w-0 flex-1 items-center">
+            <button
+              onClick={copied.copy}
+              aria-label={`Copy webinar link, code ${code}`}
+              className="inline-flex h-11 min-w-0 cursor-pointer items-center gap-2.5 rounded-xl pr-3 pl-1 font-mono text-[0.8125rem] text-muted active:bg-surface-2"
+            >
+              <LogoMark className="size-7 shrink-0" />
+              <span className="truncate">{copied.copied ? "Copied" : code}</span>
+              <CopyIcon copied={copied.copied} />
+              <span className="sr-only" role="status">
+                {copied.copied ? "Link copied" : ""}
+              </span>
+            </button>
+            {/* Beside the code, as in a meeting: the "Live" chip has no room for it on a narrow phone. */}
+            <PhoneTimer />
+          </div>
           <div className="flex shrink-0 items-center gap-2">
             <LiveCount watching={watching} compact />
             {canModerate && <PeopleToggle open={shown === "people"} onToggle={() => togglePanel("people")} />}

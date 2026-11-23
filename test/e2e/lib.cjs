@@ -19,6 +19,12 @@ function finish() {
   console.log(`\n${results.length - failed.length}/${results.length} passed`);
   return failed.length ? 1 : 0;
 }
+/** How many results are recorded so far: run.cjs notes it before a suite, to see what that suite recorded. */
+const resultCount = () => results.length;
+/** The results recorded since `count`. */
+const resultsSince = (count) => results.slice(count);
+/** Removes and returns the results recorded since `count`, so a suite run again is judged on its second run alone. */
+const dropResultsSince = (count) => results.splice(count);
 
 function launch(extra = []) {
   return chromium.launch({
@@ -36,6 +42,12 @@ async function failureShots(label) {
   for (const person of everyone) {
     await person.page.screenshot({ path: path.join(dir, `_failed-${label}-${++n}.png`) }).catch(() => {});
   }
+}
+
+/** Closes every browser context a suite left open (a failed suite skips its own clean-up), so a retry starts clean. */
+async function closeEveryone() {
+  for (const person of [...everyone]) await person.ctx.close().catch(() => {});
+  everyone.clear();
 }
 
 const DESKTOP = { width: 1280, height: 800 };
@@ -147,6 +159,19 @@ async function shot(person, name) {
 
 const noOverflow = (person) => person.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth);
 
+/** Names of the control bar's buttons that something else is drawn over, at their centre. */
+const coveredButtons = (person) =>
+  person.page.evaluate(() =>
+    [...document.querySelectorAll("footer button")]
+      .filter((button) => button.offsetParent)
+      .filter((button) => {
+        const r = button.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return !hit || !(hit === button || button.contains(hit));
+      })
+      .map((button) => button.getAttribute("aria-label") || button.textContent.trim()),
+  );
+
 module.exports = {
   BASE,
   DESKTOP,
@@ -154,6 +179,10 @@ module.exports = {
   sleep,
   ok,
   finish,
+  resultCount,
+  resultsSince,
+  dropResultsSince,
+  closeEveryone,
   launch,
   client,
   createMeeting,
@@ -172,5 +201,6 @@ module.exports = {
   until,
   shot,
   noOverflow,
+  coveredButtons,
   failureShots,
 };

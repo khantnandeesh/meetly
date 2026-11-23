@@ -12,9 +12,10 @@ const H = require("./lib.cjs");
 const WIDE = { width: 1440, height: 900 };
 
 /**
- * The home page offers "New webinar" only when the server says webinars are on (the cost guard's
- * switch, `{ action: "webinars" }`). That answer is the switch's business and tested with it; here
- * the server is taken to say yes, and everything else reaches the real server.
+ * The home page's "New webinar…" asks which kind; "Standard webinar" in it can be chosen only when
+ * the server says webinars are on (the cost guard's switch, `{ action: "webinars" }`). That answer
+ * is the switch's business and tested with it; here the server is taken to say yes, and
+ * everything else reaches the real server.
  */
 async function offerWebinars(person) {
   await person.page.route("**/api/meeting", async (route) => {
@@ -100,6 +101,14 @@ module.exports = async function webinar(browser) {
   await host.page.getByRole("button", { name: "More ways to start a meeting" }).click();
   await H.shot(host, "home-menu-desktop");
   await host.page.getByRole("menuitem", { name: "New webinar" }).click();
+  const kinds = host.page.getByRole("dialog", { name: "Start a webinar" });
+  H.ok(
+    "New webinar… asks which kind: Standard, and Serverless (beta) with its limit",
+    (await kinds.locator("[data-webinar-type]").evaluateAll((els) => els.map((el) => el.getAttribute("data-webinar-type")).join("|"))) === "standard|serverless" &&
+      /up to 50 viewers/i.test(await kinds.locator('[data-webinar-type="serverless"]').innerText()),
+  );
+  await H.shot(host, "webinar-kind-desktop");
+  await kinds.locator('[data-webinar-type="standard"]').click();
   await host.page.waitForURL(/\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/);
   const url = host.page.url();
   H.ok("New webinar on the home page makes a link and opens it", /\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(url), url);
@@ -151,7 +160,7 @@ module.exports = async function webinar(browser) {
   await H.until(async () => (await tilesOf(host)).length > 0, 8000);
   H.ok("a viewer is never a tile, theirs or anyone's", (await tilesOf(vic)).join() === `${hostId}:camera` && (await tilesOf(host)).join() === `${hostId}:camera`);
   const bar = vic.page.locator("footer");
-  H.ok("desktop: no top bar; the control bar's left cluster says ● Live · 2 watching", (await inCall(vic).locator("header").count()) === 0 && (await H.until(async () => (await bar.locator("[data-live]").innerText()).replace(/\s+/g, " ").includes("Live · 2 watching"), 8000)));
+  H.ok("desktop: no top bar; the control bar's left cluster says ● Live · 0:12 · 2 watching", (await inCall(vic).locator("header").count()) === 0 && (await H.until(async () => /Live · \d+:\d\d · 2 watching/.test((await bar.locator("[data-live]").innerText()).replace(/\s+/g, " ")), 8000)));
   H.ok("…with the code and its copy button beside it", (await bar.getByRole("button", { name: /^Copy webinar link, code / }).count()) === 1);
   H.ok(
     "…the audience's controls are Raise hand, React and Leave",

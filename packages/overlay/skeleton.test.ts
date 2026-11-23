@@ -45,14 +45,20 @@ describe("overlay skeleton", () => {
     for (const part of GATE_MIX) assert.ok(PROFILES[part.profile], part.profile);
   });
 
-  it("is not imported by the app (until the integration step)", () => {
+  it("is not imported by the app (until the integration step), except by Live (beta)", () => {
     const root = join(import.meta.dirname, "..", "..", "src");
+    // The one exception eslint.config.mjs allows: Live (beta), /live and /live/<id>, and the
+    // routes and helpers behind them, shipped ahead of the integration step on purpose.
+    const live = ["app/live", "app/api/live", "components/live", "lib/live"].map((dir) => join(root, dir));
+    // An import of it (static, dynamic, or require), not a mention in a comment.
+    const IMPORTS_OVERLAY = /(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*|^\s*import\s+)["'][^"']*(?:@meetly\/overlay|packages\/overlay)/m;
     const offenders: string[] = [];
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const path = join(dir, entry.name);
-        if (entry.isDirectory()) walk(path);
-        else if (/\.[cm]?[jt]sx?$/.test(entry.name) && /@meetly\/overlay|packages\/overlay/.test(readFileSync(path, "utf8"))) offenders.push(path);
+        if (entry.isDirectory()) {
+          if (!live.includes(path)) walk(path);
+        } else if (/\.[cm]?[jt]sx?$/.test(entry.name) && IMPORTS_OVERLAY.test(readFileSync(path, "utf8"))) offenders.push(path);
       }
     };
     walk(root);

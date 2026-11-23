@@ -5,6 +5,7 @@ import { badgeCount, shortCount } from "@/lib/counts";
 import { useCopied } from "@/lib/hooks";
 import { useCall } from "@/lib/rtc/react";
 import { useUnread } from "./ChatStore";
+import { MeetingTimer } from "./MeetingTimer";
 import { ReactMenu } from "./Reactions";
 import { CopyIcon } from "./ui/CopyIcon";
 import { Tip } from "./ui/Tip";
@@ -83,7 +84,7 @@ export function ViewerControlBar({
   return (
     <footer data-viewer-bar className="grid grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)] items-center gap-4 px-4 pt-1 pb-4">
       <div className="flex min-w-0 items-center gap-1 text-sm text-muted">
-        <LiveCount watching={watching} />
+        <LiveCount watching={watching} timer />
         <span className="mx-2 h-4 w-px shrink-0 bg-border-strong" aria-hidden="true" />
         <Tip label="Copy webinar link">
           <button
@@ -115,8 +116,11 @@ export function ViewerControlBar({
   );
 }
 
-/** "● Live · 250 watching", or on a phone's top bar "● Live · 250". */
-export function LiveCount({ watching, compact = false }: { watching: number; compact?: boolean }) {
+/**
+ * "● Live · 250 watching", or on a phone's top bar "● Live · 250". With `timer`, how long the
+ * webinar has been running too: "● Live · 23:15 · 250 watching" (a phone has it beside the code).
+ */
+export function LiveCount({ watching, compact = false, timer = false }: { watching: number; compact?: boolean; timer?: boolean }) {
   return (
     <p data-live className={`inline-flex shrink-0 items-center gap-2 font-medium text-text ${compact ? "chip h-9 px-3 text-sm" : ""}`}>
       <span className="size-2 rounded-full bg-danger" aria-hidden="true" />
@@ -124,6 +128,14 @@ export function LiveCount({ watching, compact = false }: { watching: number; com
       <span className="text-muted" aria-hidden="true">
         ·
       </span>
+      {timer && (
+        <>
+          <MeetingTimer tip />
+          <span className="text-muted" aria-hidden="true">
+            ·
+          </span>
+        </>
+      )}
       <span className="tabular-nums" data-watching>
         {compact ? (
           <>

@@ -15,10 +15,13 @@ import type { Capabilities, MetricsSample, StreamConfig } from "./protocol";
 import type { PlayerStats, ProgramEncoding, ProgramInput } from "./media/types";
 import type { NodeStatus } from "./topology/types";
 import type { TransportOptions } from "./transport/types";
+import type { FrameTransform } from "./transform";
 
 export * from "./protocol";
 export * from "./runtime";
 export type * from "./types";
+export type { FrameTransform } from "./transform";
+export * from "./media/sframe";
 
 export type OverlayConnectOptions = {
   /** "wss://…/overlay/v1/rooms/<room>/ws". */
@@ -36,6 +39,12 @@ export type OverlayConnectOptions = {
    * knows better than the browser can tell; an application never sets it.
    */
   capabilities?: Partial<Capabilities>;
+  /**
+   * What is done to each frame's payload at the two ends only (./transform.ts): at the source
+   * before packetizing, at a viewer after reassembly. End-to-end encryption is
+   * `sframeTransform(…)` (./media/sframe.ts). Relays never apply it.
+   */
+  frameTransform?: FrameTransform;
 };
 
 export type OverlayState = "idle" | "connecting" | "connected" | "reconnecting" | "closed";
