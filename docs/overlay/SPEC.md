@@ -1365,7 +1365,12 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
   the new parent never sent: a layer it was shedding, and any frame of a temporal layer above the
   lowest cap it announced during the repair (`sub-ack` `maxTemporal`, `layers`). An overloaded
   backup (D37) sheds the top layer; the frame the old parent had begun and the new one never sent
-  is shed, not lost. *Decided by integrator 2026-11-22.*
+  is shed, not lost. *Decided by integrator 2026-11-22.* So is the frame at the switch of a
+  layer the new parent was not sending at all, which shows as the next frame of that layer never
+  being sent either: the new parent's own feed lacked the layer, so its replay did too. (After
+  the switch the link's sequence settles which frames were sent; only the one at the switch is in
+  doubt.) *Clarified by the integration engineer 2026-11-23: the smoke test's lost frame, 3 of 9
+  runs, with no overload at the new parent.*
 - **Join time:** `firstFrame − start`: from `connect()` being called to the first frame rendered.
 
 ### 12.3 The gate run
