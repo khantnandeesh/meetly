@@ -1035,6 +1035,19 @@ while what it has found leaves it under `sourceAloneFanout`, the source probes a
 later toward a child it has not probed toward yet, up to three probes, and its uplink is the
 highest any of them found.
 
+**[D77] The source takes up to eight, when its probe shows the uplink for them.** *(Integration
+engineer, 2026-11-23, on the coordinator's decision.)* `sourceAloneFanout`, when the params do not
+say (D51), is 8, not 6: the source's fan-out is still the formula's at its measured uplink (§8.1,
+D49, D57), between `sourceFanout` and 8, and its probe (D49, D75) is sized for eight children
+(16.2 Mbps at 1,232 kbps). Peers at depth 4 or more set glass-to-glass (gate runs 45225920753 to
+45243574215: 33–43% of samples, 70% after the start-up deadlock), and the source's fan-out is the
+one lever that adds a sixth more room at every level. Compared in the coordinator's simulator, 200
+peers and ten minutes of the gate's churn, with the relays' fan-outs as the gate's runs had them
+(of 176 relays, 61% at 6, 24% at 5, 15% at 2–4), 5% "slow" and 15% "bad" (the round-6 scripts; coordinator/sourceFanout.test.ts runs four of the seeds: 21.8% → 13.6%),
+16 seeds: peer-seconds at depth 4 or more 18.5% → 7.5% (shallower in 15 of 16), cold repairs 59 → 44.
+The other lever named, D60's last slot: kept at the source as well, 19.6% and cold repairs 36 → 45
+(8 seeds); given up at depth 1, 25.5%. Neither was taken.
+
 **[D49] The source alone takes up to six** (decided by integrator 2026-11-22). While no other
 relay, full or provisional, is connected, the source's fan-out is the formula's at its measured
 uplink, between `sourceFanout` and `sourceAloneFanout` (6 when the params do not say): at a
