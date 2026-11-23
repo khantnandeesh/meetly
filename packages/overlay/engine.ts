@@ -86,6 +86,17 @@ const GRANT_LEEWAY_S = 60;
 
 /* ------------------------------ small pieces ------------------------------ */
 
+const hasTurn = (ice: readonly { urls: readonly string[] }[]) => ice.some((server) => server.urls.some((url) => /^turns?:/i.test(url)));
+
+/**
+ * SPEC §8.1 [D80]: whether this peer is behind TURN: its own candidate on the link to a parent is
+ * a relay. A parent's relay (a host on a strict network, or one that offers only relay
+ * candidates) says nothing of the child, and must not bar it from relaying.
+ */
+export function behindTurn(stripes: readonly { parent: string | null }[], links: { get(peer: string): { localTurn?: boolean } | undefined }): boolean {
+  return stripes.some((stripe) => stripe.parent !== null && links.get(stripe.parent)?.localTurn === true);
+}
+
 class Emitter<Events extends Record<string, unknown[]>> implements Listenable<Events> {
   private listeners: { [K in keyof Events]?: Set<(...args: Events[K]) => void> } = {};
   constructor(private readonly logger?: Logger) {}
@@ -246,10 +257,13 @@ abstract class PeerEngine {
       // `welcome` of a reconnection: the links take them.
       this.client.on("message", (message) => {
         if (message.t === "streams" && welcome.role !== "source") node.setStreams(message.streams);
-        else if (message.t === "grant" && message.ice) links.setIce?.(message.ice);
+        // A refresh before the credentials expire: a relayed link restarts ICE with them.
+        else if (message.t === "grant" && message.ice) links.setIce?.(message.ice, { restart: true });
       });
+      // A reconnection's servers are for links made from now on: no ICE restart. Nor are servers
+      // with no TURN taken (a mint that failed): they would take the relay from a peer that needs it.
       this.client.on("welcome", (again) => {
-        if (again !== welcome) links.setIce?.(again.ice);
+        if (again !== welcome && hasTurn(again.ice)) links.setIce?.(again.ice);
       });
       node.on("probe", (spare) => this.onProbe(spare));
       await this.beforeStart(welcome);
@@ -301,8 +315,7 @@ abstract class PeerEngine {
   private checkRoute(): boolean {
     const node = this.node;
     if (this.turnSeen || !node || !this.links || this.welcome?.role === "source") return false;
-    const behindTurn = node.status().stripes.some((stripe) => stripe.parent !== null && this.links!.get(stripe.parent)?.turn === true);
-    if (!behindTurn) return false;
+    if (!behindTurn(node.status().stripes, this.links)) return false;
     this.turnSeen = true;
     if (this.caps) this.caps = { ...this.caps, nat: "relay" };
     this.options.logger?.info("overlay", "the link to the parent goes through TURN: this viewer only watches");

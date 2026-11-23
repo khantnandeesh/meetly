@@ -87,6 +87,7 @@ class LinkImpl implements Link {
   readonly peer: PeerId;
   state: LinkState = "connecting";
   turn = false;
+  localTurn = false;
 
   private readonly events = new Emitter<LinkEvents>((error) => this.options.logger?.error("link", "a listener threw", error));
   private readonly pc: RTCPeerConnection;
@@ -241,19 +242,19 @@ class LinkImpl implements Link {
       if (this.state === "closed") return;
       const byId = new Map<string, Record<string, unknown>>();
       stats.forEach((report: Record<string, unknown>) => byId.set(report.id as string, report));
-      const relay = (pair: Record<string, unknown>) => byId.get(pair.localCandidateId as string)?.candidateType === "relay" || byId.get(pair.remoteCandidateId as string)?.candidateType === "relay";
+      const relayed = (id: unknown) => byId.get(id as string)?.candidateType === "relay";
+      const take = (pair: Record<string, unknown>) => {
+        this.localTurn = relayed(pair.localCandidateId);
+        this.turn = this.localTurn || relayed(pair.remoteCandidateId);
+      };
       // The transport names its selected pair where the browser says (Chromium, Firefox).
       for (const report of byId.values()) {
         const pair = report.type === "transport" && typeof report.selectedCandidatePairId === "string" ? byId.get(report.selectedCandidatePairId) : undefined;
-        if (pair) {
-          this.turn = relay(pair);
-          return;
-        }
+        if (pair) return take(pair);
       }
       for (const report of byId.values()) {
         if (report.type !== "candidate-pair" || report.state !== "succeeded" || !(report.nominated || report.selected)) continue;
-        this.turn = relay(report);
-        return;
+        return take(report);
       }
     } catch {
       // No statistics: leave it as it was.
@@ -274,16 +275,16 @@ class LinkImpl implements Link {
   }
 
   /**
-   * SPEC §5.1 [D80]: fresh ICE servers. The connection is given them; if its route goes through
-   * TURN its relay was allocated with the old credentials, so ICE restarts (the old pair carries
-   * on until a new one is chosen).
+   * SPEC §5.1 [D80]: fresh ICE servers. The connection is given them; with `restart`, if this end
+   * goes through TURN its relay was allocated with the old credentials, so ICE restarts (the old
+   * pair carries on until a new one is chosen).
    */
-  setIce(ice: readonly IceServer[]): void {
+  setIce(ice: readonly IceServer[], restart: boolean): void {
     if (this.state === "closed") return;
     try {
       if (typeof this.pc.getConfiguration !== "function" || typeof this.pc.setConfiguration !== "function") return;
       this.pc.setConfiguration({ ...this.pc.getConfiguration(), iceServers: rtcIce(ice) });
-      if (this.turn && typeof this.pc.restartIce === "function") this.pc.restartIce();
+      if (restart && this.localTurn && typeof this.pc.restartIce === "function") this.pc.restartIce();
     } catch (error) {
       this.options.logger?.warn("link", `new ICE servers for the link to ${this.peer} not taken`, error);
     }
@@ -544,9 +545,9 @@ export function createLinkManager(options: TransportOptions): LinkManager {
     closeAll() {
       for (const link of [...links.values()]) link.close("local");
     },
-    setIce(next) {
+    setIce(next, setOptions) {
       ice = next.slice();
-      for (const link of links.values()) link.setIce(ice);
+      for (const link of links.values()) link.setIce(ice, setOptions?.restart === true);
     },
   };
 }
