@@ -68,10 +68,13 @@ export async function anonymize(snapshot: RoomSnapshot, cap = LIVE_VIEWER_CAP): 
     })
     .sort((a, b) => Number(b.source) - Number(a.source) || naturalOrder(a.label, b.label));
   const sourceOn = peers.some((peer) => peer.role === "source");
+  // The coordinator keeps a viewer's place for a while after its socket closes (it may come back),
+  // and refuses newcomers while those places fill the cap: "full" counts them as it does.
+  const held = snapshot.peers.filter((peer) => peer.role !== "source").length;
   return {
     started: sourceOn && !snapshot.ended,
     ended: snapshot.ended,
-    full: viewers.length >= cap,
+    full: held >= cap,
     viewers: viewers.length,
     cap,
     nodes,
@@ -102,6 +105,18 @@ export function branches(nodes: LiveNode[]): { roots: LiveBranch[]; waiting: Liv
   roots.forEach(visit);
   for (const node of byKey.values()) if (!seen.has(node.key) && !waiting.includes(node)) waiting.push(node);
   return { roots, waiting };
+}
+
+/**
+ * The audience as people should read it: those placed in the tree, who get the video, are
+ * "watching"; those still finding a place (or who cannot be reached) are "connecting". The
+ * coordinator's `viewers` counts both, since both hold one of the places.
+ */
+export function audience(tree: LiveTree | null): { watching: number; connecting: number } {
+  if (!tree) return { watching: 0, connecting: 0 };
+  const { waiting } = branches(tree.nodes);
+  const viewers = tree.nodes.filter((node) => !node.source).length;
+  return { watching: viewers - waiting.length, connecting: waiting.length };
 }
 
 export type PlacedNode = LiveNode & { x: number; y: number; waiting: boolean };

@@ -1,8 +1,8 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation, Radio } from "lucide-react";
+import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
@@ -10,6 +10,7 @@ import { ScheduleDialog } from "@/components/ScheduleDialog";
 import { Logo } from "@/components/ui/Logo";
 import { Dropdown } from "@/components/ui/Menu";
 import { useToast } from "@/components/ui/Toaster";
+import { WebinarTypeDialog } from "@/components/WebinarTypeDialog";
 import { generateCode } from "@/lib/code";
 import { createMeeting, createWebinar } from "@/lib/rtc/provider";
 import { useWebinarsOffered } from "@/lib/webinarSwitch";
@@ -31,12 +32,24 @@ export default function Home() {
   // link is shown; nobody is taken into the call.
   // A webinar is made only here, and is one for good: the link cannot become a meeting later.
   // Unlike a meeting, a made-up code will not do, so a failure is said rather than worked around.
+  // "New webinar…" first asks which kind (WebinarTypeDialog): standard, through the media
+  // provider, which the server may have switched off; or serverless (beta), browser to browser.
   const toast = useToast();
   const webinarsOffered = useWebinarsOffered();
+  const [choosingWebinar, setChoosingWebinar] = useState(false);
+  const moreWays = useRef<HTMLButtonElement>(null);
+  // Leaving this page hides it (Cache Components keep it in an <Activity>) rather than unmounting
+  // it, and a dialog left open, or still closing, stays in the document: the Toaster takes it for
+  // one that has the person's attention and holds every notice back on the next page, the call
+  // included. So the chooser closes as the page goes: before Standard's push, on Serverless's
+  // link (WebinarTypeDialog), and here for any other way out (Back).
+  useLayoutEffect(() => () => setChoosingWebinar(false), []);
   async function startWebinar() {
     setStarting(true);
     try {
-      router.push(`/${await createWebinar()}`);
+      const code = await createWebinar();
+      setChoosingWebinar(false);
+      router.push(`/${code}`);
     } catch (error) {
       setStarting(false);
       toast.push({
@@ -90,6 +103,7 @@ export default function Home() {
                 </button>
                 <Dropdown.Root onOpenChange={setMenuOpen}>
                   <Dropdown.Trigger
+                    ref={moreWays}
                     className="btn btn-primary group w-11 rounded-l-md px-0"
                     aria-label="More ways to start a meeting"
                     disabled={starting || preparing}
@@ -110,19 +124,10 @@ export default function Home() {
                         <CalendarPlus className="size-4 text-muted" aria-hidden="true" />
                         Schedule…
                       </Dropdown.Item>
-                      {webinarsOffered && (
-                        <>
-                          <div className="menu-sep" />
-                          <Dropdown.Item className="menu-item" onSelect={() => void startWebinar()}>
-                            <Presentation className="size-4 text-muted" aria-hidden="true" />
-                            New webinar
-                          </Dropdown.Item>
-                        </>
-                      )}
                       <div className="menu-sep" />
-                      <Dropdown.Item className="menu-item" onSelect={() => router.push("/live")}>
-                        <Radio className="size-4 text-muted" aria-hidden="true" />
-                        Go live (beta)
+                      <Dropdown.Item className="menu-item" onSelect={() => setChoosingWebinar(true)}>
+                        <Presentation className="size-4 text-muted" aria-hidden="true" />
+                        New webinar…
                       </Dropdown.Item>
                     </Dropdown.Content>
                   </Dropdown.Portal>
@@ -141,6 +146,18 @@ export default function Home() {
       </main>
 
       <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />
+      {/* Mounted only while open, so it leaves the document the moment it closes: its exit
+          animation never ends on a page that is being hidden (see the useLayoutEffect above). */}
+      {choosingWebinar && (
+        <WebinarTypeDialog
+          open
+          onOpenChange={setChoosingWebinar}
+          standardOffered={webinarsOffered}
+          startingStandard={starting}
+          onStandard={() => void startWebinar()}
+          returnFocus={moreWays}
+        />
+      )}
     </div>
   );
 }

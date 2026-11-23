@@ -335,8 +335,12 @@ and the host has not joined for thirty days.
 is everyone watching. In a webinar the interface says "webinar" wherever a meeting would be named
 ("Leave webinar", "End webinar for everyone", "You left the webinar").
 
-"New webinar" (under the arrow next to New meeting on the home page) makes a link whose record
-says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
+"New webinar…" (under the arrow next to New meeting on the home page) asks which kind
+(`WebinarTypeDialog.tsx`): **Standard webinar**, described here, or **Serverless webinar (beta)**,
+whose video goes browser to browser and never through a media server (`/live`, `src/components/live/`,
+`packages/overlay`; up to 50 viewers, one person on camera). Standard can be chosen only while
+webinars are on (`MEETLY_WEBINARS_ENABLED`); otherwise it is shown, disabled, with the reason.
+"Standard webinar" makes a link whose record says it is a webinar. That is fixed for the life of the record: the link cannot become a meeting,
 and a meeting's link cannot become a webinar. The browser that made it is the host. Everyone else
 joins the audience: they watch and listen, raise a hand, react and vote in polls, and have no
 microphone, camera, screen share or tile. Chat is read-only for them ("Only speakers and hosts can
@@ -413,7 +417,7 @@ that in hand:
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `MEETLY_WEBINARS_ENABLED` | on | Set to `0`, `false`, `off` or `no` to switch webinars off at once: "New webinar" is no longer offered, the server refuses to start one or to let anyone into one ("Webinars are paused right now."), and the watchdog ends the ones running. Ordinary meetings are not affected. It is read on every request, so on the Worker a change to the variable takes effect with the next request, without a rebuild. |
+| `MEETLY_WEBINARS_ENABLED` | on | Set to `0`, `false`, `off` or `no` to switch webinars off at once: "Standard webinar" can no longer be chosen, the server refuses to start one or to let anyone into one ("Webinars are paused right now."), and the watchdog ends the ones running. Ordinary meetings are not affected. It is read on every request, so on the Worker a change to the variable takes effect with the next request, without a rebuild. |
 | `MEETLY_WEBINAR_MINUTE_LIMIT` | 5000 | The most participant-minutes one webinar session may use. At 80% the host and co-hosts are told roughly how long is left; past it the session is ended for everyone ("This webinar reached its free time limit.") and its link stops letting anyone in. |
 
 The watchdog (`src/lib/costGuard.server.ts`) runs once a minute on the Cloudflare Worker, as a
