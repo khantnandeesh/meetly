@@ -94,8 +94,12 @@ export type CoordinatorCoreOptions = {
   leafPlacement?: "deep" | "shallow";
   /** The most viewers admitted. The source is never refused. */
   viewerCap: number;
-  /** STUN and TURN servers for a new peer, with fresh credentials. */
-  iceServers: () => Promise<IceServer[]>;
+  /**
+   * STUN and TURN servers for a peer, with fresh credentials. `want.turn` false: STUN only, no
+   * mint ([D80]: the room is backing off after mints that failed). A mint must not take long
+   * (the Durable Object's gives up after 3 s): the core waits for it.
+   */
+  iceServers: (want?: { turn?: boolean }) => Promise<IceServer[]>;
   /**
    * [D80] How old a peer's ICE servers may be before fresh ones are minted and sent in its next
    * `grant`: half the TURN credentials' life. Undefined (no TURN, STUN only): never.

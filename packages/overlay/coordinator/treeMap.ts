@@ -105,8 +105,9 @@ export type TreeNode = Omit<PeerRecord, "conn"> & {
    * it only watches. Never promoted, never offered to anyone, demoted at once. Never the source's.
    */
   turn: boolean;
-  /** [D80] When its ICE servers (and TURN credentials) were last minted. */
+  /** [D80] When its ICE servers (and TURN credentials) were last minted, and whether they held TURN. */
   iceAt: number;
+  iceTurn: boolean;
 };
 
 export function newNode(init: Pick<TreeNode, "peer" | "identity" | "name" | "ticketRole" | "role" | "caps" | "region" | "conn" | "joinedAt">): TreeNode {
@@ -147,6 +148,7 @@ export function newNode(init: Pick<TreeNode, "peer" | "identity" | "name" | "tic
     introduced: new Map(),
     turn: false,
     iceAt: init.joinedAt,
+    iceTurn: true,
   };
 }
 

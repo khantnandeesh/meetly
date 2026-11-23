@@ -9,7 +9,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { decodeClientMessage, decodeServerMessage, encodeServerMessage } from "@meetly/overlay/protocol";
 import type { ClientMessage, IceServer, PeerId, ServerMessage, ServerMessageOf } from "@meetly/overlay/protocol";
-import { turnFrom } from "./turn";
+import { behindTurn } from "../engine";
+import { mintTurn, turnFrom } from "./turn";
 import { Rig, STREAMS, Swarm, leafCaps, relayCaps, seeded } from "./testkit";
 
 type ClientMessageOf<T extends ClientMessage["t"]> = Extract<ClientMessage, { t: T }>;
@@ -177,6 +178,33 @@ describe("coordinator: a peer behind TURN only watches (SPEC §8.1 [D80])", () =
     assert.deepEqual(grant.scope, ["view"]);
   });
 
+  it("a host on a strict network does not bar its children: they judge by their own candidate, and are promoted", async () => {
+    // The reviewer's case: the host's candidate is a relay, so every child's link to it has a
+    // remote relay. Judged by either end (before), all three flagged themselves and nobody could
+    // relay: every joiner went to the source. Judged by their own end, none is behind TURN.
+    const s = await session();
+    await s.say(s.source, status(null, 0, 3, { turn: true }));
+    const hostLink = { turn: true, localTurn: false };
+    const children: Joined[] = [];
+    for (let i = 0; i < 3; i++) children.push(await s.join(`child-${i}`, true));
+    const flags = children.map(() => behindTurn([{ parent: s.source.peer }], { get: () => hostLink }));
+    assert.deepEqual(flags, [false, false, false]);
+    assert.equal(behindTurn([{ parent: s.source.peer }], { get: () => ({ turn: true, localTurn: true }) }), true, "its own relay: behind TURN");
+    assert.equal(behindTurn([{ parent: null }], { get: () => ({ turn: true, localTurn: true }) }), false, "no parent yet: nothing to judge");
+    const others: Joined[] = [];
+    for (let i = 0; i < 4; i++) others.push(await s.join(`leaf-${i}`, false));
+    const report = async () => {
+      await s.say(s.source, status(null, 0, 0, { children: 3, turn: true }));
+      for (const [i, child] of children.entries()) await s.say(child, status(s.source.peer, 1, 0, flags[i] ? { turn: true } : {}));
+      for (const other of others) await s.say(other, status(null, 255, 0, { caps: leafCaps() }));
+    };
+    await report();
+    await s.advance(40_000, async (second) => {
+      if (second % 5 === 4) await report();
+    });
+    assert.ok(children.filter((child) => roles(child).includes("relay")).length >= 1, `promoted: ${children.map((child) => roles(child).join("/") || "-").join(", ")}`);
+  });
+
   it("the source is exempt: it has to send, behind TURN or not", async () => {
     const s = await session();
     await s.say(s.source, status(null, 0, 3, { turn: true }));
@@ -272,6 +300,63 @@ describe("coordinator: TURN credentials over a long session (SPEC §6.7 [D80])",
     assert.ok(fresh.every((entry) => /^(18[0-2]|36[0-2]):user-\d+$/.test(entry)), `at 3 h and 6 h: ${fresh.join(" ")}`);
   });
 
+  it("refreshes only the peers that may need TURN: not one whose NAT others can reach and that is not behind TURN", async () => {
+    minted = 0;
+    const s = await session({ iceServers: turn, iceRefreshMs: 60 * 60_000 });
+    const a = await s.rig.join("cone", "viewer", relayCaps({ nat: "cone" }));
+    const b = await s.rig.join("strict", "viewer", leafCaps());
+    await s.rig.advance(61 * 60_000);
+    assert.equal(of(s.rig.take(a.conn), "grant").filter((message) => message.ice).length, 0, "a cone NAT's are left to expire");
+    assert.equal(of(s.rig.take(b.conn), "grant").filter((message) => message.ice).length, 1);
+  });
+
+  it("mints a tick's refreshes at once, not one after another", async () => {
+    let running = 0;
+    let most = 0;
+    const slow = async (): Promise<IceServer[]> => {
+      most = Math.max(most, ++running);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      running--;
+      return turn();
+    };
+    const s = await session({ iceServers: slow, iceRefreshMs: 60 * 60_000 });
+    for (let i = 0; i < 5; i++) await s.rig.join(`viewer-${i}`, "viewer", leafCaps());
+    most = 0;
+    await s.rig.advance(61 * 60_000);
+    assert.ok(most >= 5, `${most} at once`);
+  });
+
+  it("backs off for the whole room when mints bring no TURN: 30 s, doubling; welcomes meanwhile get STUN without a mint, and are given TURN once it works", async () => {
+    minted = 0;
+    let broken = false;
+    let start = 0;
+    let clock = () => 0;
+    const asked: string[] = [];
+    const ice = async (want?: { turn?: boolean }): Promise<IceServer[]> => {
+      asked.push(`${Math.round((clock() - start) / 1000)}:${want?.turn === false ? "stun" : "mint"}`);
+      return broken || want?.turn === false ? [{ urls: ["stun:stun.example.org:3478"] }] : turn();
+    };
+    const s = await session({ iceServers: ice, iceRefreshMs: 60 * 60_000 });
+    clock = () => s.rig.now;
+    start = s.rig.now;
+    broken = true;
+    asked.length = 0;
+    const first = await s.join("first", false);
+    assert.deepEqual(of(first.heard, "welcome")[0].ice.map((server) => server.urls[0]), ["stun:stun.example.org:3478"], "its welcome had no TURN");
+    await s.rig.advance(5_000);
+    const second = await s.join("second", false);
+    await s.rig.advance(100_000);
+    // One mint fails (at 0 s), the room waits 30 s; the welcome at 5 s does not mint; the retry
+    // at 30 s fails, the next waits 60 s (at 90 s) and fails, then 120 s.
+    assert.deepEqual(asked, ["0:mint", "5:stun", "30:mint", "30:mint", "90:mint", "90:mint"]);
+    broken = false;
+    await s.rig.advance(200_000);
+    for (const who of [first, second]) {
+      const grants = of(s.rig.take(who.conn), "grant").filter((message) => message.ice);
+      assert.equal(grants.length, 1, "given TURN once it works, not before");
+    }
+  });
+
   it("does not send ICE servers with no TURN in them: they would take the relay away from links that need it", async () => {
     minted = 0;
     let broken = false;
@@ -306,6 +391,29 @@ describe("coordinator: TURN credentials over a long session (SPEC §6.7 [D80])",
 });
 
 describe("coordinator: Cloudflare's TURN servers (SPEC §6.7 [D80])", () => {
+  it("mints with the key, trimmed, under a 3 s timeout, and says why when it gets none", async () => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    const answer = (status: number, body: unknown): typeof fetch => async (url, init) => {
+      calls.push({ url: String(url), init: init! });
+      return new Response(typeof body === "string" ? body : JSON.stringify(body), { status });
+    };
+    assert.deepEqual(await mintTurn(undefined, "t", 60, answer(200, {})), { servers: [], problem: "TURN key not configured" });
+    assert.equal(calls.length, 0);
+    const good = { iceServers: [{ urls: ["turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c" }] };
+    assert.deepEqual(await mintTurn("key-id\n", " token\n", 60, answer(201, good)), { servers: good.iceServers, problem: null });
+    assert.equal(calls[0].url, "https://rtc.live.cloudflare.com/v1/turn/keys/key-id/credentials/generate-ice-servers");
+    assert.equal((calls[0].init.headers as Record<string, string>).authorization, "Bearer token");
+    assert.deepEqual(JSON.parse(String(calls[0].init.body)), { ttl: 60 });
+    assert.ok(calls[0].init.signal instanceof AbortSignal);
+    assert.equal((await mintTurn("k", "t", 60, answer(404, { errors: [] }))).problem, "HTTP 404");
+    assert.equal((await mintTurn("k", "t", 60, answer(200, "<html>"))).problem, "an answer that is not JSON");
+    assert.equal((await mintTurn("k", "t", 60, answer(200, { iceServers: [] }))).problem, "no TURN servers in the answer");
+    const timeout: typeof fetch = async () => {
+      throw Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    };
+    assert.equal((await mintTurn("k", "t", 60, timeout)).problem, "no answer in 3 s");
+  });
+
   it("keeps TURN URLs only, none on port 53, with their credentials; takes the older one-object answer too", () => {
     const answer = {
       iceServers: [
