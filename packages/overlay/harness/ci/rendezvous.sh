@@ -10,14 +10,16 @@ name="$1"
 dir="$2"
 api="$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/actions"
 id=""
-# Every 15 s: twenty shards polling share the token's 1,000 requests an hour.
+# Every 30 s, for 30 minutes: twenty shards polling share the token's requests, and shard 0 may sit
+# queued for a runner well after the others started (run 45186999361: 11 minutes, so a 15-minute
+# wait ran out before shard 0 had laid the run out).
 for _ in $(seq 1 60); do
   id=$(curl -fsS -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$api/runs/$GITHUB_RUN_ID/artifacts?name=$name" | jq -r '.artifacts[0].id // empty' || true)
   [ -n "$id" ] && break
-  sleep 15
+  sleep 30
 done
 if [ -z "$id" ]; then
-  echo "no artifact \"$name\" after 15 minutes: shard 0 never came up" >&2
+  echo "no artifact \"$name\" after 30 minutes: shard 0 never came up" >&2
   exit 1
 fi
 mkdir -p "$dir"
