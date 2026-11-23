@@ -1059,6 +1059,25 @@ D = clamp( playoutMinMs + 2.5 × jitterMs + (lossPct > 0.5 ? rttMs + 20 : 0),
 NACK time to be answered when the link is losing packets, and is not paid when it is not.
 `jitterMs`, `rttMs` and `lossPct` are those of the link to the parent (§11.1).
 
+**[D62] The NACK's time overlaps `playoutMinMs`.** *(Integration engineer, 2026-11-23.)* *D* is now
+
+```
+D = clamp( 2.5 × jitterMs + max( playoutMinMs, lossPct > 0.5 ? rttMs + 35 : 0 ),
+           playoutMinMs, playoutMaxMs )
+```
+
+A lost packet's answer comes a round trip after its gap is seen, and the gap is seen within the
+reordering window (D39, at least 10 ms) and the next packet; 35 ms covers those and the answer's
+own trip. The formula above paid `playoutMinMs` and the NACK's time one after the other, so a
+frame that needed neither waited for both. With one lost packet in a second (0.67%) the NACK
+term was on for most viewers most of the time: in gate run 45161787212 the playout delay was
+about RTT + 129 ms (p50 211, p95 336), and 75% of the frames over 500 ms came from samples with
+*D* of 300 or more. Simulated (topology/sim.ts with the gate's profiles, the real estimator and
+a light player, 78 viewers at depths 1–3, six seeds): glass-to-glass p95 382 → 338 ms, *D* p50
+141 → 135, frames lost 0.24% → 0.34% (late NACK answers, mostly on "bad" links). A jitter
+margin of 5 × jitter on the NACK term instead (proposed) saved 7 ms at p95, and a faster fall of
+*D* (20 ms a second) 1 ms.
+
 *D* rises at once and falls by at most 10 ms a second. A change in *D* is made in the audio
 (§10.5), and the video follows it.
 
@@ -1665,6 +1684,7 @@ Rotating speakers on the overlay. Out of scope.
 | D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23); withdrawn the same day, false alarms under fan-out 6 | 7.4 |
 | D60 | A join leaves a full relay's last slot (fan-out 4 or more) to repairs (integrator, 2026-11-23) | 6.6, 8.1 |
 | D61 | A `repair` event carries where its freeze went: stale before, first decodable, later gap, the replay's size and time (integration engineer, 2026-11-23) | 12.1 |
+| D62 | The NACK's time overlaps `playoutMinMs`: D = 2.5 × jitter + max(min, loss > 0.5 ? rtt + 35 : 0) (integration engineer, 2026-11-23) | 10.2 |
 | D63 | A session whose source has been gone 3 minutes without `/end` is ended with `source-left` (integration engineer, 2026-11-23) | 6.2 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
