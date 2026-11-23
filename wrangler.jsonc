@@ -20,7 +20,9 @@
 	"preview_urls": false,
 	// Workers custom domain: creates the DNS record and certificate for the hostname.
 	"routes": [{ "pattern": "meet.nandeesh.dev", "custom_domain": true }],
-	"observability": { "enabled": true },
+	// Logs, and Issues: Cloudflare groups uncaught exceptions, failed invocations, 5xx responses
+	// and logged errors into issues, which the alerts in docs/STAGING.md email about.
+	"observability": { "enabled": true, "issues": { "enabled": true } },
 	// The webinar cost guard (src/lib/costGuard.server.ts), once a minute. Each run makes one
 	// RealtimeKit REST call, and at most 30, so it stays far inside the 3,500 per five minutes.
 	"triggers": { "crons": ["* * * * *"] },
@@ -54,6 +56,46 @@
 		"MEETLY_WEBINARS_ENABLED": "1",
 		// The most participant-minutes one webinar session may use before it is ended.
 		"MEETLY_WEBINAR_MINUTE_LIMIT": "5000"
+	},
+
+	// Staging: the `meetly-staging` Worker at staging.meet.nandeesh.dev, deployed from `main` by
+	// .github/workflows/staging.yml (`opennextjs-cloudflare deploy --env staging`). See
+	// docs/STAGING.md. An environment inherits main, compatibility, assets, observability and
+	// migrations from above; routes, triggers, bindings and vars are its own, written out here.
+	"env": {
+		"staging": {
+			"name": "meetly-staging",
+			"routes": [{ "pattern": "staging.meet.nandeesh.dev", "custom_domain": true }],
+			// No Cron Trigger, and it must stay that way while staging shares production's
+			// RealtimeKit app: the cost guard works on every live session of the app, so a staging
+			// guard with webinars off would end production's webinars within a minute.
+			"triggers": { "crons": [] },
+			// The same class in this Worker's own script: a Durable Object namespace of its own
+			// (meetly-staging_OverlayRoom), made by the migration above on the first deploy.
+			"durable_objects": {
+				"bindings": [{ "name": "OVERLAY_ROOM", "class_name": "OverlayRoom" }]
+			},
+			"vars": {
+				// Shown on every page, and what makes the Worker answer noindex
+				// (src/lib/environmentLabel.ts). Production does not have it.
+				"MEETLY_ENVIRONMENT_LABEL": "Staging",
+				// Production's RealtimeKit app and presets, read-only. Nothing reaches RealtimeKit
+				// until the founder adds staging's own CLOUDFLARE_API_TOKEN and MEETLY_SESSION_SECRET
+				// secrets; meetings held on staging are then billed with production's.
+				"CLOUDFLARE_ACCOUNT_ID": "439a27349e5028092af2cfd5a45bdac1",
+				"REALTIMEKIT_APP_ID": "e9e7398f-10dd-4c0d-88f3-b38198239422",
+				"REALTIMEKIT_HOST_PRESET": "meetly-host",
+				"REALTIMEKIT_GUEST_PRESET": "meetly-guest",
+				"REALTIMEKIT_KNOCK_PRESET": "meetly-knock",
+				"REALTIMEKIT_WEBINAR_HOST_PRESET": "meetly-webinar-host",
+				"REALTIMEKIT_WEBINAR_VIEWER_PRESET": "meetly-webinar-viewer",
+				"REALTIMEKIT_WEBINAR_COHOST_PRESET": "meetly-webinar-cohost",
+				// Webinars are off on staging: none can be started or joined there, so staging adds
+				// no webinar cost. The limit is low in case they are ever switched on to test.
+				"MEETLY_WEBINARS_ENABLED": "0",
+				"MEETLY_WEBINAR_MINUTE_LIMIT": "100"
+			}
+		}
 	}
 
 	// KV namespace (create with `wrangler kv namespace create <name>`, paste the id here), read via
