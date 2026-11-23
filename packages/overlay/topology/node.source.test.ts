@@ -7,7 +7,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { MetricsEvent } from "@meetly/overlay";
-import { FROZEN_PARENT_MS, SOURCE_SILENT_MS } from "@meetly/overlay/topology/node";
+import { SOURCE_SILENT_MS } from "@meetly/overlay/topology/node";
 import { SimNet, type SimPeer } from "@meetly/overlay/topology/sim";
 
 type RepairEvent = Extract<MetricsEvent, { t: "repair" }>;
@@ -65,27 +65,6 @@ describe("node: the source is waited for (D64)", () => {
     const [repair] = repairs(peers[3]);
     assert.ok(repair, "the relay's child repaired");
     assert.ok(repair.detected - repair.lastHeard < 250);
-  });
-
-  it("D74: a relay whose heartbeats come and whose media does not is left once it has held a keyframe the child could not decode for FROZEN_PARENT_MS", async () => {
-    // Gate run 45231661833: a relay moved into a parent whose uplink five replays had filled
-    // decoded nothing for 4.5 s while that parent's heartbeats came; its subtree froze with it.
-    // (FROZEN_PARENT_MS is longer than a slow link's own recovery: congestion's layer drop, within
-    // 2 s, slowChildSim.test.ts; a child of the slow relay froze 1.5-2.5 s there and stays.)
-    const { net, peers } = await tree();
-    net.setWire("1", "3", { mediaLossPct: 100 }, false);
-    await net.runAsync(2000 + FROZEN_PARENT_MS + 1000);
-    net.setWire("1", "3", { mediaLossPct: 0 }, false);
-    await net.runAsync(1000);
-    const [repair] = repairs(peers[3]);
-    assert.ok(repair, "the child left the frozen parent");
-    assert.equal(repair.next, "2", "for its backup");
-    // A keyframe comes every 2 s; the parent holds one the child lacks from then on.
-    // Its heartbeats kept coming to the end: the freeze is all before them (`staleMs`, D61).
-    const frozenFor = repair.staleMs ?? 0;
-    assert.ok(frozenFor >= FROZEN_PARENT_MS && frozenFor <= 2000 + FROZEN_PARENT_MS + 100, `left after ${frozenFor} ms with nothing decodable`);
-    assert.deepEqual(repairs(peers[4]), [], "its sibling, whose media came, stayed");
-    assert.equal(peers[3].node.status().stripes[0].state, "active");
   });
 
   it("a source that is really gone is taken for dead after SOURCE_SILENT_MS, not before", async () => {

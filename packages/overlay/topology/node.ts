@@ -70,13 +70,6 @@ export const TICK_MS = 10;
 export const OWN_STALL_MS = 30;
 /** [D69] A parent silent this long, that then speaks again, is reported (a `silence` metric event). */
 export const SILENCE_REPORT_MS = 150;
-/**
- * [D74] A parent that is neither STALLED nor the source, that has held a keyframe (its heartbeats'
- * `keyFrameId`) newer than every frame this node could decode for this long, and from which no
- * frame has become decodable for this long either, is left as dead: what it has is not reaching
- * this node. (Not its newest frame: after a hole upstream it forwards frames nobody can decode.)
- */
-export const FROZEN_PARENT_MS = 2_500;
 /** A gap is called a loss after this long at least (SPEC D6). */
 export const REORDER_MS = 10;
 /** SPEC D39: the window follows the parent link's p95 inter-arrival jitter, up to this. */
@@ -421,8 +414,6 @@ type Peer = {
   lastHeardAt: number;
   /** When media last arrived from it. */
   lastMediaAt: number;
-  /** [D74] The newest video keyframe it says (heartbeat `keyFrameId`) it holds whole, or -1. */
-  head: number;
   /** What it says of itself in heartbeats and acks, as a possible parent. */
   path: PeerId[] | null;
   depth: number;
@@ -573,9 +564,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   let publishGapMax = 0;
   let lastPublishedUs: number | null = null;
   let silence: { peer: Peer; from: number; media: number } | null = null;
-  /** [D74] When the parent became the parent, and since when it has had a frame this node could not decode. */
-  let parentSince = -Infinity;
-  let parentAheadSince: number | null = null;
   let rxBytes = 0;
   let txBytes = 0;
   let statsAt = 0;
@@ -745,7 +733,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       offs: [],
       lastHeardAt: now,
       lastMediaAt: -Infinity,
-      head: -1,
       path: null,
       depth: DEPTH_UNKNOWN,
       stalled: false,
@@ -1042,8 +1029,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     peer.estimator.onHeartbeat(heartbeat, now);
     peer.depth = heartbeat.depth;
     if (heartbeat.depth === 0) sourceId = peer.id;
-    const video = primary();
-    if (video && !video.audio) for (const head of heartbeat.streams) if (head.streamId === video.config.id && head.keyFrameId > peer.head) peer.head = head.keyFrameId;
     peer.full = (heartbeat.flags & HeartbeatFlag.Full) !== 0;
     const wasStalled = peer.stalled;
     peer.stalled = (heartbeat.flags & HeartbeatFlag.Stalled) !== 0;
@@ -1611,7 +1596,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const old = parent;
     next = null;
     parent = peer;
-    parentSince = now;
     peer.lastHeardAt = now;
     if (peer === backup) backup = null;
     if (peer === backupPending) backupPending = null;
@@ -1740,7 +1724,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ losing the parent ------------------------------ */
 
-  function parentDied(now: number, why: "silent" | "closed" | "leaving" | "loop" | "grace" | "bad" | "frozen"): void {
+  function parentDied(now: number, why: "silent" | "closed" | "leaving" | "loop" | "grace" | "bad"): void {
     const dead = parent;
     if (!dead) return;
     moveTo = [];
@@ -1934,7 +1918,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const reason = switching.move ? "move" : switching.starved ? "starved" : "rebalance";
     switching = null;
     parent = to;
-    parentSince = now;
     if (backup === to) backup = null;
     depth = to.depth !== DEPTH_UNKNOWN ? Math.min(254, to.depth + 1) : DEPTH_UNKNOWN;
     starvedSince = null;
@@ -2203,19 +2186,6 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       if (now - parent.lastHeardAt >= deadMs) parentDied(now, "silent");
       else if (state === "waiting" && now - waitingSince >= params.stallGraceMs) parentDied(now, "grace");
     }
-    if (parent && state === "active" && !switching && !parent.stalled && parent.depth !== 0 && parent.depth !== DEPTH_UNKNOWN && parent.link.state === "open" && now - parentSince >= FROZEN_PARENT_MS) {
-      // [D74] Heartbeats, and even packets, do not prove media is getting through: gate run
-      // 45231661833's relay, moved into a relay whose uplink five replays had filled, decoded
-      // nothing for 4.5 s while its heartbeats came, and its subtree froze with it.
-      const video = primary();
-      const shown = video && !video.audio ? video.tracker.shown : null;
-      const lastShown = shown && shown.length > 0 ? shown[shown.length - 1].at : null;
-      // Counted from when the parent first held a keyframe this node had not decoded: a parent
-      // whose own feed stopped (the source's silence, its own repair) is not frozen toward it.
-      if (!video || video.audio || parent.head <= video.tracker.newest) parentAheadSince = null;
-      else parentAheadSince ??= now;
-      if (lastShown !== null && parentAheadSince !== null && now - lastShown >= FROZEN_PARENT_MS && now - parentAheadSince >= FROZEN_PARENT_MS) parentDied(now, "frozen");
-    } else parentAheadSince = null;
     if (silence && silence.peer !== parent) silence = null;
     if (parent && !silence && now - parent.lastHeardAt >= SILENCE_REPORT_MS) {
       silence = { peer: parent, from: parent.lastHeardAt, media: Number.isFinite(parent.lastMediaAt) ? parent.lastHeardAt - parent.lastMediaAt : 0 };

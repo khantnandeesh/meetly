@@ -123,8 +123,6 @@ type Wire = {
   queueMs?: number;
   jitterMs?: number;
   burst?: { enterPct: number; leavePct: number; lossPctInBurst: number };
-  /** Media packets only, lost on top of `lossPct`: a link whose heartbeats get through and whose media does not. */
-  mediaLossPct?: number;
 };
 
 class SimLink implements Link {
@@ -194,7 +192,7 @@ class SimLink implements Link {
     const other = this.other;
     const wire = this.wire;
     if (!other || this.owner.dead) return true;
-    if (this.lost(wire) || (type === PacketType.Media && wire.mediaLossPct !== undefined && net.random() * 100 < wire.mediaLossPct)) {
+    if (this.lost(wire)) {
       if (type === PacketType.Media) this.lostMedia++;
       return true;
     }
