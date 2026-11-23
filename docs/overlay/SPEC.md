@@ -708,6 +708,17 @@ frame of the subscriber's own (a switch, a `move`: it is watching elsewhere) is 
 the fan-out as before. A lower frame rate at once is better than no picture until a relay is
 promoted, which at a session's start is a probation away.
 
+**[D71] The coordinator sends a joiner over a fan-out after 1 s with nowhere to go, not 3.**
+*(Integration engineer, 2026-11-23.)* At a session's start the first relays are a NAT check
+(D48) and a probe (D41) after their own link, about 4 s, while joiners come at 4 a second: every
+one with no free slot waited the whole 3 s first, then linked. Gate run 45225920753: 21 of the
+first 199 joins took over 2 s from `welcome` to a parent linked (3.5–4.5 s clustered), against
+1 to 5 in the three runs before, and join p95 went to 4,500 ms. The wait was there so that a slot
+over a fan-out would not hold a place the next relay needs; with D67 the source's excess goes
+one level down as soon as a relay has room. Simulated (the gate's start with the engine's
+timers, provisional.test.ts): welcome to linked p95 2.0 → 1.0 s at 4 joining a second, 3.2 →
+1.6 s at 6.7; the source over its fan-out for 4–19 s of the fill and not after; depth unchanged.
+
 Budget for the 3 s gate: ticket and socket 200 ms, `welcome` 100 ms, link (ICE and DTLS) 300 ms
 to 2 s, replay and first frame 100 ms. The proof measured 20–45 ms from joining to first frame
 on loopback, where ICE costs nothing; ICE is the whole budget.
@@ -1815,6 +1826,7 @@ Rotating speakers on the overlay. Out of scope.
 | D68 | Frames the source skips for want of room are spread over the key interval; the keyframe's room is reserved in the window it lands in (integration engineer, 2026-11-23) | 9.2 |
 | D69 | Stalls are reported: `silence` events, the tick's lateness, the source's longest gap between published frames (integration engineer, 2026-11-23) | 12.1 |
 | D70 | The honesty check pairs each decoding viewer with its light siblings (same parent, network profile and 2 s); the p50 of the differences within 15 ms (integration engineer, 2026-11-23) | 13.2 |
+| D71 | A joiner with nowhere to go is sent over a fan-out after 1 s, not 3 (integration engineer, 2026-11-23) | 7.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
