@@ -714,6 +714,14 @@ A parent is **dead** when nothing has arrived from it on the `media` channel for
 no media, no heartbeat. These are the proof's numbers: heartbeats every 50 ms, dead after four
 are missed. The detector checks every 10 ms.
 
+**[D59] `deadMs` is 150: dead after three heartbeats missed** (decided by integrator
+2026-11-23). In the gate run 45130383283, of 6.7 million page timer ticks none ran 150 ms late
+and one in a million 100 ms late, so a live parent's own stall is not a silence of 150 ms; three
+heartbeats lost in a row on a relay's link (relays have under 2% loss, §8.1; the gate mix's
+relays 1% or less) is about one in a million heartbeats, about two false alarms in a 200-peer,
+10-minute run. A false alarm costs a warm repair, which loses nothing. It takes 50 ms off every
+warm and wait repair.
+
 Also dead, at once: the link's state becomes "closed", or a `bye` arrives.
 
 **[D17] A parent that is alive but cut off says so.** When a relay's own parent dies, the relay
@@ -855,6 +863,19 @@ link is never *ok*; such a peer is not eligible in any case (loss under 2%, the 
 `min(maxFanout, floor(0.7 × spareUplinkKbps / (1.15 × sessionKbps)))`. The 0.7 leaves room for
 the peer's own use; the 1.15 for retransmissions and replays. `maxFanout` is 4; the source's is
 3, because the host's uplink also carries the stage. **[D20]**
+
+**[D56] `maxFanout` is 6** (decided by integrator 2026-11-23). Within depth 3 a tree of fan-out
+4 holds 63 peers (126 with six on the source); 200 peers need about 6. The formula still caps
+each relay at what its probe shows: six children take 6 × 1.15 × *B* (8.5 Mbps at 1,232 kbps)
+at the 0.7 share, a spare uplink of 12.1 Mbps; a relay with less takes fewer. The gate mix
+(D28) caps no relay's uplink ("slow", the only capped profile, never relays), so the gate's
+relays reach six; a home uplink of 10 Mbps reaches four.
+**[D57] The source keeps its probed fan-out** (decided by integrator 2026-11-23): D49's
+`sourceFanout` to `sourceAloneFanout`, at its measured uplink, holds whether or not other relays
+exist. Its probe measures what is spare beyond what it already sends, the stage included. In the
+simulator (200 peers, the gate's join rate, 80% able to relay, five minutes of churn) depth p95
+is 4 with fan-out 4 whatever the source does, and 3 with fan-out 6 and the source keeping six
+(73% of peers at depth 3, 2–3% at 4).
 
 **[D49] The source alone takes up to six** (decided by integrator 2026-11-22). While no other
 relay, full or provisional, is connected, the source's fan-out is the formula's at its measured
@@ -1403,7 +1424,11 @@ would spend them all on something that is not under test.
   buffer, the clocks and every network path run as normal; a frame is "rendered" when it would
   have been handed to the decoder at its playout time. One viewer in `decodeEvery` decodes for
   real, as a check that the light ones are honest: the two kinds' latency must agree to within
-  the decode time.
+  the decode time. **[D58]** Compared at the same depths: the light viewers' latency is weighed
+  to the decoding viewers' depth mix before the p50s are compared. One in twenty decodes, and
+  sixteen viewers do not sit where 180 do (run 45130383283: 21% of decoding samples at depth 2,
+  12% of light ones), while latency grows about 40 ms a hop; unweighed, that run's 20 ms apart
+  was the depth mix (10 ms weighed). *Decided by integrator 2026-11-23.*
 - **One source**, encoding Chromium's fake camera, on shard 0.
 - Several pages per browser process.
 
@@ -1595,6 +1620,10 @@ Rotating speakers on the overlay. Out of scope.
 | D51 | `sourceAloneFanout`, an optional param (6), the ceiling of D49; fixed-tree scenarios set it to `sourceFanout` (integrator, 2026-11-22) | 8.1 |
 | D54 | A joiner goes under the shallowest feeder with room, dead ends included (integrator, 2026-11-22) | 6.6 |
 | D55 | A repair's lost frames exclude those of a layer above the new parent's lowest announced cap (integrator, 2026-11-22) | 12.2 |
+| D56 | `maxFanout` 6: depth 3 for 200 peers; each relay still capped by its probe (integrator, 2026-11-23) | 8.1 |
+| D57 | The source keeps its probed fan-out (up to `sourceAloneFanout`), not only while alone (integrator, 2026-11-23) | 8.1 |
+| D58 | The honesty check compares light and decoding viewers at the same depths (integrator, 2026-11-23) | 13.2 |
+| D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23) | 7.4 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told

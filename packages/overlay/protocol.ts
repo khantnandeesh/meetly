@@ -872,7 +872,7 @@ export type OverlayParams = Infer<typeof params>;
 /** Stage 1's values. The first three are the proof's (50 ms heartbeats, dead at 200 ms). */
 export const DEFAULT_PARAMS: OverlayParams = {
   heartbeatMs: 50,
-  deadMs: 200,
+  deadMs: 150,
   standbyHeartbeatMs: 250,
   standbyDeadMs: 1000,
   feedbackMs: 100,
@@ -880,7 +880,7 @@ export const DEFAULT_PARAMS: OverlayParams = {
   stallGraceMs: 600,
   statusMs: 5000,
   metricsMs: 2000,
-  maxFanout: 4,
+  maxFanout: 6,
   sourceFanout: 3,
   playoutMinMs: 60,
   playoutMaxMs: 400,
