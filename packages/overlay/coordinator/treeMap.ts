@@ -636,24 +636,19 @@ export class TreeMap {
   promotable(now: number, provisional = true): { node: TreeNode; provisional: boolean }[] {
     const audience = this.audience();
     let free = this.totalFree(now);
-    // [D72] Ahead of need: a leaf that could relay, nearer the source than the depth the tree
-    // needs, holds a place a relay would use better. It is made a relay (on its full verdict, not
-    // provisionally) whatever the tree's free slots, which count every relay's last slot that D60
-    // keeps for repairs, and the deepest of the slots besides.
-    const shallow = this.neededDepth(now);
+    if (free * 5 >= audience) return [];
     const eligible: { node: TreeNode; provisional: boolean }[] = [];
     for (const node of this.nodes.values()) {
       if (node.role !== "leaf" || !node.canRelay || node.conn === null || node.parent === null || node.depth === DEPTH_UNKNOWN) continue;
       if (this.isStale(node, now) || now - node.demotedAt < REPROMOTE_AFTER_MS) continue;
-      if (free * 5 >= audience && node.depth >= shallow) continue;
       if (this.judge(node, now).eligible && node.verdict.fanout > 0) eligible.push({ node, provisional: false });
-      else if (provisional && free * 5 < audience && this.provisionallyEligible(node, now)) eligible.push({ node, provisional: true });
+      else if (provisional && this.provisionallyEligible(node, now)) eligible.push({ node, provisional: true });
     }
     // Full relays first (D38), then the shallowest, then the best.
     eligible.sort((a, b) => Number(a.provisional) - Number(b.provisional) || a.node.depth - b.node.depth || b.node.verdict.score - a.node.verdict.score || (a.node.peer < b.node.peer ? -1 : 1));
     const out: { node: TreeNode; provisional: boolean }[] = [];
     for (const entry of eligible) {
-      if (free * 5 >= audience && entry.node.depth >= shallow) continue;
+      if (free * 5 >= audience) break;
       out.push(entry);
       free += entry.provisional ? PROVISIONAL_FANOUT : entry.node.verdict.fanout;
     }
@@ -818,12 +813,8 @@ export class TreeMap {
   neededDepth(now?: number): number {
     if (now !== undefined && this.needed?.at === now) return this.needed.depth;
     let depth = 1;
-    // [D72] From the source's own fan-out (D49, D57: up to six as its probe shows), not the
-    // configured three: with three, 200 peers "needed" depth 4, and nothing was ever too deep.
-    const sourceNode = this.source !== null ? this.nodes.get(this.source) : undefined;
-    const first = sourceNode ? Math.max(1, this.sourceFanout(sourceNode)) : this.params.sourceFanout;
-    let holds = first;
-    let level = first;
+    let holds = this.params.sourceFanout;
+    let level = this.params.sourceFanout;
     const audience = this.audience();
     while (holds < audience && depth < MAX_PATH) {
       level *= this.params.maxFanout;
