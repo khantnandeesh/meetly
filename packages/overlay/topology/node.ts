@@ -1991,13 +1991,14 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
   /* ------------------------------ metrics ------------------------------ */
 
-  /** [D55] A cap the parent announced: kept, at its lowest, by the repair in progress and those not yet reported. */
+  /** [D61] A packet marked Replay from the new parent, counted by the repair it belongs to. */
   function noteReplay(record: RepairRecord, bytes: number, at: number): void {
     record.replayPackets++;
     record.replayBytes += bytes;
     record.lastReplayAt = at;
   }
 
+  /** [D55] A cap the parent announced: kept, at its lowest, by the repair in progress and those not yet reported. */
   function noteCap(maxTemporal: number): void {
     if (repair) repair.minCap = Math.min(repair.minCap, maxTemporal);
     for (const { record } of finishing) record.minCap = Math.min(record.minCap, maxTemporal);
