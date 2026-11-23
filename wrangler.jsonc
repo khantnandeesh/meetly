@@ -80,8 +80,8 @@
 				// (src/lib/environmentLabel.ts). Production does not have it.
 				"MEETLY_ENVIRONMENT_LABEL": "Staging",
 				// Production's RealtimeKit app and presets, read-only. Nothing reaches RealtimeKit
-				// until the founder adds staging's own CLOUDFLARE_API_TOKEN and MEETLY_SESSION_SECRET
-				// secrets; meetings held on staging are then billed with production's.
+				// until a CLOUDFLARE_API_TOKEN secret is set on staging (docs/STAGING.md); meetings
+				// held on staging are then billed with production's.
 				"CLOUDFLARE_ACCOUNT_ID": "439a27349e5028092af2cfd5a45bdac1",
 				"REALTIMEKIT_APP_ID": "e9e7398f-10dd-4c0d-88f3-b38198239422",
 				"REALTIMEKIT_HOST_PRESET": "meetly-host",
