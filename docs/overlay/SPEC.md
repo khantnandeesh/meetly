@@ -737,6 +737,20 @@ enough. `deadMs` is 200 again.
 
 Also dead, at once: the link's state becomes "closed", or a `bye` arrives.
 
+**[D64] The source is waited for, not repaired away from.** *(Integration engineer, 2026-11-23.)*
+Silence from the source over a link that is still open counts as a death only after
+`SOURCE_SILENT_MS` (1,000), not `deadMs`; a child that does lose the source does not rule it out
+(it is not added to what it excludes, nor to what it will not try again); and the coordinator
+drops the source from a `need`'s `exclude` while the source's socket is up and its `status` fresh.
+Nobody else has the stream, so repairing away from the source finds nothing, and the source in
+`exclude` (with everything below it, §6.6) left the asker nowhere at all. Gate run 45202616067:
+at 127.2 s and again at 299.3 s (as the coordinator came back), five and four of the source's
+six children heard nothing from it for 200 ms at the same instant, on four different runners;
+they repaired away from it, everyone below them stalled, and 182 and then about 70 cold repairs
+followed, most of them waiting 10 s on "no parent could be found". Repair p95 7,000 ms. A real
+loss of the source ends the session (D63) whatever its children do; a broken link to one child
+closes, which is still a death at once.
+
 **[D17] A parent that is alive but cut off says so.** When a relay's own parent dies, the relay
 keeps sending heartbeats, with the STALLED flag, while it repairs. Its children then move to
 `waiting` instead of repairing: they hold for up to `stallGraceMs` (600). If media resumes, they
@@ -1686,6 +1700,7 @@ Rotating speakers on the overlay. Out of scope.
 | D61 | A `repair` event carries where its freeze went: stale before, first decodable, later gap, the replay's size and time (integration engineer, 2026-11-23) | 12.1 |
 | D62 | The NACK's time overlaps `playoutMinMs`: D = 2.5 × jitter + max(min, loss > 0.5 ? rtt + 35 : 0) (integration engineer, 2026-11-23) | 10.2 |
 | D63 | A session whose source has been gone 3 minutes without `/end` is ended with `source-left` (integration engineer, 2026-11-23) | 6.2 |
+| D64 | Silence from the source is waited out for 1 s while its link is open; a child never rules the source out, and the coordinator ignores it in `exclude` while the source is connected (integration engineer, 2026-11-23) | 7.4, 6.6 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
