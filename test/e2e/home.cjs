@@ -1,4 +1,4 @@
-// The home page: the hero's notification and the "Inside a meeting" feature grid.
+// The home page: the hero's notification, the "Inside a meeting" feature grid, and coming back to it.
 const H = require("./lib.cjs");
 
 const WIDE = { width: 1440, height: 900 };
@@ -178,4 +178,33 @@ module.exports = async function home(browser) {
   H.ok("reduced motion: no animation is loaded", (await still.page.locator(".gm-stage").count()) === 0);
   H.ok("reduced motion: each tile shows its payoff", atPoster(await payoff(still)), JSON.stringify(await payoff(still)));
   await still.ctx.close();
+
+  /* Back to the home page: it was kept, hidden, while away, but nothing started from it is still under way */
+  const back = await H.client(browser);
+  const newMeeting = back.page.getByRole("button", { name: "New meeting" });
+  const arrow = back.page.getByRole("button", { name: "More ways to start a meeting" });
+  const ready = async () => ({
+    newMeeting: await newMeeting.isEnabled(),
+    arrow: await arrow.isEnabled(),
+    spinners: (await newMeeting.locator(".anim-spin").count()) + (await arrow.locator(".anim-spin").count()),
+  });
+  const isReady = (r) => r.newMeeting && r.arrow && r.spinners === 0;
+  await H.createMeeting(back);
+  await back.page.goBack();
+  await back.page.waitForURL(`${H.BASE}/`);
+  await newMeeting.waitFor();
+  const afterMeeting = await ready();
+  H.ok("Back from a new meeting: New meeting and the arrow are enabled, with no spinner", isReady(afterMeeting), JSON.stringify(afterMeeting));
+  // …and a menu left open when the person went away (here, Forward) is closed when they come back.
+  await arrow.click();
+  await back.page.getByRole("menuitem", { name: "Schedule…" }).waitFor();
+  await back.page.goForward();
+  await back.page.waitForURL(/\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/);
+  await back.page.goBack();
+  await back.page.waitForURL(`${H.BASE}/`);
+  await newMeeting.waitFor();
+  const menus = await back.page.getByRole("menu").count();
+  H.ok("a menu left open on the home page is closed on coming back", menus === 0 && (await arrow.getAttribute("aria-expanded")) === "false", `${menus} open`);
+  H.ok("…and the page is ready to start a meeting", isReady(await ready()), JSON.stringify(await ready()));
+  await back.ctx.close();
 };

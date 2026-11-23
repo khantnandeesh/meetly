@@ -2,7 +2,7 @@
 
 import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation, Radio } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useLayoutEffect, useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
@@ -59,6 +59,19 @@ export default function Home() {
     setPlanning(true);
   }
 
+  // Leaving this page keeps it, hidden, with its state (React <Activity>; see
+  // node_modules/next/dist/docs/01-app/02-guides/preserving-ui-state.md). What was in flight when
+  // the person left must not come back with them: a spinning, disabled "New meeting" after Back
+  // from the meeting it opened, or the menu still open over a page it was left open on.
+  useLayoutEffect(
+    () => () => {
+      setStarting(false);
+      setPreparing(false);
+      setMenuOpen(false);
+    },
+    [],
+  );
+
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
       <header className="mx-auto flex w-full max-w-6xl items-center justify-between px-5 py-5 sm:px-8">
@@ -88,7 +101,7 @@ export default function Home() {
                   )}
                   New meeting
                 </button>
-                <Dropdown.Root onOpenChange={setMenuOpen}>
+                <Dropdown.Root open={menuOpen} onOpenChange={setMenuOpen}>
                   <Dropdown.Trigger
                     className="btn btn-primary group w-11 rounded-l-md px-0"
                     aria-label="More ways to start a meeting"
