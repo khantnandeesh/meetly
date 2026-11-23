@@ -615,3 +615,34 @@ bindings, would be the way to add them later.
 Any Node host works (Vercel is the simplest). Set `NEXT_PUBLIC_RTC_PROVIDER` and that
 provider's variables (see above) on the host, for the build as well as at run time. The site
 must be served over HTTPS for browsers to allow camera and microphone access.
+
+### Cloudflare Workers
+
+The app also builds for Cloudflare Workers with [`@opennextjs/cloudflare`](https://opennext.js.org/cloudflare)
+(`wrangler.jsonc`, `open-next.config.ts`). `npm run dev` / `build` / `start` are unchanged.
+
+```bash
+npm run preview   # build .open-next/ and run it locally in workerd (http://localhost:8787)
+npm run deploy    # build and deploy the `meetly` Worker (workers.dev + meet.nandeesh.dev)
+```
+
+`npm run deploy` needs `wrangler login` or `CLOUDFLARE_API_TOKEN` (the "Edit Cloudflare Workers"
+template covers it). Secrets are set once per Worker with `npx wrangler secret put <NAME>` and are
+read as `process.env.<NAME>`; non-secret values go under `vars` in `wrangler.jsonc`. This branch
+builds with `NEXT_PUBLIC_RTC_PROVIDER=realtimekit` (`.env.production`) and needs two secrets:
+`CLOUDFLARE_API_TOKEN` (Realtime permission) and `MEETLY_SESSION_SECRET` (any long random string).
+
+In Workers Builds use build command `npx opennextjs-cloudflare build` and deploy command
+`npx opennextjs-cloudflare deploy`. Plain `wrangler deploy` skips the page-cache step and every
+page then returns 500. For local
+preview, put them in `.dev.vars` (git-ignored).
+
+The Worker's entry is `custom-worker.ts`, not OpenNext's `.open-next/worker.js` directly: it
+passes every request to OpenNext's handler and adds a `scheduled` handler, the webinar cost
+guard, which the Cron Trigger in `wrangler.jsonc` (`triggers.crons`) runs once a minute (see
+"Webinar costs" above). `MEETLY_WEBINARS_ENABLED` and `MEETLY_WEBINAR_MINUTE_LIMIT` are `vars`
+there. To switch webinars off at once, set `MEETLY_WEBINARS_ENABLED` to `0` in the dashboard
+(Workers → meetly → Settings → Variables), which deploys that change straight away, and then in
+`wrangler.jsonc`, or the next deploy turns them back on. `npx wrangler dev --test-scheduled`
+runs the handler locally on `/__scheduled`; without `CLOUDFLARE_API_TOKEN` in `.dev.vars` it
+does nothing and logs `"skipped":"not-configured"`.
