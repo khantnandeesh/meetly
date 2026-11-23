@@ -1,6 +1,7 @@
 "use client";
 
-import { ChevronDown, LockKeyhole, ServerOff } from "lucide-react";
+import { ChevronDown, Globe, LockKeyhole, ServerOff, Share2, Users, WifiOff } from "lucide-react";
+import { Fact } from "@/components/ui/Fact";
 import { useEffect, useId, useRef, useState } from "react";
 import { Logo } from "@/components/ui/Logo";
 import { elapsedSeconds, formatElapsed } from "@/lib/meetingTime";
@@ -58,34 +59,28 @@ export function WebinarHeading({ title, detail }: { title: string; detail?: Reac
 
 /**
  * "Never touches our servers": the indicator under the picture on both Live pages. One line, and
- * "How it works" opens the longer, honest account in place (a tap works on a phone, where a
- * tooltip would not).
+ * "How it works" opens the facts in place (a tap works on a phone, where a tooltip would not).
  */
 export function ServerlessNote({ className = "" }: { className?: string }) {
   const [open, setOpen] = useState(false);
   const panel = useId();
   return (
     <div className={`rounded-2xl bg-surface ring-1 ring-border ${className}`} data-testid="serverless-note">
-      <div className="flex items-start gap-3 py-3 pr-2 pl-4">
-        <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-accent/12 text-accent" aria-hidden="true">
+      <div className="flex items-center gap-3 py-2 pr-2 pl-4">
+        <span className="grid size-7 shrink-0 place-items-center rounded-lg bg-accent/12 text-accent" aria-hidden="true">
           <ServerOff className="size-4" strokeWidth={2.25} />
         </span>
-        <div className="flex min-w-0 flex-1 flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-          <p className="min-w-0 flex-1 text-sm leading-snug text-pretty">
-            <span className="font-semibold">The video never touches our servers.</span>{" "}
-            <span className="text-muted">It goes from the host’s browser to viewers’ browsers, which pass it on to each other.</span>
-          </p>
-          <button
-            type="button"
-            className="-ml-2 inline-flex h-9 shrink-0 cursor-pointer items-center gap-1 self-start rounded-lg px-2 text-sm font-medium text-accent hover:bg-surface-2 sm:ml-0 sm:self-center"
-            aria-expanded={open}
-            aria-controls={panel}
-            onClick={() => setOpen((was) => !was)}
-          >
-            How it works
-            <ChevronDown className={`size-4 transition-transform duration-200 ${open ? "rotate-180" : ""}`} aria-hidden="true" />
-          </button>
-        </div>
+        <p className="min-w-0 flex-1 text-sm font-semibold text-pretty">Never touches our servers</p>
+        <button
+          type="button"
+          className="inline-flex h-9 shrink-0 cursor-pointer items-center gap-1 rounded-lg px-2 text-sm font-medium text-accent hover:bg-surface-2"
+          aria-expanded={open}
+          aria-controls={panel}
+          onClick={() => setOpen((was) => !was)}
+        >
+          How it works
+          <ChevronDown className={`size-4 transition-transform duration-200 ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+        </button>
       </div>
       {open && (
         <div id={panel} className="anim-fade border-t border-border px-4 py-4">
@@ -96,44 +91,45 @@ export function ServerlessNote({ className = "" }: { className?: string }) {
   );
 }
 
-/** How a serverless webinar works, and what it cannot do yet, in plain words. */
+/**
+ * How a serverless webinar works, and its beta limits: an icon and a few words each, with the
+ * full sentence in a tooltip and for screen readers (docs/UI-WRITING.md).
+ */
 export function HowItWorks() {
-  const steps = [
-    "The host’s browser encrypts the video and sends it to a few viewers’ browsers. The key is in the link the host shares, and never reaches our server.",
-    "Those browsers pass the encrypted video on to others, so a viewer’s browser may relay the video it is already watching.",
-    "Our server only introduces browsers to each other. It never receives the video or the sound.",
+  const works = [
+    {
+      icon: <LockKeyhole />,
+      label: "End-to-end encrypted",
+      detail: "Only people with the full link can see the video, not us or anyone in between. The key is in the link and never reaches our server.",
+    },
+    {
+      icon: <Share2 />,
+      label: "Viewers pass it on",
+      detail: "The host’s browser sends the encrypted video to a few viewers, whose browsers pass it on to others.",
+    },
+    {
+      icon: <ServerOff />,
+      label: "Our server never sees it",
+      detail: "Our server only introduces browsers to each other. It never receives the video or the sound.",
+    },
   ];
   const limits = [
-    `Up to ${LIVE_VIEWER_CAP} viewers, with one person on camera.`,
-    "Some strict networks (some offices, schools and mobile carriers) can’t connect yet.",
-    "Browsers connected to each other can see each other’s IP address.",
+    { icon: <Users />, label: `Up to ${LIVE_VIEWER_CAP} viewers, 1 camera`, detail: `Up to ${LIVE_VIEWER_CAP} viewers, with one person on camera.` },
+    { icon: <WifiOff />, label: "Some networks block it", detail: "Some strict networks (some offices, schools and mobile carriers) can’t connect yet." },
+    { icon: <Globe />, label: "Peers see your IP address", detail: "Browsers connected to each other can see each other’s IP address." },
   ];
   return (
-    <div className="flex flex-col gap-4 text-sm">
-      <p className="flex items-start gap-2.5 text-pretty" data-testid="e2ee-note">
-        <LockKeyhole className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
-        <span>
-          <span className="font-semibold">End-to-end encrypted:</span> only people with the full link can see the video — not us, not anyone in between.
-        </span>
-      </p>
-      <ol className="flex flex-col gap-3">
-        {steps.map((step, index) => (
-          <li key={index} className="flex gap-3">
-            <span className="grid size-6 shrink-0 place-items-center rounded-full bg-surface-3 text-xs font-semibold tabular-nums" aria-hidden="true">
-              {index + 1}
-            </span>
-            <span className="pt-0.5 text-pretty">{step}</span>
-          </li>
+    <div className="flex flex-col gap-4">
+      <ul className="flex flex-col gap-2.5" aria-label="How it works" data-testid="e2ee-note">
+        {works.map((fact) => (
+          <Fact key={fact.label} {...fact} />
         ))}
-      </ol>
-      <div className="flex flex-col gap-2">
+      </ul>
+      <div className="flex flex-col gap-2.5">
         <p className="eyebrow">Beta limits</p>
-        <ul className="flex flex-col gap-1.5 text-muted">
-          {limits.map((limit) => (
-            <li key={limit} className="flex gap-2.5 text-pretty">
-              <span className="mt-2 size-1 shrink-0 rounded-full bg-faint" aria-hidden="true" />
-              {limit}
-            </li>
+        <ul className="flex flex-col gap-2.5 text-muted" aria-label="Beta limits">
+          {limits.map((fact) => (
+            <Fact key={fact.label} {...fact} />
           ))}
         </ul>
       </div>

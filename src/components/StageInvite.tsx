@@ -109,7 +109,7 @@ function InviteDialog({
       <div className="flex flex-col gap-1.5">
         <Dialog.Title className="font-display text-xl font-semibold">The host invited you to speak</Dialog.Title>
         <Dialog.Description id="stage-invite-about" className="text-[0.9375rem] leading-relaxed text-muted">
-          Everyone watching will see and hear you. Check your microphone and camera first.
+          Everyone watching will see and hear you.
         </Dialog.Description>
       </div>
       <Preview

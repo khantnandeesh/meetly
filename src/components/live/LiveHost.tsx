@@ -35,9 +35,9 @@ const everyone = (n: number) => (n === 1 ? "the one viewer" : n === 2 ? "both vi
 
 function mediaMessage(error: unknown): string {
   const name = error instanceof Error ? error.name : "";
-  if (name === "NotAllowedError" || name === "SecurityError") return "Camera and microphone are blocked. Allow them in your browser’s site settings, then try again.";
-  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera was found. A serverless webinar needs a camera; a microphone is optional.";
-  if (name === "NotReadableError" || name === "AbortError") return "Your camera or microphone is in use by another app.";
+  if (name === "NotAllowedError" || name === "SecurityError") return "Camera and microphone are blocked. Allow them in site settings, then try again.";
+  if (name === "NotFoundError" || name === "OverconstrainedError") return "No camera was found. Connect one, then try again.";
+  if (name === "NotReadableError" || name === "AbortError") return "Camera or microphone in use. Close the other app, then try again.";
   return "Couldn’t open your camera and microphone.";
 }
 
@@ -320,15 +320,7 @@ export function LiveHost() {
       <LiveHeader onLeave={askBeforeLeaving} />
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-5 px-4 pb-16 sm:px-8 lg:gap-6">
         {before ? (
-          <WebinarHeading
-            title="Start a serverless webinar"
-            detail={
-              <p className="max-w-[40rem] text-pretty text-muted">
-                Your video goes browser to browser, from you to your viewers and on between them. It never passes through our servers. Up to {LIVE_VIEWER_CAP}{" "}
-                viewers, with you the only one on camera.
-              </p>
-            }
-          />
+          <WebinarHeading title="Start a serverless webinar" />
         ) : (
           <WebinarHeading title={name || "Your webinar"} />
         )}
@@ -337,7 +329,7 @@ export function LiveHost() {
             {before && (
               <div className="flex flex-col gap-2">
                 <label htmlFor={titleId} className="text-sm font-medium text-muted">
-                  Title <span className="font-normal text-faint">(optional, shown to viewers)</span>
+                  Title <span className="font-normal text-faint">(optional)</span>
                 </label>
                 <input
                   id={titleId}
@@ -360,11 +352,11 @@ export function LiveHost() {
                   <p className="text-muted" role="status">
                     {phase.seconds !== null ? (
                       <>
-                        It was live for <span className="font-semibold text-text">{durationWords(phase.seconds)}</span>, with at most{" "}
-                        <span className="font-semibold text-text tabular-nums">{peak}</span> {peak === 1 ? "viewer" : "viewers"} watching at once.
+                        Live for <span className="font-semibold text-text">{durationWords(phase.seconds)}</span>, at most{" "}
+                        <span className="font-semibold text-text tabular-nums">{peak}</span> {peak === 1 ? "viewer" : "viewers"} at once.
                       </>
                     ) : (
-                      "Viewers can no longer watch it."
+                      "The link no longer works."
                     )}
                   </p>
                 </div>
@@ -386,7 +378,7 @@ export function LiveHost() {
                   <div className="grid size-full place-items-center p-6 text-center text-sm text-muted">
                     {phase.t === "asking" ? (
                       <span className="inline-flex items-center gap-2" role="status">
-                        <LoaderCircle className="anim-spin size-4" aria-hidden="true" /> Asking for your camera and microphone…
+                        <LoaderCircle className="anim-spin size-4" aria-hidden="true" /> Waiting for camera access…
                       </span>
                     ) : phase.t === "no-media" ? (
                       <span className="flex max-w-sm flex-col items-center gap-3" role="alert">
@@ -410,7 +402,7 @@ export function LiveHost() {
                 {onAir ? (
                   <LiveChip since={since} watching={watching} testId="host-viewers" />
                 ) : (
-                  media && <span className="chip absolute top-3 left-3 text-muted">Preview · only you see this</span>
+                  media && <span className="chip absolute top-3 left-3 text-muted">Preview</span>
                 )}
                 {media && hasAudio && !micOn && (
                   <span className="chip absolute bottom-3 left-3">
@@ -423,7 +415,7 @@ export function LiveHost() {
 
             {noMicrophone && media && phase.t !== "ended" && (
               <p className="-mt-2 text-sm text-muted" data-testid="no-microphone">
-                No microphone found. Viewers will see you but not hear you.
+                No microphone. Viewers can’t hear you.
               </p>
             )}
 
@@ -473,8 +465,8 @@ export function LiveHost() {
                           <Dialog.Title className="font-display text-xl font-semibold">End this webinar?</Dialog.Title>
                           <Dialog.Description className="text-sm leading-relaxed text-pretty text-muted">
                             {watching + connecting === 0
-                              ? "The link stops working. To go live again, you start a new webinar with a new link."
-                              : `It stops for ${everyone(watching + connecting)}, and the link stops working. To go live again, you start a new webinar with a new link.`}
+                              ? "The link stops working for good."
+                              : `It stops for ${everyone(watching + connecting)}, and the link stops working for good.`}
                           </Dialog.Description>
                         </div>
                         <div className="flex flex-wrap justify-end gap-3">
@@ -509,7 +501,7 @@ export function LiveHost() {
                     </span>
                   </button>
                   <p className="text-sm text-muted">
-                    The link you copy ends with the video’s key. Anyone with the full link can watch, up to {tree?.cap ?? LIVE_VIEWER_CAP} at once.
+                    Anyone with this link can watch (max {tree?.cap ?? LIVE_VIEWER_CAP}).
                   </p>
                 </Card>
 
