@@ -879,7 +879,11 @@ full relay with a fan-out of 4 or more is offered to joiners only while it has t
 free; its last is kept for a repair (warm or cold) or a move. With fan-out 6 a depth-1 relay
 carries a sixth of the audience: in gate run 45146597862, with every slot taken by joiners, two
 kills of such relays each ended in about 180 cold repairs and 120 peers rejoining for want of a
-place. In the simulator depth p95 stays 3 (78% of peers at depth 3, 0–1% at 4).
+place. In the simulator depth p95 stays 3 (78% of peers at depth 3, 0–1% at 4). An amendment
+that let a joiner with nowhere else take the last slot was tried and withdrawn: gate run
+45167723003 had 543 cold repairs in storms again (run 45161787212, with the reserve absolute,
+had 7), though every churn joiner then waits 4–8 s for its welcome until a relay is promoted.
+*Open: how a join waits less without giving the reserve away.*
 
 **[D57] The source keeps its probed fan-out** (decided by integrator 2026-11-23): D49's
 `sourceFanout` to `sourceAloneFanout`, at its measured uplink, holds whether or not other relays
