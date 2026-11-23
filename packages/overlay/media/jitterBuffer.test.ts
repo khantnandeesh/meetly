@@ -266,12 +266,40 @@ describe("jitter buffer §10.3: when a frame is not there", () => {
     assert.equal(key.decodeOnly, false);
   });
 
-  it("gives up 150 ms past the missing frame's due time: one that arrives after that is not used", () => {
+  it("[D81] waits for a missing base-layer frame until the next keyframe is due, up to 600 ms: one that comes 160 ms late saves the GOP", () => {
     const { clock, buffer, events } = setup();
     const frames = videoFrames(64);
-    // Frame 4 is due at 193 ms. At 343 ms the wait is over.
+    // Frame 4 is due at 193 ms and comes at 350 (a retransmission): before D81 the GOP was given up at 343.
     const arrivals = live(frames).map((arrival) => (arrival.frame.header.frameId === 4 ? { ...arrival, at: 350 } : arrival));
     const early = play(clock, buffer, 342, arrivals);
+    assert.deepEqual(ids(early), [0, 1, 2, 3]);
+    assert.equal(buffer.oldestWanted(), 4);
+    const rest = play(clock, buffer, 2400, arrivals);
+    assert.deepEqual(ids(rest), [...Array(64).keys()].slice(4));
+    assert.deepEqual(events, ["stall 4"]);
+    assert.equal(buffer.stats().lost, 0);
+    // Played forward: what was held behind it is decoded, not shown, until playout is within D again (§10.4).
+    assert.equal((rest.find((p) => p.frame.header.frameId === 4) as Popped).decodeOnly, true);
+    assert.equal((rest.find((p) => p.frame.header.frameId === 40) as Popped).decodeOnly, false);
+  });
+
+  it("[D81] a keyframe sooner than the schedule, due behind the stall, ends the wait at its own due time", () => {
+    const { clock, buffer, events } = setup();
+    // The source sent keyframes every 20 frames (for joiners); the buffer expects one every 60.
+    const frames = videoFrames(64, { config: { ...VIDEO_CONFIG, keyIntervalFrames: 20 } }).filter((frame) => frame.header.frameId !== 4);
+    const out = play(clock, buffer, 2400, live(frames));
+    assert.deepEqual(events, ["stall 4", "skip 20"]);
+    const key = out.find((p) => p.frame.header.frameId === 20) as Popped;
+    assert.ok(key.at * 1000 - key.dueUs < 1000, `keyframe 20 came out ${key.at * 1000 - key.dueUs} us after its due time`);
+    assert.equal(key.decodeOnly, false);
+  });
+
+  it("[D81] gives up 600 ms past the missing frame's due time: one that arrives after that is not used", () => {
+    const { clock, buffer, events } = setup();
+    const frames = videoFrames(64);
+    // Frame 4 is due at 193 ms. At 793 ms the wait is over.
+    const arrivals = live(frames).map((arrival) => (arrival.frame.header.frameId === 4 ? { ...arrival, at: 800 } : arrival));
+    const early = play(clock, buffer, 792, arrivals);
     assert.deepEqual(ids(early), [0, 1, 2, 3]);
     assert.equal(buffer.oldestWanted(), 4);
     const rest = play(clock, buffer, 2400, arrivals);
@@ -451,8 +479,9 @@ describe("jitter buffer: the rest of its interface", () => {
   it("after giving up on a GOP, nothing before the next keyframe is wanted", () => {
     const { clock, buffer } = setup();
     const frames = videoFrames(64).filter((frame) => frame.header.frameId !== 4);
-    play(clock, buffer, 600, live(frames));
-    assert.equal(buffer.oldestWanted(), 18);
+    // [D81] Given up 600 ms past frame 4's due time (193 ms); by 900 ms frames up to 26 have come.
+    play(clock, buffer, 900, live(frames));
+    assert.equal(buffer.oldestWanted(), 27);
     play(clock, buffer, 2400, live(frames));
     assert.equal(buffer.oldestWanted(), 64);
   });

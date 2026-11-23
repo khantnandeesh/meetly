@@ -10,8 +10,15 @@ import { Emitter } from "./emitter";
 import { expectedTemporalLayer } from "./layers";
 import type { JitterBuffer, JitterBufferEvents, JitterBufferOptions, JitterBufferStats, PlayoutFrame } from "./types";
 
-/** A missing base-layer frame is waited for this long past its due time (§10.3). */
+/** A missing base-layer frame is waited for at least this long past its due time (§10.3). */
 export const STALL_WAIT_US = 150_000;
+/**
+ * [D81] ... and up to this long, while the next keyframe is not yet due: giving the GOP up costs
+ * all of it to the next keyframe (up to 2 s) whatever the wait, and a retransmission that comes in
+ * this time saves it. Locally, of the frames a GOP was given up for at 150 ms, some came 160 and
+ * 350 ms past their due time.
+ */
+export const BASE_WAIT_MAX_US = 600_000;
 /** Media this far beyond *D* ahead of the playout point starts a catch-up (§10.4). */
 export const CATCH_UP_SLACK_US = 100_000;
 /**
@@ -249,6 +256,28 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     return recent >= REPLAY_FRAMES;
   }
 
+  /** [D81] A keyframe after `frameId` is here and due: a stall on `frameId` is not worth keeping. */
+  private keyDueAfter(frameId: number, delayUs: number, nowUs: number): boolean {
+    for (let i = this.ids.length - 1; i >= 0; i--) {
+      const id = this.ids[i] as number;
+      if (id <= frameId) break;
+      const entry = this.entries.get(id);
+      if (entry && this.isKey(entry.frame) && entry.frame.header.captureUs + delayUs <= nowUs) return true;
+    }
+    return false;
+  }
+
+  /**
+   * [D81] How long past its due time a missing frame others build on is waited for: until the
+   * next keyframe after `gopKeyCaptureUs` is due, between STALL_WAIT_US and BASE_WAIT_MAX_US.
+   */
+  private baseWaitUs(rootDueUs: number, gopKeyCaptureUs: number | null, delayUs: number): number {
+    if (gopKeyCaptureUs === null) return BASE_WAIT_MAX_US;
+    const keyIntervalUs = (this.options.config.keyIntervalFrames ?? 60) * this.frameUs;
+    const nextKeyDueUs = gopKeyCaptureUs + keyIntervalUs + delayUs;
+    return Math.max(STALL_WAIT_US, Math.min(BASE_WAIT_MAX_US, nextKeyDueUs - rootDueUs));
+  }
+
   /**
    * [D45] Whether the replay will reach the playout point before the next keyframe is due: the
    * capture time it delivers per second of arrival, against the lag it has to make up.
@@ -329,8 +358,15 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
       const keyId = id - frame.header.keyDelta;
       const keyCaptureUs = this.gopKeyId === keyId ? this.gopKeyCaptureUs : null;
       const sinceUs = this.stallRoot === blocker ? this.stallSinceUs : nowUs;
-      const giveUpAt = replaying && this.replayCatchesUp(nowUs, delayUs, keyCaptureUs) ? Math.max(rootDueUs + STALL_WAIT_US, sinceUs + REPLAY_STALL_WAIT_US) : rootDueUs + STALL_WAIT_US;
-      if (nowUs < giveUpAt) {
+      // [D81] Giving up costs the rest of the GOP: playout resumes at the next keyframe whatever
+      // the wait. So the missing frame is waited for until that keyframe is due, up to
+      // BASE_WAIT_MAX_US, and never less than STALL_WAIT_US: a retransmission that comes in that
+      // time saves the GOP, and one that does not costs nothing more.
+      const waitUs = this.baseWaitUs(rootDueUs, blocker === keyId ? rootDueUs - delayUs : keyCaptureUs, delayUs);
+      const giveUpAt = replaying && this.replayCatchesUp(nowUs, delayUs, keyCaptureUs) ? Math.max(rootDueUs + waitUs, sinceUs + REPLAY_STALL_WAIT_US) : rootDueUs + waitUs;
+      // A keyframe sooner than the schedule (the source sends one for a joiner, or a new
+      // configuration), already due behind the stall, ends the wait: nothing is gained by more.
+      if (nowUs < giveUpAt && !this.keyDueAfter(blocker, delayUs, nowUs)) {
         if (this.stallRoot !== blocker) {
           this.stallRoot = blocker;
           this.stallSinceUs = nowUs;
