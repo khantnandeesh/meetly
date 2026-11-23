@@ -24,6 +24,11 @@ export const CATCH_UP_SLACK_US = 100_000;
 export const REPLAY_FRAMES = 1;
 export const REPLAY_WINDOW_MS = 300;
 export const REPLAY_STALL_WAIT_US = 300_000;
+/**
+ * [D80] A replay's speed is judged only once it has been arriving this long: a burst of a few
+ * frames in a millisecond or two says nothing of how fast the rest will come.
+ */
+export const REPLAY_JUDGE_AFTER_US = 50_000;
 /** While a replay is played forward to catch up, the newest frame handed out is shown at least this often. */
 export const CATCH_UP_SHOW_EVERY_US = 100_000;
 /** *D* falls no faster than this (§10.2). */
@@ -254,10 +259,19 @@ export class JitterBufferImpl extends Emitter<JitterBufferEvents> implements Jit
     const first = recovered[0] as { at: number; captureUs: number };
     const last = recovered[recovered.length - 1] as { at: number; captureUs: number };
     const arrivalUs = (last.at - first.at) * 1000;
-    if (arrivalUs <= 0) return true;
-    // Capture time delivered per unit of time, as the live stream delivers 1.
-    const speed = (last.captureUs - first.captureUs) / arrivalUs;
-    const lagUs = nowUs - delayUs - last.captureUs;
+    // [D80] Too soon to tell: a burst is judged once it has been coming for REPLAY_JUDGE_AFTER_US.
+    if (arrivalUs < REPLAY_JUDGE_AFTER_US) return true;
+    // Capture time delivered per unit of time, as the live stream delivers 1. [D80] Over what it
+    // has delivered, oldest to newest, not its first and last arrivals: a burst's frames complete
+    // out of capture order, and the newest arriving first read as a speed below zero.
+    let oldestUs = first.captureUs;
+    let newestUs = first.captureUs;
+    for (const r of recovered) {
+      oldestUs = Math.min(oldestUs, r.captureUs);
+      newestUs = Math.max(newestUs, r.captureUs);
+    }
+    const speed = (newestUs - oldestUs) / arrivalUs;
+    const lagUs = nowUs - delayUs - newestUs;
     if (lagUs <= 0) return true;
     if (speed <= 1) return false;
     const catchUpUs = lagUs / (speed - 1);

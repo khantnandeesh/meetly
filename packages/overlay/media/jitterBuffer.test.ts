@@ -346,6 +346,38 @@ describe("jitter buffer §10.3: when a frame is not there", () => {
   });
 });
 
+describe("jitter buffer [D80]: a replay's speed, from what it has delivered", () => {
+  // Gate run 45261992168 (and locally, with the player's give-ups logged): a joiner's or a repair's
+  // replay comes in a burst, its fragments and frames not in capture order. D45 judged the replay
+  // by its first and last arrivals: a later-captured frame first gave a speed below one (often
+  // below zero), "cannot catch up", and the GOP was given up for the next keyframe, up to 2 s away:
+  // 18 of 319 joins took over a second from first packet to first frame, and 76 of 791 repairs
+  // rendered nothing for over 500 ms longer than their frames took to arrive.
+  it("a replay arriving out of capture order is played forward, not given up", () => {
+    const { clock, buffer, events } = setup();
+    const frames = videoFrames(120);
+    clock.advance(1000);
+    // A joiner at 1 s: the GOP from keyframe 0 as a burst over 30 ms, completed newest first (the
+    // order is the worst case of what a burst's reordering can do: the first arrival the newest).
+    const burst = frames.slice(0, 31).map((frame) => ({ ...frame, recovered: true }));
+    const order = [...burst].reverse();
+    // Frame 4 (the base layer) comes last, 30 ms after the rest: the GOP waits on it.
+    const late = order.findIndex((frame) => frame.header.frameId === 4);
+    const [four] = order.splice(late, 1);
+    const arrivals = order.map((frame, i) => ({ at: 1001 + i, frame }));
+    arrivals.push({ at: 1001 + order.length + 30, frame: four as ReceivedFrame });
+    // Then live.
+    for (const frame of frames.slice(31)) arrivals.push({ at: frame.header.captureUs / 1000 + 5, frame });
+    const out = play(clock, buffer, 2500, arrivals);
+    // (A stall on keyframe 0, the burst's last to complete, ends with "skip 0": not a GOP given up.)
+    assert.ok(!events.some((event) => event.startsWith("skip") && event !== "skip 0"), `given up: ${events.join(", ")}`);
+    assert.equal(buffer.stats().lost, 0);
+    // Shown from the replay's newest frames on, not from keyframe 60.
+    const shown = out.filter((popped) => !popped.decodeOnly).map((popped) => popped.frame.header.frameId);
+    assert.ok((shown[0] as number) < 60, `first shown ${shown[0]}`);
+  });
+});
+
 describe("jitter buffer §10.4: catching up", () => {
   it("after a 1.5 s replay burst the buffer is within D of live after one pop, and the old frames are decodeOnly", () => {
     const { clock, buffer } = setup();
