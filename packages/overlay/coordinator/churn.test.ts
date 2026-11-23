@@ -108,6 +108,8 @@ describe("coordinator: the tree's depth under the gate's churn (SPEC §6.6, §12
       }
       for (let s = 0; s < 60; s++) await swarm.second();
       let over = 0;
+      let placed = 0;
+      let deep = 0;
       for (let s = 0; s < 600; s++) {
         if (s % 10 === 0) {
           const relays = swarm.relays();
@@ -119,9 +121,18 @@ describe("coordinator: the tree's depth under the gate's churn (SPEC §6.6, §12
         }
         await swarm.second();
         if (swarm.source!.kids.size > (swarm.source!.grantFanout ?? swarm.rig.options.params.sourceFanout)) over++;
+        for (const peer of swarm.peers.values()) {
+          if (!peer.alive || peer.role === "source" || peer.parent === null) continue;
+          placed++;
+          if (peer.depth >= 4) deep++;
+        }
       }
-      console.log(`      seed ${seed}: the source over its fan-out ${over} s of 600; ${swarm.coldRepairs} cold repairs, ${swarm.rejoins} rejoins`);
+      const deepShare = deep / placed;
+      console.log(`      seed ${seed}: the source over its fan-out ${over} s of 600; ${(100 * deepShare).toFixed(1)}% at depth 4 or more; ${swarm.coldRepairs} cold repairs, ${swarm.rejoins} rejoins`);
       assert.ok(over <= 20, `seed ${seed}: over its fan-out ${over} s`);
+      // [D72] Capable leaves near the source made relays ahead of need: 22.7% and 18.5% at depth 4
+      // or more with D67 alone (seeds 2, 5); 11.8% and 15.1% with D72.
+      assert.ok(deepShare <= 0.17, `seed ${seed}: ${(100 * deepShare).toFixed(1)}% at depth 4 or more`);
       assert.equal(swarm.rejoins, 0);
     }
   });
