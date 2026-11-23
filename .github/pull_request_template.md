@@ -28,6 +28,10 @@
 - [ ] **Security review**: no secrets in code, logs or screenshots; new API routes check the
       session or host token; user input is validated on the server; nothing new is shown to
       people who were not let in; new dependencies are justified.
+- [ ] **Copy**: visible text follows docs/UI-WRITING.md (icon + accessible name + tooltip over
+      words; buttons of 1–2 words; no explanatory paragraphs; errors say what happened and what to
+      do in one line; the screen stays within its word budget). Any change to visible text has
+      before and after screenshots, desktop and phone, under Screenshots.
 - [ ] Tests added or updated for the change; no test was loosened or deleted to make CI pass.
 - [ ] Docs updated (README, docs/RELEASING.md) if setup, deploy or behaviour changed.
 - [ ] Release PR only (`main` → `cloudflare-deploy`): merge with **Create a merge commit**, then

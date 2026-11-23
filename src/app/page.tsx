@@ -1,12 +1,13 @@
 "use client";
 
-import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation } from "lucide-react";
+import { CalendarPlus, ChevronDown, CircleAlert, Globe, Link2, LoaderCircle, Plus, Presentation, UserRoundX } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useLayoutEffect, useRef, useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
 import { ScheduleDialog } from "@/components/ScheduleDialog";
+import { Fact, Facts } from "@/components/ui/Fact";
 import { Logo } from "@/components/ui/Logo";
 import { Dropdown } from "@/components/ui/Menu";
 import { useToast } from "@/components/ui/Toaster";
@@ -85,9 +86,10 @@ export default function Home() {
               <h1 className="font-display text-[clamp(2.5rem,6vw,4.25rem)] leading-[1.02] font-semibold tracking-[-0.03em] text-balance">
                 Video meetings, <span className="text-accent">one link</span> away
               </h1>
-              <p className="max-w-[34rem] text-lg leading-relaxed text-pretty text-muted">
-                Start a meeting and send the link. People join from their browser, with no account and no app.
-              </p>
+              <Facts className="text-muted">
+                <Fact icon={<Globe />} label="In the browser" detail="People join from their browser. Nothing to install." />
+                <Fact icon={<UserRoundX />} label="No account" detail="Nobody signs up, you included." />
+              </Facts>
             </div>
 
             <div className="flex max-w-[34rem] flex-col gap-3 sm:flex-row sm:items-start">
@@ -118,7 +120,7 @@ export default function Home() {
                     <Dropdown.Content align="start" sideOffset={8} collisionPadding={12} className="menu min-w-60">
                       <Dropdown.Item className="menu-item" onSelect={() => void plan("link")}>
                         <Link2 className="size-4 text-muted" aria-hidden="true" />
-                        Get a link for later
+                        Link for later
                       </Dropdown.Item>
                       <Dropdown.Item className="menu-item" onSelect={() => void plan("schedule")}>
                         <CalendarPlus className="size-4 text-muted" aria-hidden="true" />

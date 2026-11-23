@@ -88,14 +88,14 @@ export function DataSaverBadge({ onOpen, compact = false }: { onOpen: () => void
 }
 
 const HEALTH: Record<ConnectionHealth, { label: string; hint: string; tone: string }> = {
-  good: { label: "Good", hint: "Other people should see and hear you clearly.", tone: "text-accent" },
-  fair: { label: "Fair", hint: "Mostly fine. Your video quality may drop at times.", tone: "text-text" },
+  good: { label: "Good", hint: "Others see and hear you clearly.", tone: "text-accent" },
+  fair: { label: "Fair", hint: "Your video may drop at times.", tone: "text-text" },
   poor: {
     label: "Weak",
-    hint: "Other people may see you freeze or hear gaps. Move closer to your Wi-Fi router, or turn on Use less data.",
+    hint: "Others may see you freeze. Move closer to Wi-Fi, or use less data.",
     tone: "text-warn",
   },
-  unknown: { label: "Checking…", hint: "This takes a few seconds after you join.", tone: "text-muted" },
+  unknown: { label: "Checking…", hint: "Takes a few seconds.", tone: "text-muted" },
 };
 
 const kbps = (value: number | null) => (value === null ? "—" : value >= 1000 ? `${(value / 1000).toFixed(1)} Mbps` : `${value} kbps`);
@@ -148,7 +148,7 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
   const rows: [string, string][] = [
     ["Sending", kbps(stats?.sentKbps ?? null)],
     ["Receiving", kbps(stats?.receivedKbps ?? null)],
-    ["Your camera resolution", video ? `${video.width} × ${video.height}${video.fps ? ` · ${Math.round(video.fps)} fps` : ""}` : "—"],
+    ["Camera", video ? `${video.width} × ${video.height}${video.fps ? ` · ${Math.round(video.fps)} fps` : ""}` : "—"],
     ["Delay", stats?.roundTripMs == null ? "—" : `${stats.roundTripMs} ms`],
     ["Data lost", stats?.lossPercent == null ? "—" : `${stats.lossPercent}%`],
   ];
@@ -189,9 +189,7 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
             <label className="flex cursor-pointer items-center justify-between gap-4 border-t border-border bg-surface-2/60 px-6 py-4">
               <span>
                 <span className="block text-[0.9375rem] font-medium">Use less data</span>
-                <span className="block text-sm text-muted">
-                  Sends your camera at lower quality and shows video only for the person speaking. Sound and shared screens stay the same.
-                </span>
+                <span className="block text-sm text-muted">Less video. Sound and screens unchanged.</span>
               </span>
               <input
                 type="checkbox"
@@ -210,7 +208,6 @@ export function CallQualityDialog({ open, onOpenChange }: { open: boolean; onOpe
                 {copy.copied ? <Check className="size-4 text-accent" aria-hidden="true" /> : <Copy className="size-4" aria-hidden="true" />}
                 <span role="status">{copy.copied ? "Copied" : "Copy connection details"}</span>
               </button>
-              <p className="text-center text-xs text-faint">These numbers stay in this browser unless you copy them.</p>
             </div>
           </div>
         </Dialog.Content>

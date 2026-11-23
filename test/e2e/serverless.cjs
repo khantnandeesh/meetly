@@ -208,7 +208,7 @@ async function happy(browser) {
 
   await endWebinar(host);
   const summary = await page.locator('[data-testid="host-ended"]').innerText();
-  ok("host ended summary says how long and how many", /It was live for .+, with at most 3 viewers watching at once/.test(summary), summary.replace(/\s+/g, " "));
+  ok("host ended summary says how long and how many", /Live for .+, at most 3 viewers at once/.test(summary), summary.replace(/\s+/g, " "));
   const ended = await Promise.all(viewers.map((viewer) => viewer.page.locator('[data-testid="live-over"]').waitFor({ timeout: 15000 }).then(() => true, () => false)));
   ok("every viewer sees “This webinar has ended”", ended.every(Boolean), ended.join(","));
   ok("ended text", (await viewers[0].page.locator('[data-testid="live-over"]').innerText()) === "This webinar has ended");
@@ -597,7 +597,7 @@ async function hostCases(browser) {
     await host.page.locator('[data-testid="host-ended"]').waitFor({ timeout: 15000 });
     await sleep(500);
     ok("a double-click on End for everyone ends it once", ends === 1, `${ends} end requests`);
-    ok("ended summary: at most 1 viewer", /with at most 1 viewer watching at once/.test(await host.page.locator('[data-testid="host-ended"]').innerText()));
+    ok("ended summary: at most 1 viewer", /at most 1 viewer at once/.test(await host.page.locator('[data-testid="host-ended"]').innerText()));
     ok("…the camera is let go", await host.page.evaluate(() => !document.querySelector("video")));
     ok("…the viewer is told", await v.page.locator('[data-testid="live-over"]').waitFor({ timeout: 15000 }).then(() => true, () => false));
     await host.page.getByRole("button", { name: "Start another" }).click();
@@ -666,7 +666,7 @@ async function home(browser) {
       ok("Standard webinar asks the server to make it (stopped before RealtimeKit), and says the failure", createAsked && said);
       ok("…and can be chosen again", await until(async () => (await standard.getAttribute("aria-disabled")) === null, 3000));
     } else {
-      ok("Standard off: shown disabled, with the reason", (await standard.getAttribute("aria-disabled")) === "true" && /Switched off on this server right now/.test(await standard.innerText()));
+      ok("Standard off: shown disabled, with the reason", (await standard.getAttribute("aria-disabled")) === "true" && /Off on this server/.test(await standard.innerText()));
       await standard.click({ force: true });
       await sleep(500);
       ok("…and pressing it does nothing", !createAsked && (await dialog.count()) === 1);

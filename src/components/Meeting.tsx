@@ -225,26 +225,18 @@ export function Meeting({ code }: { code: string }) {
 
 /** What the screen says for each way the call ended. A webinar is named as one. */
 const endings = (noun: "meeting" | "webinar"): Record<DisconnectReason, { icon: typeof LogOut; title: string; note: string }> => ({
-  left: { icon: LogOut, title: `You left the ${noun}`, note: `The ${noun} stays open for others until everyone has left.` },
-  dropped: {
-    icon: Unplug,
-    title: "You were disconnected",
-    note: `The ${noun} stays open for others until everyone has left.`,
-  },
-  removed: { icon: UserX, title: "The host removed you", note: `You can't rejoin this ${noun} from this browser.` },
-  denied: {
-    icon: DoorClosed,
-    title: "The host didn't let you in",
-    note: "If that was a mistake, ask again or check with whoever sent you the link.",
-  },
-  ended: { icon: PhoneOff, title: `The host ended the ${noun}`, note: "The link still works if people want to meet again." },
+  left: { icon: LogOut, title: `You left the ${noun}`, note: `The ${noun} stays open for others.` },
+  dropped: { icon: Unplug, title: "You were disconnected", note: `The ${noun} stays open for others.` },
+  removed: { icon: UserX, title: "The host removed you", note: "You can't rejoin from this browser." },
+  denied: { icon: DoorClosed, title: "The host didn't let you in", note: "Ask again if it was a mistake." },
+  ended: { icon: PhoneOff, title: `The host ended the ${noun}`, note: "The link still works." },
   // Ended by our server's watchdog, not by the host (see src/lib/costGuard.server.ts). Only ever a webinar.
   limit: {
     icon: Hourglass,
     title: "This webinar reached its free time limit",
-    note: "Webinars are free for now, so each one has a time limit. This link can't be joined again.",
+    note: "Free webinars have a time limit. This link is closed.",
   },
-  paused: { icon: CirclePause, title: "Webinars are paused right now", note: "The webinar was ended for everyone. Try again later." },
+  paused: { icon: CirclePause, title: "Webinars are paused right now", note: "It ended for everyone. Try again later." },
 });
 
 function LeftScreen({
@@ -317,7 +309,7 @@ function LeftScreen({
               <KeepRow
                 icon={Download}
                 title="Save the chat"
-                help={`${said === 1 ? "1 message" : `${fullCount(said)} messages`}. It's gone once you close this page.`}
+                help={`${said === 1 ? "1 message" : `${fullCount(said)} messages`}. Gone when you close this page.`}
                 action="Save"
                 actionLabel="Save chat"
                 onAction={() => saveChat(code, chat, pinned)}
@@ -329,7 +321,7 @@ function LeftScreen({
               <KeepRow
                 icon={CalendarPlus}
                 title="Schedule a follow-up"
-                help="Same link. Add it to your calendar."
+                help="Same link"
                 action="Schedule"
                 actionLabel="Schedule a follow-up"
                 onAction={() => setPlanning(true)}
@@ -338,7 +330,7 @@ function LeftScreen({
           </section>
         )}
         {host && <ScheduleDialog code={code} mode="follow-up" open={planning} onOpenChange={setPlanning} />}
-        <p className="text-sm text-faint">{byYou ? `Everyone has left the ${noun}. The link still works.` : note}</p>
+        <p className="text-sm text-faint">{byYou ? "The link still works." : note}</p>
         {/* Asked of people who were in the call and left it in the ordinary way; not of someone who was turned away. */}
         {!turnedAway && RATING_ENABLED && <CallRating minutes={minutes} people={people} />}
       </main>

@@ -561,10 +561,7 @@ function NoiseSwitch() {
       className="menu-item"
     >
       <AudioLines className="size-4 shrink-0 text-muted" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        <span className="block font-medium">Noise suppression</span>
-        <span className="block text-xs text-muted">Turn off when you play music</span>
-      </span>
+      <span className="min-w-0 flex-1 font-medium">Noise suppression</span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
   );
@@ -583,10 +580,7 @@ function DataSaverSwitch() {
       className="menu-item"
     >
       <Leaf className="size-4 shrink-0 text-muted" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        <span className="block font-medium">Use less data</span>
-        <span className="block text-xs text-muted">For a slow or limited connection</span>
-      </span>
+      <span className="min-w-0 flex-1 font-medium">Use less data</span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
   );
@@ -661,9 +655,10 @@ function BackgroundGroup() {
   );
 }
 
-const SOUND_LEVELS: { value: SoundLevel; label: string; hint: string; preview: SoundName }[] = [
-  { value: "all", label: "All sounds", hint: "People joining, raised hands, chat, your microphone", preview: "joined" },
-  { value: "important", label: "Important only", hint: "Connection problems, meeting ended, muted by the host", preview: "connected" },
+// The names say it; "Off" alone keeps a hint, since it could be read as silencing people.
+const SOUND_LEVELS: { value: SoundLevel; label: string; hint?: string; preview: SoundName }[] = [
+  { value: "all", label: "All sounds", preview: "joined" },
+  { value: "important", label: "Important only", preview: "connected" },
   { value: "off", label: "Off", hint: "You still hear people", preview: "micOff" },
 ];
 
@@ -697,7 +692,7 @@ function SoundGroup() {
           >
             <span className="min-w-0">
               <span className="block font-medium">{level.label}</span>
-              <span className="block text-xs text-muted">{level.hint}</span>
+              {level.hint && <span className="block text-xs text-muted">{level.hint}</span>}
             </span>
             <Dropdown.ItemIndicator className="absolute right-3 text-accent">
               <Check className="size-4" aria-hidden="true" />
