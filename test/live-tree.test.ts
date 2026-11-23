@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { PeerRecord, RoomSnapshot } from "../packages/overlay/coordinator/types";
-import { anonymize, branches, viewKey } from "../src/lib/live/tree";
+import { anonymize, audience, branches, viewKey } from "../src/lib/live/tree";
 
 /** Live (beta)'s "Who's connected": the coordinator's tree map, with nobody identifiable in it. */
 
@@ -64,4 +64,11 @@ test("a viewer without a parent is waiting; an ended or full stream says so", as
   assert.equal((await anonymize(snapshot([], true))).ended, true);
   const many = Array.from({ length: 3 }, (_, i) => peer(`P${i}`, "leaf", i, "SRC", 1, 0));
   assert.equal((await anonymize(snapshot([peer("SRC", "source", 0, null, 0, 3), ...many]), 3)).full, true);
+});
+
+test("the audience counts placed viewers as watching and the rest as connecting", async () => {
+  const tree = await anonymize(snapshot([peer("SRC", "source", 0, null, 0, 1), peer("AAA", "relay", 1, "SRC", 1, 0), peer("BBB", "leaf", 2, null, 255, 0)]));
+  assert.equal(tree.viewers, 2);
+  assert.deepEqual(audience(tree), { watching: 1, connecting: 1 });
+  assert.deepEqual(audience(null), { watching: 0, connecting: 0 });
 });

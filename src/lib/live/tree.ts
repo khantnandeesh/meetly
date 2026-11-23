@@ -104,6 +104,18 @@ export function branches(nodes: LiveNode[]): { roots: LiveBranch[]; waiting: Liv
   return { roots, waiting };
 }
 
+/**
+ * The audience as people should read it: those placed in the tree, who get the video, are
+ * "watching"; those still finding a place (or who cannot be reached) are "connecting". The
+ * coordinator's `viewers` counts both, since both hold one of the places.
+ */
+export function audience(tree: LiveTree | null): { watching: number; connecting: number } {
+  if (!tree) return { watching: 0, connecting: 0 };
+  const { waiting } = branches(tree.nodes);
+  const viewers = tree.nodes.filter((node) => !node.source).length;
+  return { watching: viewers - waiting.length, connecting: waiting.length };
+}
+
 export type PlacedNode = LiveNode & { x: number; y: number; waiting: boolean };
 export type PlacedEdge = { key: string; x1: number; y1: number; x2: number; y2: number };
 export type TreeLayout = { nodes: PlacedNode[]; edges: PlacedEdge[]; width: number; height: number; columns: number };
