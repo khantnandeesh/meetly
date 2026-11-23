@@ -31,7 +31,7 @@ const settings = (env: Env): CostGuardEnv =>
  * Live (beta)'s STUN servers. With a Cloudflare TURN key (the secrets TURN_KEY_ID and
  * TURN_KEY_API_TOKEN, SPEC §6.7) each peer is also given TURN credentials of its own, so a viewer
  * behind a strict NAT (symmetric NAT, a strict firewall, some mobile carriers) can watch; such a
- * viewer only watches and never relays ([D80]). Without the key, it can't connect to anyone.
+ * viewer only watches and never relays ([D82]). Without the key, it can't connect to anyone.
  */
 const LIVE_STUN: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }, { urls: ["stun:stun.l.google.com:19302"] }];
 

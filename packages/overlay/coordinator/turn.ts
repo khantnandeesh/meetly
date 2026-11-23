@@ -1,6 +1,6 @@
 /**
  * Cloudflare's TURN servers for one peer, from the TURN key's `generate-ice-servers` answer
- * (SPEC §6.7 [D80]). Apart from ./durableObject.ts, which is a Worker's entry module: everything
+ * (SPEC §6.7 [D82]). Apart from ./durableObject.ts, which is a Worker's entry module: everything
  * that exports must be a handler or a class.
  *
  * Owner: E-coordinator.
@@ -28,7 +28,7 @@ export function turnFrom(answer: unknown): IceServer[] {
 }
 
 
-/** [D80] A mint that has not answered in this long has failed: the room is not held up for it. */
+/** [D82] A mint that has not answered in this long has failed: the room is not held up for it. */
 export const TURN_MINT_TIMEOUT_MS = 3_000;
 
 /** What one mint gave: TURN servers, or why there are none (never the key or the credentials). */

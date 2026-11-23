@@ -113,7 +113,7 @@ export function HowItWorks() {
       detail: "Our server only introduces browsers to each other. It never receives the video or the sound.",
     },
   ];
-  // Strict networks: with TURN on this deployment ([D80]) they connect through a relay and only
+  // Strict networks: with TURN on this deployment ([D82]) they connect through a relay and only
   // watch; without it, or until the server has said, they can't connect.
   const turn = useLiveTurn();
   const strict = turn
@@ -225,7 +225,7 @@ const TREE_EVERY_MS = 2000;
 /** Whether TURN works on this deployment (GET /api/live): the server's answer, shared by the page; a failed request is asked again. */
 let turnAnswer: Promise<boolean> | null = null;
 
-/** True once the server says viewers on strict networks can watch through a relay ([D80]); null until it answers, false if not or on failure. */
+/** True once the server says viewers on strict networks can watch through a relay ([D82]); null until it answers, false if not or on failure. */
 export function useLiveTurn(): boolean | null {
   const [turn, setTurn] = useState<boolean | null>(null);
   useEffect(() => {

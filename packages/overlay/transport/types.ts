@@ -72,7 +72,7 @@ export interface Link extends Listenable<LinkEvents> {
    */
   readonly turn: boolean;
   /**
-   * [D80] This end's own candidate in the selected pair is "relay": this peer reaches the other
+   * [D82] This end's own candidate in the selected pair is "relay": this peer reaches the other
    * through its own TURN allocation. The other end's relay says nothing of this peer. Optional: a
    * test double may leave it out (false).
    */
@@ -133,7 +133,7 @@ export interface LinkManager extends Listenable<LinkManagerEvents> {
   links(): Link[];
   closeAll(): void;
   /**
-   * SPEC §5.1 [D80]: fresh ICE servers. Links made from now on use them and open links are given
+   * SPEC §5.1 [D82]: fresh ICE servers. Links made from now on use them and open links are given
    * them. With `restart` (new TURN credentials before the old ones expire), an open link whose own
    * end goes through TURN also restarts ICE, make-before-break, to be allocated a relay with them.
    * Optional: a test double may leave it out.

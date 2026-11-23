@@ -251,7 +251,7 @@ export type SimPeer = {
   switchedAt?: number;
   /** For `badNetworks`: this peer's link loses packets. */
   bad?: boolean;
-  /** [D80] Its link to its parent goes through TURN: it says `turn: true` in every `status`. */
+  /** [D82] Its link to its parent goes through TURN: it says `turn: true` in every `status`. */
   turn?: boolean;
 };
 

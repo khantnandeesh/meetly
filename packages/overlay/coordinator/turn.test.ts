@@ -1,5 +1,5 @@
 /**
- * SPEC §8.1 [D80]: a peer whose link to its parent goes through TURN only watches. It is never
+ * SPEC §8.1 [D82]: a peer whose link to its parent goes through TURN only watches. It is never
  * promoted, never offered to anyone as a parent or a backup, and a relay that says so is demoted
  * at once, its children moved first. And §6.7: TURN credentials are minted again at half their
  * life and sent in `grant`, never kept anywhere but the peer's own socket. The core is driven
@@ -62,7 +62,7 @@ const roles = (who: Joined) => of(who.heard, "role").map((message) => message.ro
 const named = (who: Joined): PeerId[] =>
   [...of(who.heard, "welcome").flatMap((message) => message.assign), ...of(who.heard, "assign").flatMap((message) => message.assign)].flatMap((assignment) => [...assignment.parents, ...assignment.backups].map((hint) => hint.peer));
 
-describe("coordinator: a peer behind TURN only watches (SPEC §8.1 [D80])", () => {
+describe("coordinator: a peer behind TURN only watches (SPEC §8.1 [D82])", () => {
   /** One peer able to relay and five that never can, under a source with one free slot: the candidate is promoted unless it is behind TURN. */
   async function promotionCase(turn: ClientMessageOf<"status">["turn"]) {
     const s = await session();
@@ -280,7 +280,7 @@ describe("coordinator: a peer behind TURN only watches (SPEC §8.1 [D80])", () =
   }
 });
 
-describe("coordinator: TURN credentials over a long session (SPEC §6.7 [D80])", () => {
+describe("coordinator: TURN credentials over a long session (SPEC §6.7 [D82])", () => {
   let minted = 0;
   const turn = async (): Promise<IceServer[]> => [{ urls: ["stun:stun.example.org:3478"] }, { urls: ["turn:turn.example.org:3478?transport=udp"], username: `user-${++minted}`, credential: `secret-${minted}` }];
 
@@ -390,7 +390,7 @@ describe("coordinator: TURN credentials over a long session (SPEC §6.7 [D80])",
   });
 });
 
-describe("coordinator: Cloudflare's TURN servers (SPEC §6.7 [D80])", () => {
+describe("coordinator: Cloudflare's TURN servers (SPEC §6.7 [D82])", () => {
   it("mints with the key, trimmed, under a 3 s timeout, and says why when it gets none", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
     const answer = (status: number, body: unknown): typeof fetch => async (url, init) => {

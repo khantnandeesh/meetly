@@ -101,11 +101,11 @@ export type TreeNode = Omit<PeerRecord, "conn"> & {
   /** Peers the coordinator has named to this one, or this one to them, and when (SPEC §6.4). */
   introduced: Map<PeerId, number>;
   /**
-   * [D80] Its link to its parent has gone through TURN in this session, as it said in `status`:
+   * [D82] Its link to its parent has gone through TURN in this session, as it said in `status`:
    * it only watches. Never promoted, never offered to anyone, demoted at once. Never the source's.
    */
   turn: boolean;
-  /** [D80] When its ICE servers (and TURN credentials) were last minted, and whether they held TURN. */
+  /** [D82] When its ICE servers (and TURN credentials) were last minted, and whether they held TURN. */
   iceAt: number;
   iceTurn: boolean;
 };
@@ -161,7 +161,7 @@ export type StatusFields = {
   caps: Capabilities;
   lossPct: number;
   rttMs: number | null;
-  /** [D80] Optional: a peer that does not send it is taken as not behind TURN. */
+  /** [D82] Optional: a peer that does not send it is taken as not behind TURN. */
   turn?: boolean;
 };
 
@@ -328,7 +328,7 @@ export class TreeMap {
     node.lastStatusAt = now;
     node.reported = true;
     node.suspectUntil = 0;
-    // [D80] Once behind TURN, for the rest of the session. The source has to send in any case.
+    // [D82] Once behind TURN, for the rest of the session. The source has to send in any case.
     if (status.turn === true && node.role !== "source") node.turn = true;
     // Only the source is at depth 0, whatever anyone says.
     node.depth = node.role === "source" ? 0 : status.depth === 0 ? DEPTH_UNKNOWN : status.depth;
@@ -389,7 +389,7 @@ export class TreeMap {
   /** Whether a joiner may be sent to this peer at all, slots aside. */
   offerable(node: TreeNode, now: number): boolean {
     if (node.role === "leaf" || node.conn === null || node.demotingSince !== null) return false;
-    // [D80] Behind TURN: nobody's parent or backup, from the moment it says so.
+    // [D82] Behind TURN: nobody's parent or backup, from the moment it says so.
     if (node.turn) return false;
     if (this.isStale(node, now) || node.suspectUntil > now) return false;
     return node.role === "source" || (node.parent !== null && node.depth !== DEPTH_UNKNOWN && this.reachesSource(node.peer));
@@ -718,7 +718,7 @@ export class TreeMap {
       const failing = ineligible || (lossy >= 2 && lossy * 2 > reporting);
       if (!failing) node.ineligibleSince = null;
       else if (node.ineligibleSince === null) node.ineligibleSince = now;
-      // [D80] A relay behind TURN pays for every byte it forwards, twice: no waiting to see.
+      // [D82] A relay behind TURN pays for every byte it forwards, twice: no waiting to see.
       if (failing && (node.turn || now - node.ineligibleSince! >= (node.provisional ? PROVISIONAL_DEMOTE_AFTER_MS : DEMOTE_AFTER_MS))) out.push(node);
     }
     return out;
@@ -888,7 +888,7 @@ export class TreeMap {
 const EMPTY: ReadonlySet<PeerId> = new Set();
 
 /**
- * What a peer may do is judged on: what it says of itself, and [D80] behind TURN its NAT is
+ * What a peer may do is judged on: what it says of itself, and [D82] behind TURN its NAT is
  * "relay", whatever it says, which topology's `judgeRelay` (SPEC §8.1) makes leaf-only.
  */
 function capsOf(node: TreeNode): Capabilities {

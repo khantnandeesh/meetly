@@ -78,7 +78,7 @@ const ROOM_HEADER = "x-overlay-room";
 const CORE_PREFIX = "core:";
 const ROOM_KEY = "room";
 const STUN: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
-/** TURN credentials last this long, and each peer is given fresh ones at half that (SPEC §6.7, [D80]). */
+/** TURN credentials last this long, and each peer is given fresh ones at half that (SPEC §6.7, [D82]). */
 const TURN_TTL_S = 6 * 3600;
 
 /** What a socket carries with it across hibernation: its id, and what the core attached. */
@@ -125,7 +125,7 @@ async function restCredentials(secret: string, ttlS: number): Promise<{ username
 /**
  * The configured STUN servers, and TURN minted for this peer from a Cloudflare TURN key when one
  * is configured and the core wants it (`want.turn` is false while the room backs off after failed
- * mints, [D80]). The STUN servers stay: the NAT probe needs two of them (SPEC §8.1), and
+ * mints, [D82]). The STUN servers stay: the NAT probe needs two of them (SPEC §8.1), and
  * Cloudflare's answer has one. If minting fails the peer gets STUN only, and why (a status code,
  * never the key) is logged when it changes: "TURN key not configured" when this object has no
  * key at all, which is not a failure to mint.
@@ -179,7 +179,7 @@ export class OverlayRoom {
       params: params(this.env),
       viewerCap: this.options.viewerCap ?? (Number(this.env.OVERLAY_VIEWER_CAP) > 0 ? Number(this.env.OVERLAY_VIEWER_CAP) : 10_000),
       iceServers: (want) => iceServers(this.env, this.options.stun ?? STUN, this.options.testTurn, want, this.logTurn),
-      // [D80] Fresh credentials at half their life, when there is TURN at all.
+      // [D82] Fresh credentials at half their life, when there is TURN at all.
       iceRefreshMs: this.env.TURN_KEY_ID?.trim() && this.env.TURN_KEY_API_TOKEN?.trim() ? (TURN_TTL_S * 1000) / 2 : this.options.testTurn ? (this.options.testTurn.ttlS * 1000) / 2 : undefined,
       random: Math.random,
     });

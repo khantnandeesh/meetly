@@ -1195,7 +1195,7 @@ const clientMessage = tagged({
     lossPct: num(0, 100),
     rttMs: nullable(durationMs),
     /**
-     * SPEC §8.1 [D80]: my link to my parent has gone through TURN in this session. Optional, so a
+     * SPEC §8.1 [D82]: my link to my parent has gone through TURN in this session. Optional, so a
      * peer that does not send it, and a coordinator that does not read it, still work.
      */
     turn: optional(bool),
@@ -1257,7 +1257,7 @@ const serverMessage = tagged({
    */
   role: { role: overlayRole, grant: token, fanout: optional(int(1, 64)) },
   /**
-   * A grant to replace the one you hold, before it expires. [D80] `ice`: fresh ICE servers (new
+   * A grant to replace the one you hold, before it expires. [D82] `ice`: fresh ICE servers (new
    * TURN credentials), before those you hold expire; optional, and ignored by a peer that does not know it.
    */
   grant: { grant: token, ice: optional(list(iceServer, 8)) },

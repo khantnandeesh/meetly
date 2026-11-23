@@ -96,12 +96,12 @@ export type CoordinatorCoreOptions = {
   viewerCap: number;
   /**
    * STUN and TURN servers for a peer, with fresh credentials. `want.turn` false: STUN only, no
-   * mint ([D80]: the room is backing off after mints that failed). A mint must not take long
+   * mint ([D82]: the room is backing off after mints that failed). A mint must not take long
    * (the Durable Object's gives up after 3 s): the core waits for it.
    */
   iceServers: (want?: { turn?: boolean }) => Promise<IceServer[]>;
   /**
-   * [D80] How old a peer's ICE servers may be before fresh ones are minted and sent in its next
+   * [D82] How old a peer's ICE servers may be before fresh ones are minted and sent in its next
    * `grant`: half the TURN credentials' life. Undefined (no TURN, STUN only): never.
    */
   iceRefreshMs?: number;
@@ -181,7 +181,7 @@ export type CoordinatorClientEvents = {
   welcome: [welcome: ServerMessageOf<"welcome">];
   /** The socket dropped; the client is reconnecting with `resume`. The overlay carries on. */
   offline: [];
-  /** A message the client does not handle itself, and a `grant` that carries fresh ICE servers ([D80]). */
+  /** A message the client does not handle itself, and a `grant` that carries fresh ICE servers ([D82]). */
   message: [message: ServerMessage];
   /** Removed, or the session ended: do not reconnect. */
   closed: [reason: "kicked" | "ended" | "denied" | "full" | "left", detail: string];

@@ -233,7 +233,7 @@ class LinkImpl implements Link {
 
   /**
    * Whether the route chosen goes through TURN. Asked whenever ICE connects (again, after a
-   * restart) and, [D80], whenever the selected pair changes: a route can fall back to TURN later.
+   * restart) and, [D82], whenever the selected pair changes: a route can fall back to TURN later.
    */
   private async readRoute(): Promise<void> {
     this.watchRoute();
@@ -263,7 +263,7 @@ class LinkImpl implements Link {
 
   private watchingRoute = false;
 
-  /** [D80] The ICE transport says when its selected pair changes, where the browser has it. */
+  /** [D82] The ICE transport says when its selected pair changes, where the browser has it. */
   private watchRoute(): void {
     if (this.watchingRoute) return;
     const ice = (this.pc as RTCPeerConnection & { sctp?: { transport?: { iceTransport?: EventTarget } } | null }).sctp?.transport?.iceTransport;
@@ -275,7 +275,7 @@ class LinkImpl implements Link {
   }
 
   /**
-   * SPEC §5.1 [D80]: fresh ICE servers. The connection is given them; with `restart`, if this end
+   * SPEC §5.1 [D82]: fresh ICE servers. The connection is given them; with `restart`, if this end
    * goes through TURN its relay was allocated with the old credentials, so ICE restarts (the old
    * pair carries on until a new one is chosen).
    */

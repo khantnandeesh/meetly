@@ -27,7 +27,7 @@ const TURN_CHECK_FAILED_MS = 30_000;
 let turnCheck: { key: string; at: number; ok: boolean } | null = null;
 
 /**
- * Whether TURN works on this deployment (SPEC §6.7, §8.1 [D80]), so that a viewer on a strict
+ * Whether TURN works on this deployment (SPEC §6.7, §8.1 [D82]), so that a viewer on a strict
  * network can watch through a relay: a mint from the Cloudflare TURN key returned TURN servers
  * (the same mint the coordinator makes, with a one-minute life, never shown to anyone). Kept a
  * while (see above). Without a key, false and no request. A local run's test TURN server

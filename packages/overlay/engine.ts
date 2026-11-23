@@ -89,7 +89,7 @@ const GRANT_LEEWAY_S = 60;
 const hasTurn = (ice: readonly { urls: readonly string[] }[]) => ice.some((server) => server.urls.some((url) => /^turns?:/i.test(url)));
 
 /**
- * SPEC §8.1 [D80]: whether this peer is behind TURN: its own candidate on the link to a parent is
+ * SPEC §8.1 [D82]: whether this peer is behind TURN: its own candidate on the link to a parent is
  * a relay. A parent's relay (a host on a strict network, or one that offers only relay
  * candidates) says nothing of the child, and must not bar it from relaying.
  */
@@ -253,7 +253,7 @@ abstract class PeerEngine {
       });
       node.on("config", (config) => this.onConfig(config));
       // The session's streams, later than welcome: a viewer welcomed before the source started.
-      // [D80] Fresh ICE servers, in a `grant` before the TURN credentials expire, or in the
+      // [D82] Fresh ICE servers, in a `grant` before the TURN credentials expire, or in the
       // `welcome` of a reconnection: the links take them.
       this.client.on("message", (message) => {
         if (message.t === "streams" && welcome.role !== "source") node.setStreams(message.streams);
@@ -280,7 +280,7 @@ abstract class PeerEngine {
       void (stun ? probeNat(welcome.ice) : Promise.resolve<Capabilities["nat"]>("open")).then((nat) => {
         this.natPending = false;
         if (!this.caps || this.options.capabilities?.nat) return;
-        // [D80] Behind TURN stays "relay", whatever the probe found.
+        // [D82] Behind TURN stays "relay", whatever the probe found.
         this.caps = { ...this.caps, nat: this.turnSeen ? "relay" : nat };
         this.sendStatus();
         // A short probe that was waiting for the NAT type runs now (`maybeProbe`).
@@ -306,7 +306,7 @@ abstract class PeerEngine {
   /* --- status, the probe --- */
 
   /**
-   * SPEC §8.1 [D80]: a viewer whose link to its parent goes through TURN only watches, for the
+   * SPEC §8.1 [D82]: a viewer whose link to its parent goes through TURN only watches, for the
    * rest of the session. It says so in `status`, and its NAT is "relay" from then on, which makes
    * it ineligible by `judgeRelay` (here: no uplink probe, which would go through TURN; and to a
    * coordinator that does not read `turn`). True when this call found it.
@@ -407,7 +407,7 @@ abstract class PeerEngine {
     // Nothing to probe until there is a parent to send the probe to.
     const stripe = node.status().stripes[0];
     if (!stripe || stripe.state !== "active" || stripe.parent === null) return this.scheduleProbe(PROBE_WAIT_MS);
-    // [D80] Behind TURN: no probe, ever (the verdict below says "nat").
+    // [D82] Behind TURN: no probe, ever (the verdict below says "nat").
     if (this.checkRoute()) this.sendStatus();
     const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.sessionKbps(), welcome.params);
     // Only the uplink is unknown (and, for the short probe, probation not over): the probe is what
@@ -460,7 +460,7 @@ abstract class PeerEngine {
     this.sampledAt = now;
     const stats = node.takeStats();
     this.lastUp = stats.up;
-    // [D80] A route that has fallen back to TURN since the last status is said at once.
+    // [D82] A route that has fallen back to TURN since the last status is said at once.
     if (this.checkRoute()) this.sendStatus();
     const status = node.status();
     const sample: MetricsSample = {

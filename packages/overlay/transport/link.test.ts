@@ -186,7 +186,7 @@ describe("links: making one (SPEC §5.1)", () => {
     assert.equal(ab.turn, true);
   });
 
-  it("[D80] takes fresh ICE servers: new links start with them, open links are given them, and a relayed one restarts ICE", async () => {
+  it("[D82] takes fresh ICE servers: new links start with them, open links are given them, and a relayed one restarts ICE", async () => {
     const w = world();
     const started: RTCConfiguration[] = [];
     const first = [{ urls: ["turn:t.example.org:3478"], username: "old", credential: "old" }];
@@ -221,7 +221,7 @@ describe("links: making one (SPEC §5.1)", () => {
     assert.deepEqual(started.map((config) => (config.iceServers as { username?: string }[])[0].username), ["old", "old", "new"]);
   });
 
-  it("[D80] tells its own relay from the other end's: `localTurn` only when this end's candidate is a relay", async () => {
+  it("[D82] tells its own relay from the other end's: `localTurn` only when this end's candidate is a relay", async () => {
     const w = world();
     const a = w.peer("a");
     w.peer("b");

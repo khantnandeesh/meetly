@@ -48,13 +48,13 @@ const HINT = { downShare: 0.3, downAfterMs: 10_000, upShare: 0.1, upAfterMs: 60_
 const RATES: Record<string, number> = { signal: 50, need: 5, status: 2, metrics: 1, time: 20, report: 20, streams: 2 };
 /** Refusals for rate, or messages that do not parse, in ten seconds, before the socket is closed. */
 const STRIKES = 30;
-/** [D80] The most peers whose ICE servers are minted again in one housekeeping, all at once: each is a request to the TURN key's API. */
+/** [D82] The most peers whose ICE servers are minted again in one housekeeping, all at once: each is a request to the TURN key's API. */
 const ICE_REFRESH_PER_TICK = 20;
-/** [D80] After a mint brings no TURN, the room mints nothing for this long, doubling with each failure up to `ICE_BACKOFF_MAX_MS`. */
+/** [D82] After a mint brings no TURN, the room mints nothing for this long, doubling with each failure up to `ICE_BACKOFF_MAX_MS`. */
 const ICE_BACKOFF_MS = 30_000;
 const ICE_BACKOFF_MAX_MS = 30 * 60_000;
 const hasTurn = (ice: readonly IceServer[]) => ice.some((server) => server.urls.some((url) => /^turns?:/i.test(url)));
-/** [D80] A peer that may need TURN on its next link: one behind TURN already, or whose NAT is not known to be reachable. */
+/** [D82] A peer that may need TURN on its next link: one behind TURN already, or whose NAT is not known to be reachable. */
 const mayNeedTurn = (node: TreeNode) => node.turn || (node.caps.nat !== "open" && node.caps.nat !== "cone");
 
 type Bucket = { tokens: number; at: number };
@@ -143,7 +143,7 @@ class Core implements CoordinatorCore {
         node.lastStatusAt = 0;
         node.grantExp = a.x ?? 0;
         node.provisional = node.role === "relay" && a.pv === true;
-        // [D80] Behind TURN is for the session: a coordinator that wakes does not forget it.
+        // [D82] Behind TURN is for the session: a coordinator that wakes does not forget it.
         node.turn = a.tu === true && node.role !== "source";
         node.iceAt = a.ia ?? now;
         node.iceTurn = a.it !== false;
@@ -222,7 +222,7 @@ class Core implements CoordinatorCore {
             const uplink = node.caps.uplinkKbps;
             const turn = node.turn;
             if (this.map.applyStatus(node, message, now) || (node.caps.uplinkKbps !== uplink && this.map.waiting().length > 0)) await this.serveWaiting(fx, now);
-            // [D80] Kept with the socket from now on. A relay is demoted at the next housekeeping (`demotable`).
+            // [D82] Kept with the socket from now on. A relay is demoted at the next housekeeping (`demotable`).
             if (node.turn !== turn) this.reattach(fx, node);
           }
           break;
@@ -764,7 +764,7 @@ class Core implements CoordinatorCore {
     for (const node of [...this.map.nodes.values()]) if (node.conn === null && node.closedAt !== null && now - node.closedAt >= FORGET_MS) this.forget(fx, node);
     if (this.ended !== null) return;
 
-    // [D80] TURN credentials expire (SPEC §6.7): fresh ones at half their life, in a grant, for
+    // [D82] TURN credentials expire (SPEC §6.7): fresh ones at half their life, in a grant, for
     // the peers that may need TURN; and soon for one whose welcome had none. Minted all at once.
     const refresh = this.o.iceRefreshMs;
     const due =
@@ -896,7 +896,7 @@ class Core implements CoordinatorCore {
     }
   }
 
-  /** [D80] Failed mints in a row, and until when the room mints nothing. */
+  /** [D82] Failed mints in a row, and until when the room mints nothing. */
   private iceBackoff = { failures: 0, until: 0 };
 
   /**

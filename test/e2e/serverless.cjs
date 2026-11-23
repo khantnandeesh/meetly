@@ -12,7 +12,7 @@
 // LIVE_VIEWERS sets the audience of `scale` (default 12). Every viewer's picture is checked to
 // move: frames counted by the <video> and its pixels changing, not just a <video> being there.
 //
-// strict-nat (SPEC §8.1 [D80]) needs TURN: on staging, Cloudflare's (the Worker's TURN key); locally,
+// strict-nat (SPEC §8.1 [D82]) needs TURN: on staging, Cloudflare's (the Worker's TURN key); locally,
 // a TURN server of the test's own, e.g. coturn with
 //   turnserver -n --listening-ip=<ip> --relay-ip=<ip> --use-auth-secret --static-auth-secret=<s>
 //     --realm=meetly.local --no-tls --no-dtls --max-allocate-lifetime=90
@@ -952,7 +952,7 @@ async function strictNat(browser) {
 
 /**
  * The host on a strict network: every viewer's link to it has the host's relay at the other end.
- * That is the host's TURN, not theirs: they must still be made relays (SPEC §8.1 [D80]). Judged by
+ * That is the host's TURN, not theirs: they must still be made relays (SPEC §8.1 [D82]). Judged by
  * either end, every one of them said it was behind TURN, and the audience stopped at the host's
  * own fan-out.
  */

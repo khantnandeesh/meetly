@@ -98,7 +98,7 @@ export class FakePeerConnection {
   relayed = false;
   /** The same for the other end's candidate: the route goes through the other side's TURN. */
   remoteRelayed = false;
-  /** What `setConfiguration` was last given, and how many times ICE was restarted ([D80]). */
+  /** What `setConfiguration` was last given, and how many times ICE was restarted ([D82]). */
   configuration: { iceServers?: unknown[] } = {};
   iceRestarts = 0;
 
