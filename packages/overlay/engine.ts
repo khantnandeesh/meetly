@@ -42,6 +42,7 @@ import {
   type StreamConfig,
 } from "./protocol";
 import type { Listenable, Logger, SessionClock, Unsubscribe } from "./runtime";
+import { inOrder, markStreamConfig } from "./transform";
 import type { OverlayConnectOptions, OverlayEvents, OverlaySource, OverlayState, OverlayViewer } from "./index";
 
 /** SPEC D18, when the session's params do not say: nobody relays before this long; the probe waits for it too. */
@@ -507,8 +508,15 @@ class ViewerEngine extends PeerEngine {
     const player = createPlayer({ sessionClock: this.client.sessionClock, clock: this.clock, playoutMinMs: welcome.params.playoutMinMs, playoutMaxMs: welcome.params.playoutMaxMs, decode: this.decode, logger: this.options.logger });
     this.player = player;
     if (this.streams.size > 0) await player.configure([...this.streams.values()]);
-    // Frames go to the player the moment they are whole (SPEC §3.3).
-    node.on("frame", (frame) => player.push(frame));
+    // Frames go to the player the moment they are whole (SPEC §3.3), through the application's
+    // `frameTransform` when it has one (its decryption: ./transform.ts), in the order they came.
+    const receive = this.options.frameTransform?.receive;
+    node.on(
+      "frame",
+      receive
+        ? inOrder(receive, (frame) => player.push(frame), { alive: () => this.state !== "closed", onError: (error) => this.options.logger?.warn("overlay", "a frame transform failed; the frame is dropped", error) })
+        : (frame) => player.push(frame),
+    );
     // §10.2: D follows the link to the parent: congestion's estimate of what arrives.
     node.on("uplink", (estimate) => player.setLinkHints({ jitterMs: estimate.jitterMs, rttMs: estimate.rttMs, lossPct: estimate.lossPct }));
     player.on("rendered", (_stream, _frameId, captureUs, renderedUs, catchUp) => {
@@ -636,11 +644,20 @@ class SourceEngine extends PeerEngine {
     // The node sends each audio frame twice on every hop (SPEC D25), so the source sends it once.
     const source = createProgramSource({ encoding: this.encoding, sessionClock: this.client.sessionClock, clock: this.clock, audioCopies: 1, logger: this.options.logger });
     this.source = source;
-    source.on("frame", (frame) => node.publish(frame));
-    source.on("config", (config) => {
+    // Each frame goes through the application's `frameTransform` when it has one (its
+    // encryption: ./transform.ts), in order; one that fails is not sent at all.
+    const send = this.options.frameTransform?.send;
+    source.on(
+      "frame",
+      send
+        ? inOrder(send, (frame) => node.publish(frame), { alive: () => this.state !== "closed", onError: (error) => this.options.logger?.warn("overlay", "a frame transform failed; the frame is not sent", error) })
+        : (frame) => node.publish(frame),
+    );
+    source.on("config", (raw) => {
+      const config = this.mark(raw);
       node.publishConfig(config);
       this.streams.set(config.id, config);
-      this.client.sendStreams(source.streams());
+      this.client.sendStreams(source.streams().map(this.mark));
     });
     source.on("error", (error) => this.events.emit("error", error));
     // SPEC §11.4: the encoder's target from the source's own uplink and the audience's hint.
@@ -654,12 +671,15 @@ class SourceEngine extends PeerEngine {
 
   protected sideOfSample(): void {}
 
+  /** A stream's configuration as announced: `sframe` when the transform encrypts. */
+  private readonly mark = (config: StreamConfig) => markStreamConfig(config, this.options.frameTransform);
+
   async publish(input: ProgramInput): Promise<void> {
     const node = this.node;
     const source = this.source;
     if (!node || !source) throw new Error("overlay: publish() before connect()");
     await source.start(input);
-    const streams = source.streams();
+    const streams = source.streams().map(this.mark);
     for (const config of streams) {
       node.publishConfig(config);
       this.streams.set(config.id, config);
