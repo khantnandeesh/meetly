@@ -384,7 +384,15 @@ through the coordinator (`signal`, §6.3). Both sides may start at once: the lin
 sorts later. **[D7]**
 
 ICE servers come from `welcome`. A peer first tries without a relay. The link's `turn` property
-says whether the chosen route goes through TURN.
+says whether the chosen route goes through TURN: the selected candidate pair's local or remote
+candidate is of type "relay" (`getStats`). It is read again whenever ICE connects and whenever the
+selected pair changes, so a route that falls back to TURN later is seen. **[D80]** Fresh ICE
+servers (new TURN credentials) can arrive later in `grant` (§6.5) or in the `welcome` of a
+reconnection: links made after that use them, open links are given them (`setConfiguration`),
+and an open link whose route goes through TURN restarts ICE (`restartIce`, make-before-break) so
+that its relay is allocated again with credentials that have not expired. A link whose ICE fails
+is not restarted: it closes ("ice-failed") and §7.5's repair takes over, which is faster than an
+ICE restart through the coordinator.
 
 ### 5.2 `hello`
 
@@ -489,7 +497,7 @@ JSON text, one message per frame, each with a `t`.
 | `time` | `t0` | a clock probe (§4.1) |
 | `signal` | `to`, `data` | signalling for another peer |
 | `need` | `id`, `stream`, `stripe`, `want` ("parent" \| "backup"), `exclude` | I need someone to connect to |
-| `status` | `depth`, `links`, `children`, `standby`, `free`, `caps`, `lossPct`, `rttMs` | where I am, every `statusMs` (5 s) and on change |
+| `status` | `depth`, `links`, `children`, `standby`, `free`, `caps`, `lossPct`, `rttMs`, `turn?` | where I am, every `statusMs` (5 s) and on change. [D80] `turn: true`: my link to my parent has gone through TURN in this session |
 | `report` | `event`, `stream`, `stripe`, `peer`, `next?` | something happened, after the fact: `parent-dead`, `parent-switch`, `backup-lost`, `link-failed`, `child-gone` |
 | `metrics` | `sample` | a `MetricsSample` (§12.1), every `metricsMs` (2 s) |
 | `streams` | `streams` | the source says what it is sending |
@@ -504,7 +512,7 @@ JSON text, one message per frame, each with a `t`.
 | `signal` | `from`, `data` | signalling from another peer |
 | `assign` | `id?`, `reason`, `assign` | connect to these (answers `need`, or unasked for a rebalance) |
 | `role` | `role`, `grant` | you are now a relay, or no longer one |
-| `grant` | `grant` | a fresh grant, before the old one expires |
+| `grant` | `grant`, `ice?` | a fresh grant, before the old one expires. [D80] `ice`: fresh ICE servers, before the TURN credentials of the last ones expire |
 | `streams` | `streams` | the streams changed |
 | `hint` | `stream`, `bitrateKbps` | to the source: the audience would do better at this bitrate (§11.4) |
 | `peer-gone` | `peer` | advisory: close any link to it |
@@ -617,7 +625,14 @@ The app reaches it through `NEXT_PUBLIC_OVERLAY_URL` (the browser's WebSocket) a
 `OVERLAY_ADMISSION_SECRET` / `OVERLAY_SERVER_SECRET` (the server's tickets and API calls).
 
 TURN credentials are minted per peer by the coordinator from a Cloudflare TURN key and sent in
-`welcome.ice`, valid for the session's length. Without a key configured, only STUN is offered.
+`welcome.ice`, alongside the configured STUN servers (two of them, which §8.1's NAT probe needs:
+Cloudflare's answer is not allowed to replace them). Without a key configured, only STUN is
+offered. **[D80]** Credentials live `TURN_TTL_S` (6 h). Each peer's ICE servers are minted again
+when they are half that old and sent in its next `grant`, so a session longer than the TTL
+keeps working; a reconnecting peer's `welcome` carries fresh ones too. URLs on port 53 are left
+out (browsers block it; Cloudflare's own advice). Credentials go only to the socket of the peer
+they were minted for: they are not kept in the core's attachment or storage, not in `/tree`,
+metrics or logs.
 
 ---
 
@@ -878,7 +893,25 @@ shows the fan-out it was sized for. Every relay's `role` carries its `fanout`, p
 full, and is sent again when the verdict's changes; the node takes no more active children than
 it (D37's over-fan-out aside). The coordinator's placement and relief, and the node, agree.
 
-Because `caps` is a claim, the coordinator also watches what a relay's children report. A relay
+**[D80] A peer behind TURN only watches** (decided by the coordinator, 2026-11-23). TURN is
+paid for by the byte ($0.05/GB after 1,000 GB a month), and a peer that relays through TURN
+pays for every byte twice, in and out. So a viewer whose link to its parent goes through TURN
+(§5.1, `link.turn`) says so in `status` (`turn: true`) from then on for the rest of the session,
+and sets its own `caps.nat` to "relay", which makes it ineligible by the table above (so a
+coordinator that does not know `turn` keeps it a leaf too, and the peer does not run the uplink
+probe, which would go through TURN). The coordinator:
+
+- never promotes it, full or provisional (`canRelay` is false);
+- never offers it to anyone as a parent or a backup, in any `assign`, `welcome` or `move`;
+- if it is a relay when it says so, demotes it at once, not after the 10 s of a failing relay:
+  its children are moved first, make-before-break, as for any demotion (`DEMOTE_GRACE_MS`).
+
+The flag is kept with the peer's socket (`attach`), so a hibernating coordinator does not
+forget it. The source is exempt: the session has no other. A peer behind TURN is placed as any
+dead end, and is sent exactly what any viewer is sent: there is one encoding, and a relay only
+ever drops layers for a child, never adds one, so its bitrate is never above a direct viewer's.
+
+ A relay
 whose children's loss is over 5%, or who are STARVED, for 10 s, is demoted (`role: leaf`).
 **[D47]** "Its children's loss" is more than half of the children that report, and at least two
 of them, over 5%: one child's bad link is the child's, not the relay's. In the simulator this cut
@@ -1595,6 +1628,7 @@ Rotating speakers on the overlay. Out of scope.
 | D51 | `sourceAloneFanout`, an optional param (6), the ceiling of D49; fixed-tree scenarios set it to `sourceFanout` (integrator, 2026-11-22) | 8.1 |
 | D54 | A joiner goes under the shallowest feeder with room, dead ends included (integrator, 2026-11-22) | 6.6 |
 | D55 | A repair's lost frames exclude those of a layer above the new parent's lowest announced cap (integrator, 2026-11-22) | 12.2 |
+| D80 | A peer whose link to its parent goes through TURN only watches: never promoted, never offered as a parent or backup, demoted at once; TURN credentials refreshed at half their life, relayed links restart ICE (coordinator, 2026-11-23) | 5.1, 6.3, 6.7, 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
