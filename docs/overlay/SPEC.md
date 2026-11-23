@@ -980,6 +980,15 @@ simulator (200 peers, the gate's join rate, 80% able to relay, five minutes of c
 is 4 with fan-out 4 whatever the source does, and 3 with fan-out 6 and the source keeping six
 (73% of peers at depth 3, 2–3% at 4).
 
+**[D75] The source probes toward up to three children and keeps the best.** *(Integration
+engineer, 2026-11-23.)* A probe toward one child measures that child's downlink as much as the
+source's uplink: a "slow" or lossy first child caps the source for the whole session. Gate run
+45231661833: the source was given 4 children, not 6, in 344 of its 349 samples, and peers at
+depth 4 or more were 28–62% of samples minute by minute (45225920753, with 6: 22–40%). Now,
+while what it has found leaves it under `sourceAloneFanout`, the source probes again 500 ms
+later toward a child it has not probed toward yet, up to three probes, and its uplink is the
+highest any of them found.
+
 **[D49] The source alone takes up to six** (decided by integrator 2026-11-22). While no other
 relay, full or provisional, is connected, the source's fan-out is the formula's at its measured
 uplink, between `sourceFanout` and `sourceAloneFanout` (6 when the params do not say): at a
@@ -1857,6 +1866,7 @@ Rotating speakers on the overlay. Out of scope.
 | D71 | A joiner with nowhere to go is sent over a fan-out after 1 s, not 3 (integration engineer, 2026-11-23) | 7.1 |
 | D72 | An eligible leaf shallower than the depth the tree needs is made a relay whatever the free slots; the needed depth counts the source's own fan-out (integration engineer, 2026-11-23) | 6.6 |
 | D74 | A parent that is not STALLED nor the source, holding a keyframe the child has not decoded for 2.5 s while nothing has become decodable, is left as `frozen` (integration engineer, 2026-11-23) | 7.4 |
+| D75 | The source probes toward up to three of its children, 500 ms apart, while under `sourceAloneFanout`, and keeps the best (integration engineer, 2026-11-23) | 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
