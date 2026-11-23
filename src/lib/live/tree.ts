@@ -68,10 +68,13 @@ export async function anonymize(snapshot: RoomSnapshot, cap = LIVE_VIEWER_CAP): 
     })
     .sort((a, b) => Number(b.source) - Number(a.source) || naturalOrder(a.label, b.label));
   const sourceOn = peers.some((peer) => peer.role === "source");
+  // The coordinator keeps a viewer's place for a while after its socket closes (it may come back),
+  // and refuses newcomers while those places fill the cap: "full" counts them as it does.
+  const held = snapshot.peers.filter((peer) => peer.role !== "source").length;
   return {
     started: sourceOn && !snapshot.ended,
     ended: snapshot.ended,
-    full: viewers.length >= cap,
+    full: held >= cap,
     viewers: viewers.length,
     cap,
     nodes,

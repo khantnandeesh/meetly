@@ -64,6 +64,12 @@ test("a viewer without a parent is waiting; an ended or full stream says so", as
   assert.equal((await anonymize(snapshot([], true))).ended, true);
   const many = Array.from({ length: 3 }, (_, i) => peer(`P${i}`, "leaf", i, "SRC", 1, 0));
   assert.equal((await anonymize(snapshot([peer("SRC", "source", 0, null, 0, 3), ...many]), 3)).full, true);
+  // A viewer who has just left still holds its place at the coordinator, which refuses the next
+  // one: full, though it is no longer counted as watching.
+  const justLeft = [...many.slice(0, 2), peer("P2", "leaf", 2, "SRC", 1, 0, null)];
+  const leaving = await anonymize(snapshot([peer("SRC", "source", 0, null, 0, 3), ...justLeft]), 3);
+  assert.equal(leaving.viewers, 2);
+  assert.equal(leaving.full, true);
 });
 
 test("the audience counts placed viewers as watching and the rest as connecting", async () => {
