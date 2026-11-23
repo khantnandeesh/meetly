@@ -35,6 +35,8 @@ const CLOSE = { normal: 1000, badTicket: 4001, full: 4002, kicked: 4003, ended: 
  * is now relieved one level down as soon as a relay has room (D67).
  */
 const JOIN_OVER_FANOUT_AFTER_MS = 1_000;
+/** [D71] ... and in a tree whose `maxFanout` is under four, as before: 3 s. */
+const JOIN_OVER_FANOUT_SMALL_TREE_MS = 3_000;
 /** The share of the audience offered a better backup in one second, at most. */
 const BACKUP_ADVICE_SHARE = 0.05;
 /** SPEC §6.5: a grant lives ten minutes and is replaced two minutes before it expires. */
@@ -599,7 +601,10 @@ class Core implements CoordinatorCore {
    */
   private overloadForJoiner(node: TreeNode, now: number): Placement {
     node.waitingSince ??= now;
-    if (now - node.waitingSince < JOIN_OVER_FANOUT_AFTER_MS) return { parents: [], backups: [] };
+    // [D71] 1 s where relief can come (a fan-out of four or more); a tree of fan-outs one or two
+    // (the proof's, a chain) has no other slot at the parent's depth, and waits for the probe.
+    const wait = this.o.params.maxFanout >= 4 ? JOIN_OVER_FANOUT_AFTER_MS : JOIN_OVER_FANOUT_SMALL_TREE_MS;
+    if (now - node.waitingSince < wait) return { parents: [], backups: [] };
     // A dead end waits while any leaf, placed or waiting, could still be made a relay: the slot
     // over a fan-out would hold that relay's place (with a quarter able to relay, it makes the
     // tree 8-15 deep, or, at the start, leaves nobody able to relay a place to stand).
