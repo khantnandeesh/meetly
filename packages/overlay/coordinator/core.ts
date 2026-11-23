@@ -532,6 +532,12 @@ class Core implements CoordinatorCore {
       this.o.logger?.warn("coordinator", "no ICE servers", error);
     }
     this.attach(fx, conn, node);
+    // [D83] The joiner's offer goes to its first parent now, with `welcome`, not after it: the
+    // parent's answer is on its way back while the joiner reads `welcome`. One coordinator
+    // crossing fewer before the link opens.
+    const first = hello.offer !== undefined && node.role !== "source" ? assign[0]?.parents[0]?.peer : undefined;
+    const to = first !== undefined ? this.map.nodes.get(first) : undefined;
+    const offered = to && to.conn !== null && node.introduced.has(to.peer) ? to : undefined;
     this.send(fx, conn.id, {
       t: "welcome",
       v: PROTOCOL_VERSION,
@@ -545,7 +551,9 @@ class Core implements CoordinatorCore {
       params: this.o.params,
       streams: this.streams,
       assign,
+      ...(offered ? { offered: offered.peer } : {}),
     });
+    if (offered) this.send(fx, offered.conn!, { t: "signal", from: node.peer, data: { sdp: { type: "offer", sdp: hello.offer! } } });
     if (node.role === "source") {
       if (this.hint.step > 0) this.sendHint(fx);
       await this.serveWaiting(fx, now);

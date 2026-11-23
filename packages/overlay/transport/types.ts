@@ -9,6 +9,7 @@
 import type { Clock, Listenable, Logger } from "../runtime";
 import type { IceServer, MediaHeader, NackItem, PeerId, PeerMessage, SignalData } from "../protocol";
 import type { ReceivedFrame } from "../types";
+import type { PreparedOffer } from "./link";
 
 /**
  * The least a data channel has to be for the transport to use it. `RTCDataChannel` is one. The
@@ -100,6 +101,11 @@ export type TransportOptions = {
   wrapChannel?: (channel: PacketChannel, info: { peer: PeerId; kind: ChannelKind }) => PacketChannel;
   /** For tests: something that behaves like `RTCPeerConnection`. */
   peerConnection?: (config: RTCConfiguration) => RTCPeerConnection;
+  /**
+   * [D83] The link to `peer` is this prepared one, whose offer the coordinator has given `peer`
+   * already (`welcome.offered`). Made when the manager is.
+   */
+  prepared?: { peer: PeerId; offer: PreparedOffer };
   /**
    * Above this much in the media channel's own buffer, packets wait in the link's queue, where
    * their class decides the order. Default 64 kB.

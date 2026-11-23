@@ -1212,7 +1212,17 @@ export const decodeMetricsSample = (text: string): MetricsSample => decodeJson(m
 
 const clientMessage = tagged({
   /** The first message on the socket. `resume`: I was `peer` a moment ago; keep my place. */
-  hello: { v: int(1, 15), caps: capabilities, resume: optional(object({ peer: peerId, grant: token })) },
+  hello: {
+    v: int(1, 15),
+    caps: capabilities,
+    resume: optional(object({ peer: peerId, grant: token })),
+    /**
+     * [D83] An SDP offer for a link to whatever parent this peer is placed under, made before it knew.
+     * The coordinator passes it to the first parent in `welcome`'s `assign` as that peer's `signal`
+     * and says so in `welcome.offered`; otherwise it drops it.
+     */
+    offer: optional(str(16 * 1024, 1)),
+  },
   /** A clock probe: `t0` is this peer's own clock. Answered at once (SPEC §4.1). */
   time: { t0: num(0, 2 ** 53) },
   /** Signalling for another peer. Delivered as `signal` with `from`. */
@@ -1269,6 +1279,8 @@ const serverMessage = tagged({
     params,
     streams: list(streamConfig, 16),
     assign: list(assignment, 64),
+    /** [D83] `hello.offer` went to this peer, the first parent in `assign`: its answer will come as its `signal`. */
+    offered: optional(peerId),
   },
   /** The answer to `time`: `t0` as sent, `t1` the session clock when it arrived. */
   time: { t0: num(0, 2 ** 53), t1: sessionMs },

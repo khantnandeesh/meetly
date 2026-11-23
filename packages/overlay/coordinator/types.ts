@@ -186,7 +186,8 @@ export type CoordinatorClientEvents = {
  * topology module talks to.
  */
 export interface CoordinatorClient extends Listenable<CoordinatorClientEvents>, CoordinatorPort {
-  connect(caps: Capabilities): Promise<ServerMessageOf<"welcome">>;
+  /** `offer` [D83]: an SDP offer for the link to whichever parent this peer is placed under, in the first `hello`. */
+  connect(caps: Capabilities, offer?: string): Promise<ServerMessageOf<"welcome">>;
   readonly sessionClock: SessionClock;
   readonly signaler: Signaler;
   /** The grant currently held: renewed by the coordinator before it expires. */

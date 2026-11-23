@@ -265,6 +265,39 @@ describe("coordinator core: signalling (SPEC §6.4, D10)", () => {
     assert.equal(of(await rig.say(ana.conn, { t: "signal", to: source.peer, data: offer }), "error")[0]?.code, "denied");
   });
 
+  it("[D83] passes hello's offer to the first parent with welcome, says so, and relays the answer back", async () => {
+    const rig = new Rig();
+    const source = await withSource(rig);
+    rig.take(source.conn);
+    const conn = await rig.open("ana");
+    const answers = await rig.say(conn, { t: "hello", v: 1, caps: relayCaps(), offer: "v=0 prepared" });
+    const [welcome] = of(answers, "welcome");
+    assert.equal(welcome.assign[0].parents[0].peer, source.peer);
+    assert.equal(welcome.offered, source.peer);
+    assert.deepEqual(rig.take(source.conn), [{ t: "signal", from: welcome.peer, data: { sdp: { type: "offer", sdp: "v=0 prepared" } } }]);
+    const answer = { sdp: { type: "answer" as const, sdp: "v=0 answer" } };
+    assert.deepEqual(await rig.say(source.conn, { t: "signal", to: welcome.peer, data: answer }), []);
+    assert.deepEqual(rig.take(conn), [{ t: "signal", from: source.peer, data: answer }]);
+  });
+
+  it("[D83] drops hello's offer where there is no parent yet, and never passes on one in a resume", async () => {
+    const rig = new Rig();
+    // No source yet: nowhere to place anyone.
+    const conn = await rig.open("ana");
+    const [early] = of(await rig.say(conn, { t: "hello", v: 1, caps: relayCaps(), offer: "v=0 early" }), "welcome");
+    assert.deepEqual(early.assign, []);
+    assert.equal(early.offered, undefined);
+    const source = await withSource(rig);
+    rig.take(source.conn);
+    const ben = await rig.join("ben");
+    await rig.drop(ben.conn);
+    const back = await rig.open("ben");
+    const [resumed] = of(await rig.say(back, { t: "hello", v: 1, caps: relayCaps(), resume: { peer: ben.peer, grant: ben.welcome.grant }, offer: "v=0 again" }), "welcome");
+    assert.equal(resumed.peer, ben.peer);
+    assert.equal(resumed.offered, undefined);
+    assert.deepEqual(of(rig.take(source.conn), "signal"), []);
+  });
+
   it("refuses signalling between peers it never introduced", async () => {
     const rig = new Rig();
     await withSource(rig);
