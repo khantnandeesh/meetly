@@ -106,7 +106,7 @@ module.exports = async function schedule(browser) {
   H.ok(
     "New meeting's arrow offers Get a link for later and Schedule… (the button itself starts now)",
     // "New webinar" follows them whenever the server says webinars are on (MEETLY_WEBINARS_ENABLED).
-    /^Get a link for later\|Schedule…(\|New webinar)?$/.test((await ada.page.getByRole("menuitem").allInnerTexts()).map((text) => text.trim()).join("|")),
+    /^Get a link for later\|Schedule…(\|New webinar)?(\|Go live \(beta\))?$/.test((await ada.page.getByRole("menuitem").allInnerTexts()).map((text) => text.trim()).join("|")),
     (await ada.page.getByRole("menuitem").allInnerTexts()).join("|"),
   );
   await H.shot(ada, "schedule-menu-desktop");
