@@ -72,7 +72,7 @@ function TreeBody({ tree, ownKey }: { tree: LiveTree | null; ownKey: string | nu
   if (tree.nodes.length === 0)
     return (
       <p className="text-sm text-muted" data-testid="tree-empty">
-        {tree.ended ? "The webinar has ended." : "Once the host is live, this shows which browser passes the video to which."}
+        {tree.ended ? "The webinar has ended." : "Shows who passes the video to whom, once live."}
       </p>
     );
   const layout = layoutTree(tree.nodes);
@@ -132,7 +132,7 @@ function TreeBody({ tree, ownKey }: { tree: LiveTree | null; ownKey: string | nu
         )}
       </div>
       <p className="text-xs leading-relaxed text-faint">
-        Each viewer gets the video from the one above it. The number is how many browsers it sends the video to. Names are made up for this page.
+        The number is how many browsers each one sends to. Names are made up.
       </p>
     </>
   );

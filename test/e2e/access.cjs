@@ -49,7 +49,7 @@ module.exports = async function access(browser) {
   const knocksBefore = await knocks(ada);
   await H.press(dee, url, "Dee Knocker");
   await dee.page.getByText("Asking to join…").waitFor({ timeout: 10000 }).catch(() => {});
-  H.ok("after asking they wait, and are told so", (await dee.page.getByText("Someone in the meeting will let you in").count()) === 1);
+  H.ok("after asking they wait, and are told so", (await dee.page.getByText("Waiting to be let in").count()) === 1);
   await H.shot(dee, "waiting-screen-desktop");
   await ada.page.getByText("Dee Knocker wants to join").waitFor({ timeout: 8000 }).catch(() => {});
   H.ok("the host is asked, with the answer on the notification", (await ada.page.locator("[data-toast]").filter({ hasText: "Dee Knocker wants to join" }).getByRole("button", { name: "Admit" }).count()) === 1);

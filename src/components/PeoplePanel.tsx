@@ -379,7 +379,7 @@ function ModeratorBar() {
                 <Dropdown.RadioItem key={choice} value={choice} className="menu-item pr-10">
                   <span className="min-w-0">
                     <span className="block font-medium">{ACCESS_LABELS[choice].label}</span>
-                    <span className="block text-xs text-muted">{ACCESS_LABELS[choice].hint}</span>
+                    {ACCESS_LABELS[choice].hint && <span className="block text-xs text-muted">{ACCESS_LABELS[choice].hint}</span>}
                   </span>
                   <Dropdown.ItemIndicator className="absolute right-3 text-accent">
                     <Check className="size-4" aria-hidden="true" />
@@ -410,7 +410,7 @@ function ModeratorBar() {
               <Smile className="size-4 shrink-0 text-muted" aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <span className="block font-medium">Allow reactions</span>
-                <span className="block text-xs text-muted">Off: only the host and co-hosts can react</span>
+                <span className="block text-xs text-muted">Off: hosts only</span>
               </span>
               <span className="switch" data-on={reactionsAllowed} aria-hidden="true" />
             </Dropdown.CheckboxItem>
@@ -615,7 +615,7 @@ function WaitingView({ onBack }: { onBack: () => void }) {
             </div>
           ))}
         <p className="px-1 text-xs leading-relaxed text-muted">
-          Oldest first.{count > BULK_CONFIRM ? ` Admitting more than ${BULK_CONFIRM} at once asks you to confirm.` : ""}
+          Oldest first.
         </p>
         <p className="sr-only" role="status">
           {query.trim() ? `${shown.length} waiting ${shown.length === 1 ? "matches" : "match"}` : ""}

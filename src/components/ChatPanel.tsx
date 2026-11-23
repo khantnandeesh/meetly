@@ -386,7 +386,7 @@ export function ChatPanel({
               <p className="text-sm leading-relaxed text-muted">
                 {readOnly
                   ? "Messages from the people on stage appear here."
-                  : `Everyone in the ${call.mode === "webinar" ? "webinar" : "meeting"} sees messages, including people who join later. To keep them, save the chat before you leave.`}
+                  : "Everyone sees them, even people who join later."}
               </p>
             </div>
           ) : (

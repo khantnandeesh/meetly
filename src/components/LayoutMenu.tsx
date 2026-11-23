@@ -4,11 +4,12 @@ import { Check, EyeOff, LayoutGrid, PanelRight, PictureInPicture2, RectangleHori
 import { TILE_LIMITS, type CallSettings, type LayoutMode, type SelfView } from "@/lib/useCallSettings";
 import { Dropdown } from "./ui/Menu";
 
-const LAYOUTS: { value: LayoutMode; label: string; hint: string; icon: React.ReactNode }[] = [
-  { value: "auto", label: "Auto", hint: "Grid for small meetings, speaker view for large ones", icon: <Sparkles className="size-4" /> },
-  { value: "tiled", label: "Tiled", hint: "Everyone the same size, in pages", icon: <LayoutGrid className="size-4" /> },
-  { value: "spotlight", label: "Spotlight", hint: "Only the person speaking", icon: <RectangleHorizontal className="size-4" /> },
-  { value: "sidebar", label: "Sidebar", hint: "Speaker large, others alongside", icon: <PanelRight className="size-4" /> },
+// Each layout's icon draws it; only "Auto", which an icon cannot draw, keeps a hint.
+const LAYOUTS: { value: LayoutMode; label: string; hint?: string; icon: React.ReactNode }[] = [
+  { value: "auto", label: "Auto", hint: "Grid or speaker, by size", icon: <Sparkles className="size-4" /> },
+  { value: "tiled", label: "Tiled", icon: <LayoutGrid className="size-4" /> },
+  { value: "spotlight", label: "Spotlight", icon: <RectangleHorizontal className="size-4" /> },
+  { value: "sidebar", label: "Sidebar", icon: <PanelRight className="size-4" /> },
 ];
 
 const SELF_VIEWS: { value: SelfView; label: string; icon: React.ReactNode }[] = [
@@ -38,7 +39,7 @@ export function LayoutMenuItems({
             </span>
             <span className="min-w-0">
               <span className="block font-medium">{layout.label}</span>
-              <span className="block text-xs text-muted">{layout.hint}</span>
+              {layout.hint && <span className="block text-xs text-muted">{layout.hint}</span>}
             </span>
             <Dropdown.ItemIndicator className="absolute right-3 text-accent">
               <Check className="size-4" aria-hidden="true" />

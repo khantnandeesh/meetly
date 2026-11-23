@@ -104,19 +104,19 @@ module.exports = async function schedule(browser) {
   /* --------------------------------------------------------- the home page */
   await openMenu(ada);
   H.ok(
-    "New meeting's arrow offers Get a link for later and Schedule… (the button itself starts now)",
+    "New meeting's arrow offers Link for later and Schedule… (the button itself starts now)",
     // "New webinar…" follows them always: it asks which kind (standard, if the server has webinars
     // on, or serverless), so it is there even when MEETLY_WEBINARS_ENABLED is off.
-    /^Get a link for later\|Schedule…\|New webinar…$/.test((await ada.page.getByRole("menuitem").allInnerTexts()).map((text) => text.trim()).join("|")),
+    /^Link for later\|Schedule…\|New webinar…$/.test((await ada.page.getByRole("menuitem").allInnerTexts()).map((text) => text.trim()).join("|")),
     (await ada.page.getByRole("menuitem").allInnerTexts()).join("|"),
   );
   await H.shot(ada, "schedule-menu-desktop");
 
-  await ada.page.getByRole("menuitem", { name: "Get a link for later" }).click();
+  await ada.page.getByRole("menuitem", { name: "Link for later" }).click();
   await dialog(ada).waitFor();
   const later = await dialog(ada).locator("[data-meeting-link]").getAttribute("data-meeting-link");
   const laterCode = later.split("/").pop();
-  H.ok("Get a link for later shows a meeting link", later.startsWith(`${H.BASE}/`) && CODE.test(laterCode), later);
+  H.ok("Link for later shows a meeting link", later.startsWith(`${H.BASE}/`) && CODE.test(laterCode), later);
   H.ok("…without taking you into the meeting", ada.page.url() === `${H.BASE}/`);
   await H.shot(ada, "schedule-link-desktop");
   await dialog(ada).locator("[data-meeting-link]").click();
@@ -133,7 +133,7 @@ module.exports = async function schedule(browser) {
   await ada.page.getByLabel("Your name").waitFor();
   H.ok(
     "the browser that made the link is the meeting's host",
-    await H.until(async () => (await ada.page.getByText("You're the host when you join from this browser").count()) === 1, 8000),
+    await H.until(async () => (await ada.page.getByText("You're the host", { exact: true }).count()) === 1, 8000),
   );
 
   /* ------------------------------------------------------------- Schedule… */

@@ -11,6 +11,7 @@ import {
   Lock,
   Mic,
   MicOff,
+  Presentation,
   RotateCw,
   Sparkles,
   Video,
@@ -31,6 +32,7 @@ import {
   type MediaSlot,
 } from "@/lib/usePreviewMedia";
 import { Avatar } from "./ui/Avatar";
+import { Fact, Facts } from "./ui/Fact";
 import { Logo } from "./ui/Logo";
 import { DeviceRadioGroup, Dropdown, deviceLabel } from "./ui/Menu";
 import { Tip } from "./ui/Tip";
@@ -144,7 +146,6 @@ export function PreJoin({
   }
 
   const micOn = audio.enabled && !!audio.track;
-  const camOn = video.enabled && !!video.track;
   const blocked = audio.problem === "denied" || video.problem === "denied";
   // The host walks straight in whatever the meeting is set to.
   const mustAsk = access === "ask" && !isHost;
@@ -191,6 +192,13 @@ export function PreJoin({
         <section className="anim-rise flex min-w-0 flex-col gap-7 [animation-delay:80ms]">
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
+              {/* A webinar is named as one, in a word, as the audience's pre-join names it. */}
+              {noun === "webinar" && (
+                <span className="chip h-7 gap-1.5 px-2.5 text-xs font-semibold" data-call-kind>
+                  <Presentation className="size-3.5" aria-hidden="true" />
+                  Webinar
+                </span>
+              )}
               <span className="font-mono text-sm tracking-tight text-muted">{code}</span>
               <button
                 type="button"
@@ -209,10 +217,9 @@ export function PreJoin({
               {waiting ? "Asking to join…" : "Ready to join?"}
             </h1>
             {isHost && !waiting && (
-              <p className="flex items-center gap-2 text-sm text-muted">
-                <Crown className="size-4 shrink-0 text-accent" aria-hidden="true" />
-                You&apos;re the host when you join from this browser.
-              </p>
+              <Facts className="text-muted">
+                <Fact icon={<Crown />} label="You're the host" detail="You're the host when you join from this browser." />
+              </Facts>
             )}
           </div>
 
@@ -221,8 +228,8 @@ export function PreJoin({
               <p role="status" className="flex items-center gap-3.5 rounded-2xl bg-surface-2 p-4 shadow-[inset_0_0_0_1px_var(--border)]">
                 <LoaderCircle className="anim-spin size-5 shrink-0 text-accent" aria-hidden="true" />
                 <span className="min-w-0">
-                  <span className="block font-medium">Someone in the {noun} will let you in</span>
-                  <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
+                  <span className="block font-medium">Waiting to be let in</span>
+                  <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} once you&apos;re let in.</span>
                 </span>
               </p>
               <button type="button" className="btn btn-secondary h-13 text-base" onClick={onCancel}>
@@ -243,7 +250,6 @@ export function PreJoin({
                   setName(e.target.value);
                   setNameError(false);
                 }}
-                placeholder={`Shown to everyone in the ${noun}`}
                 autoComplete="name"
                 maxLength={40}
                 aria-invalid={nameError ? true : undefined}
@@ -252,7 +258,7 @@ export function PreJoin({
               />
               {nameError && (
                 <p id={nameErrorId} role="alert" className="anim-fade text-sm text-danger-text">
-                  Add your name so people know who joined.
+                  Add your name.
                 </p>
               )}
             </div>
@@ -260,7 +266,7 @@ export function PreJoin({
             {locked && !error && (
               <p className="flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-3 text-sm text-muted">
                 <Lock className="mt-px size-4 shrink-0" aria-hidden="true" />
-                This {noun} is locked. Nobody new can join until the host unlocks it.
+                This {noun} is locked.
               </p>
             )}
 
@@ -288,12 +294,8 @@ export function PreJoin({
           )}
 
           <p className="text-sm leading-relaxed text-faint" aria-live="polite">
-            {blocked
-              ? "You can still join and listen. Allow access any time to be seen and heard."
-              : crowd !== null && joinMuted && !micOn
-                ? `You'll join muted. ${fullCount(crowd)} people are here.`
-                : `You'll join with your camera ${camOn ? "on" : "off"}${camOn && background !== "none" ? " (background blurred)" : ""} and microphone ${micOn ? "on" : "off"}.`}
-            {mustAsk && !waiting && ` Someone in the ${noun} has to let you in.`}
+            {/* The preview's own switches say what is on; this line is only for what they cannot show. */}
+            {blocked ? "You can still join and listen." : crowd !== null && joinMuted && !micOn ? `You'll join muted. ${fullCount(crowd)} people are here.` : null}
           </p>
         </section>
       </main>
@@ -306,19 +308,19 @@ export function PreJoin({
 const PROBLEM_COPY: Record<MediaProblem, (what: string) => { title: string; body: string }> = {
   denied: (what) => ({
     title: `${what} blocked`,
-    body: "Allow access from the site settings in your browser's address bar, then try again.",
+    body: "Allow access in site settings, then try again.",
   }),
   missing: (what) => ({
     title: `No ${what.toLowerCase().replace(" and ", " or ")} found`,
-    body: "Plug one in and try again, or join without it.",
+    body: "Plug one in, or join without it.",
   }),
   busy: (what) => ({
     title: `${what} unavailable`,
-    body: "Another app may be using it. Close that app and try again.",
+    body: "Close the app using it, then try again.",
   }),
   unknown: (what) => ({
     title: `Couldn't start your ${what.toLowerCase()}`,
-    body: "Check that it's connected and try again.",
+    body: "Check it's connected, then try again.",
   }),
 };
 
