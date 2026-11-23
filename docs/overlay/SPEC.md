@@ -499,7 +499,7 @@ JSON text, one message per frame, each with a `t`.
 | `signal` | `to`, `data` | signalling for another peer |
 | `need` | `id`, `stream`, `stripe`, `want` ("parent" \| "backup"), `exclude` | I need someone to connect to |
 | `status` | `depth`, `links`, `children`, `standby`, `free`, `caps`, `lossPct`, `rttMs` | where I am, every `statusMs` (5 s) and on change |
-| `report` | `event`, `stream`, `stripe`, `peer`, `next?` | something happened, after the fact: `parent-dead`, `parent-switch`, `backup-lost`, `link-failed`, `child-gone` |
+| `report` | `event`, `stream`, `stripe`, `peer`, `next?` | something happened, after the fact: `parent-dead`, `parent-switch`, `backup-lost`, `link-failed`, `child-gone`, [D65] `parent-bad` |
 | `metrics` | `sample` | a `MetricsSample` (§12.1), every `metricsMs` (2 s) |
 | `streams` | `streams` | the source says what it is sending |
 | `bye` | | leaving |
@@ -1583,6 +1583,42 @@ with nothing beyond its grant.
 6. **The coordinator is a single point for joining**, and a target: its limits are per socket,
    not per network address.
 
+**[D65] A viewer leaves a parent whose frames fail their integrity checks, and says so.**
+*(Integration engineer, 2026-11-23; from the security review of the serverless webinar, PR #6.)*
+With end-to-end encryption (`frameTransform`, media/sframe.ts) a hostile relay can no longer show
+its subtree anything, but it can send garbage, and its children would sit in "Can't decrypt".
+Now a frame that comes out of `receive` *tampered*, *forged* or *unencrypted* (what a relay can
+do; not *missing-key* or *wrong-key*) rejects with `FrameIntegrityError`; the engine counts these
+per peer the frame came from (`ReceivedFrame.from`), and at `INTEGRITY_FAILURES_TO_LEAVE` (5)
+within `INTEGRITY_WINDOW_MS` (2 s) calls the node's `rejectParent`. Over DTLS nothing in the
+network changes a frame, so five in two seconds is a relay's doing. The node, if that peer is
+its parent and not the source (D64), sends `report { event: "parent-bad" }` (a new value of an
+existing message: additive), rules the peer out for `BAD_PARENT_MS` (10 minutes, not
+`BACKUP_REJECT_MS`), and repairs at once, warm to its backup or cold through `need` with the peer
+excluded. The coordinator keeps, per relay, which children reported it in the last
+`BAD_REPORT_WINDOW_MS` (60 s); at `BAD_REPORTS_TO_DISTRUST` (2) different children it offers that
+relay to nobody, and promotes it for nobody, for `DISTRUST_MS` (10 minutes). One viewer's word
+alone does not push a relay out, and the source is never distrusted. A relay that forwards a
+hostile parent's garbage is reported too, by its own children, and is distrusted with it; its
+children's repairs then go around both. What is left open: a relay may still drop or delay
+(item 5), and its children leave it only by the usual loss rules.
+
+**[D66] A stream's configuration is authenticated as its frames are.** *(Integration engineer,
+2026-11-23; same review.)* Frames carry `configId` in their authenticated header, but the
+configuration itself (codec, `description`, layers) travels down the tree in peer `config`
+messages, and a relay could change it and leave its children unable to decode. `StreamConfig`
+gets an optional `sig` (additive: an old decoder drops it). With a `frameTransform` that has
+`signConfig` (sframeTransform with `config: { key, signer }`), the source signs every
+configuration before it announces it, to the peers and to the coordinator, still in order with
+the frames (`inOrder`'s `after` now waits for a `run` that returns a promise). `sig` is
+"s." and the source's ECDSA P-256 signature, or, with no signer, "g." and an AES-GCM tag under the
+session's key, over the configuration's canonical form (fields sorted, `sig` left out). A viewer
+whose transform has `verifyConfig` (`config: { key, verifier }`) uses only a configuration that
+checks out: with the source's public key, only an "s." signature that holds; with the key alone,
+a "g." tag that holds (or an "s." it cannot check). One that does not is ignored, and counts as
+five integrity failures against the parent (D65), so the viewer leaves it at once. The node's
+own forwarding still adopts what its parent says; only what is decoded is checked.
+
 ---
 
 ## 15. Stages
@@ -1701,6 +1737,8 @@ Rotating speakers on the overlay. Out of scope.
 | D62 | The NACK's time overlaps `playoutMinMs`: D = 2.5 × jitter + max(min, loss > 0.5 ? rtt + 35 : 0) (integration engineer, 2026-11-23) | 10.2 |
 | D63 | A session whose source has been gone 3 minutes without `/end` is ended with `source-left` (integration engineer, 2026-11-23) | 6.2 |
 | D64 | Silence from the source is waited out for 1 s while its link is open; a child never rules the source out, and the coordinator ignores it in `exclude` while the source is connected (integration engineer, 2026-11-23) | 7.4, 6.6 |
+| D65 | A viewer leaves a parent whose frames fail integrity checks (5 in 2 s) and reports it (`parent-bad`); two children's reports and the coordinator offers that relay to nobody for 10 minutes (integration engineer, 2026-11-23) | 14 |
+| D66 | A stream configuration carries `sig` (the source's ECDSA signature, or an AES-GCM tag); a viewer with `verifyConfig` uses only one that checks out (integration engineer, 2026-11-23) | 14 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
