@@ -217,6 +217,41 @@ describe("harness report", () => {
     assert.deepEqual([buildReport(goodRun()).glassToGlassDecoding.n, buildReport(goodRun()).honesty], [0, []]);
   });
 
+  it("D70: judges light viewers against their decoding siblings (same parent, network and 2 s), not the pooled p50s", () => {
+    // Forty parents, each with one decoding and two light children on the same network. Their
+    // links differ, parent to parent, by up to 200 ms; at each parent the light children are 10 ms
+    // later than the decoding one (a bucket: 10 ms). The decoders sit at the slow parents, so pooled at their
+    // depths (D58) they look far apart; paired, 10.
+    const withUp = (s: MetricsSample, parent: string): MetricsSample => decodeMetricsSample(JSON.stringify({ ...s, up: { parent, rttMs: 50, lossPct: 0, queueDelayMs: 0, rxKbps: 1200, nacksSent: 0, retransmitsReceived: 0, duplicates: 0, turn: false } }));
+    const samples: MetricsSample[] = [];
+    const decoders: string[] = [];
+    const tree: NonNullable<ShardResult["tree"]> = [];
+    for (let p = 0; p < 40; p++) {
+      const base = p < 20 ? 300 : 100;
+      for (let seq = 0; seq < 3; seq++) {
+        if (p < 20) samples.push(withUp(sample(`d${p}`, seq, 2, [base, base, base]), `r${p}`));
+        samples.push(withUp(sample(`l${p}a`, seq, 2, [base + 10, base + 10]), `r${p}`));
+        samples.push(withUp(sample(`l${p}b`, seq, 2, [base + 10, base + 10]), `r${p}`));
+      }
+      if (p < 20) {
+        decoders.push(`d${p}`);
+        tree.push({ peer: `d${p}`, parent: `r${p}`, index: p * 3, profile: "home" });
+      }
+      tree.push({ peer: `l${p}a`, parent: `r${p}`, index: p * 3 + 1, profile: "home" }, { peer: `l${p}b`, parent: `r${p}`, index: p * 3 + 2, profile: "home" });
+    }
+    const run = goodRun();
+    run[0].samples.push(...samples);
+    run[0].decoders = decoders;
+    run[0].tree = tree;
+    run[1].decoders = [];
+    const report = buildReport(run);
+    assert.equal(report.honesty.length, 1);
+    assert.match(report.honesty[0].name, /D70/);
+    assert.equal(report.honesty[0].pass, true, `${report.honesty[0].value} ms apart`);
+    assert.ok(Math.abs((report.honesty[0].value as number) - 10) <= 1, `${report.honesty[0].value} ms apart`);
+    assert.ok(report.gate.notes.some((note) => /pooled at the decoders' depths \(D58\)/.test(note)));
+  });
+
   it("gives clock uncertainty shard by shard, and names a shard whose cross-machine sum is over 20 ms", () => {
     const results = goodRun();
     results[1].clock = { source: null, viewers: [16, 17, 25] };

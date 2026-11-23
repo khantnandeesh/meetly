@@ -6,7 +6,7 @@
  *
  * Owner: E-harness.
  */
-import { LATENCY_BUCKETS, emptyHistogram, histogramQuantile, latencyBucket, mergeHistogram, type MetricsSample } from "../protocol";
+import { LATENCY_BUCKETS, LATENCY_BUCKET_EDGES_MS, emptyHistogram, histogramQuantile, latencyBucket, mergeHistogram, type MetricsSample } from "../protocol";
 import { GATE, type GateCheck, type ImpairmentCounters, type LinkCounts, type Quantiles, type ReportOptions, type ShardResult, type SwarmReport } from "./types";
 
 /** The gate's limits on the run itself (SPEC §12.3). */
@@ -24,6 +24,25 @@ export const HEALTH = { lagP99Ms: 20, loadNoteAt: 4 } as const;
  * at 15 ms between their p50s; a 10 ms bucket either way is within it.
  */
 export const HONESTY = { lightVsDecodingP50Ms: 15 } as const;
+/** [D70] Siblings are paired within this slot of the session clock (a sample's length). */
+export const PAIR_SLOT_MS = 2000;
+/** [D70] Fewer decoding samples with light siblings than this and the check falls back to D58's pooled one. */
+export const PAIRED_MIN_SAMPLES = 30;
+
+/** The mean of a latency histogram, each bucket at its middle (the last, open one at its lower edge). */
+export function histogramMean(counts: readonly number[]): number | null {
+  let n = 0;
+  let sum = 0;
+  for (let i = 0; i < counts.length; i++) {
+    const c = counts[i] ?? 0;
+    if (c === 0) continue;
+    const hi = LATENCY_BUCKET_EDGES_MS[i];
+    const lo = i === 0 ? 0 : (LATENCY_BUCKET_EDGES_MS[i - 1] as number);
+    n += c;
+    sum += c * (hi === undefined ? lo : (lo + hi) / 2);
+  }
+  return n > 0 ? sum / n : null;
+}
 
 /** Quantiles of a histogram on the 97 latency buckets, as bucket upper edges. */
 export function histogramQuantiles(counts: readonly number[]): Quantiles {
@@ -111,6 +130,10 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     if (shard.decoders) decodersKnown = true;
     for (const peer of shard.decoders ?? []) decoders.add(peer);
   }
+  // [D70] Each peer's network profile, and every viewer's samples for the paired honesty check.
+  const profileOf = new Map<string, string>();
+  for (const shard of shards) for (const entry of shard.tree ?? []) if (entry.profile) profileOf.set(entry.peer, entry.profile);
+  const siblings = new Map<string, { decoding: number[]; light: number[] }>();
   const clockByShard: SwarmReport["clockByShard"] = [];
   const sample = (s: MetricsSample): void => {
     const key = `${s.peer}/${s.seq}`;
@@ -136,6 +159,13 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
           if (!h) lightByDepth.set(s.depth, (h = emptyHistogram()));
           mergeHistogram(h, s.video.glassToGlass);
         }
+      }
+      const latency = decodersKnown && s.up ? histogramMean(s.video.glassToGlass) : null;
+      if (latency !== null && s.up) {
+        const key = `${s.up.parent}|${profileOf.get(s.peer) ?? "?"}|${Math.floor(s.at / PAIR_SLOT_MS)}`;
+        let group = siblings.get(key);
+        if (!group) siblings.set(key, (group = { decoding: [], light: [] }));
+        (decoders.has(s.peer) ? group.decoding : group.light).push(latency);
       }
       let depth = byDepth.get(s.depth);
       if (!depth) byDepth.set(s.depth, (depth = emptyHistogram()));
@@ -314,9 +344,28 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     }
     const weighedQ = histogramQuantiles(weighed);
     const lightP50 = weighedQ.n > 0 ? (weighedQ.p50 as number) : (lightQ.p50 as number);
-    const gap = Math.abs((decodingQ.p50 as number) - lightP50);
-    honesty.push(below("light viewers' latency p50 (at the decoding viewers' depths, D58) against decoding viewers' (ms apart)", gap, HONESTY.lightVsDecodingP50Ms));
-    if (gap > HONESTY.lightVsDecodingP50Ms) notes.push(`light and decoding viewers disagree by ${gap} ms at p50 (D29 allows ${HONESTY.lightVsDecodingP50Ms}): the light viewers' numbers are suspect`);
+    const pooledGap = Math.abs((decodingQ.p50 as number) - lightP50);
+    // [D70] Paired: each decoding viewer's sample against its light siblings' of the same 2 s (the
+    // same parent, the same network profile), the p50 of those differences. Sixteen decoders
+    // pooled (D58) sit wherever those sixteen peers' own links put them: sixteen light viewers
+    // drawn at random and taken for decoders came out more than 15 ms from the rest in 21-40% of
+    // draws (gate runs 45202616067, 45211601384); paired, in none (±8-10 ms at 95%).
+    const diffs: number[] = [];
+    for (const group of siblings.values()) {
+      if (group.decoding.length === 0 || group.light.length === 0) continue;
+      const light = group.light.reduce((sum, v) => sum + v, 0) / group.light.length;
+      for (const decoding of group.decoding) diffs.push(light - decoding);
+    }
+    const paired = diffs.length >= PAIRED_MIN_SAMPLES ? exactQuantiles(diffs).p50 : null;
+    if (paired !== null) {
+      const gap = Math.round(Math.abs(paired) * 10) / 10;
+      honesty.push(below("light viewers' latency against their decoding siblings' (same parent, network and 2 s; D70), p50 of the differences (ms apart)", gap, HONESTY.lightVsDecodingP50Ms));
+      notes.push(`honesty (D70): light minus decoding ${Math.round(paired * 10) / 10} ms at p50 over ${diffs.length} paired samples; pooled at the decoders' depths (D58) the p50s were ${pooledGap} ms apart`);
+      if (gap > HONESTY.lightVsDecodingP50Ms) notes.push(`light and decoding siblings disagree by ${gap} ms (D29 allows ${HONESTY.lightVsDecodingP50Ms}): the light viewers' numbers are suspect`);
+    } else {
+      honesty.push(below("light viewers' latency p50 (at the decoding viewers' depths, D58) against decoding viewers' (ms apart)", pooledGap, HONESTY.lightVsDecodingP50Ms));
+      if (pooledGap > HONESTY.lightVsDecodingP50Ms) notes.push(`light and decoding viewers disagree by ${pooledGap} ms at p50 (D29 allows ${HONESTY.lightVsDecodingP50Ms}): the light viewers' numbers are suspect`);
+    }
   } else if (decodersKnown) notes.push(decodingQ.n === 0 ? "no viewer decoded for real: the light viewers are unchecked (D29)" : "every viewer decoded: no light viewer to check");
   if (lagMissing) notes.push("a shard did not report its event-loop lag: starvation cannot be ruled out");
   if (clockMissing || sourceClock === null) notes.push("clock uncertainty was not reported by every shard, or not by the source's: latency cannot be trusted");
@@ -421,7 +470,7 @@ export function renderReport(report: SwarmReport): string {
   lines.push(`Repairs: ${r.warm} warm, ${r.cold} cold, ${r.wait} wait; ${r.usedCoordinator} used the coordinator; ${r.framesLost} frames lost across them.`);
   lines.push(`Frames: ${report.frames.rendered} rendered, ${report.frames.dropped} dropped, ${report.frames.lost} lost. Freezes: ${report.freezes.count}, ${Math.round(report.freezes.totalMs)} ms in all.`);
   const quiet = report.silences;
-  if (quiet) {
+  if (quiet && (quiet.count > 0 || quiet.sourceTickLateMaxMs !== null)) {
     lines.push(
       `Silences (D69: a parent quiet 150 ms or more, then back): ${quiet.count}, ms p50 ${quiet.ms.p50 ?? "–"} p95 ${quiet.ms.p95 ?? "–"}; of the source ${quiet.ofSource}, ` +
         `at ${quiet.sourceMoments} moments, ${quiet.sourceMomentsWide} of them at 3 or more children at once. The source's page: tick late at most ${quiet.sourceTickLateMaxMs ?? "–"} ms; ` +
