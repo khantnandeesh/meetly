@@ -605,6 +605,19 @@ are fewer than a fifth of the audience, the coordinator sends `role: relay` with
 A relay that stops being eligible gets `role: leaf`; it finishes with `bye { reason:
 "rebalance", alt }` to its children (§7.7).
 
+**[D72] Promotion ahead of need, near the source.** *(Integration engineer, 2026-11-23.)* An
+eligible leaf (on its full verdict, not D38's provisional one) at a depth shallower than the tree
+needs is made a relay whatever the tree's free slots. The fifth-of-the-audience rule counts every
+free slot, the last one of each relay that D60 keeps for repairs among them, and the deepest:
+with plenty free at depth 3 and 4, capable leaves sat at depth 1 and 2 (gate run 45225920753:
+17% of depth-1 samples and 19% of depth-2 samples were leaves), and the relays that could have
+stood there were a level down. And the depth the tree needs is counted from the source's own
+fan-out (D49, D57), not `sourceFanout` (3): with 3, 200 peers "needed" depth 4, and nothing
+placed at depth 4 was ever too deep for placement, moves or backup advice. In the coordinator's
+simulator (gate churn, 16 seeds): peers at depth 4 or more 21.7% → 14.2% (the over-full source of
+run 45211601384 had kept it near 14%), cold repairs 69 → 42; with a quarter able to relay, depth
+p95 at most 4 in every seed (one 6 before).
+
 **Rebalancing** is the peer's own (§7.6); the coordinator's part is to keep answering `need`
 well and, at most once a minute per peer, to send an unasked `assign { reason: "rebalance" }`
 to a peer more than two levels deeper than the tree needs.
@@ -1827,6 +1840,7 @@ Rotating speakers on the overlay. Out of scope.
 | D69 | Stalls are reported: `silence` events, the tick's lateness, the source's longest gap between published frames (integration engineer, 2026-11-23) | 12.1 |
 | D70 | The honesty check pairs each decoding viewer with its light siblings (same parent, network profile and 2 s); the p50 of the differences within 15 ms (integration engineer, 2026-11-23) | 13.2 |
 | D71 | A joiner with nowhere to go is sent over a fan-out after 1 s, not 3 (integration engineer, 2026-11-23) | 7.1 |
+| D72 | An eligible leaf shallower than the depth the tree needs is made a relay whatever the free slots; the needed depth counts the source's own fan-out (integration engineer, 2026-11-23) | 6.6 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
