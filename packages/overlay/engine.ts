@@ -26,6 +26,7 @@ import { createLayerGate, createLinkEstimator, createSourceRateController, creat
 import { DEFAULT_ENCODING, createPlayer, createProgramSource, probeDecoders } from "./media/index";
 import type { Player, ProgramEncoding, ProgramInput, ProgramSource } from "./media/types";
 import { createOverlayNode, judgeRelay } from "./topology/index";
+import { relayFanout } from "./topology/scoring";
 import type { NodeStats, NodeStatus, OverlayNode } from "./topology/types";
 import { createLinkManager, probeNat } from "./transport/index";
 import type { LinkManager } from "./transport/types";
@@ -76,6 +77,10 @@ const SHORT_PROBE = { fanout: 2, durationMs: 1000 };
 const PROBE_AFTER_PARENT_MS = 200;
 /** [D49] While it is the only relay the source may take up to six: its probe, toward its first child, is sized for them. */
 const SOURCE_ALONE_FANOUT = 6;
+/** [D75] The source probes toward up to this many of its children, one after another, and keeps the best. */
+const SOURCE_PROBES = 3;
+/** [D75] ... this long apart. */
+const SOURCE_REPROBE_MS = 500;
 /** How often what the player wants is passed to the node. */
 const WANTS_EVERY_MS = 200;
 /**
@@ -320,6 +325,8 @@ abstract class PeerEngine {
 
   private hadParent = false;
   private probeRunning = false;
+  /** [D75] The source's probes so far. */
+  private sourceProbes = 0;
   /**
    * `probeNat` has not answered yet (it takes up to its 3 s timeout). A joiner linked sooner than
    * that would otherwise find "nat" against it and put the short probe off by PROBE_RETRY_MS:
@@ -343,7 +350,7 @@ abstract class PeerEngine {
   private probeSourceOnFirstChild(): void {
     const node = this.node;
     const welcome = this.welcome;
-    if (this.hadParent || !node || !welcome || this.probeRunning || this.options.capabilities?.uplinkKbps != null) return;
+    if (this.hadParent || !node || !welcome || this.probeRunning || this.options.capabilities?.uplinkKbps != null || this.sourceProbes >= SOURCE_PROBES) return;
     if (node.status().children.length === 0) return;
     const most = welcome.params.sourceAloneFanout ?? SOURCE_ALONE_FANOUT;
     if (most <= welcome.params.sourceFanout) return;
@@ -393,11 +400,23 @@ abstract class PeerEngine {
   private onProbe(spare: number | null): void {
     this.probeRunning = false;
     if (this.welcome?.role === "source") {
-      // [D49] Once: what it found, or (cut short) another try at the next change of status.
+      // [D49] What it found, or (cut short) another try at the next change of status.
       if (spare === null) this.hadParent = false;
       else if (this.caps) {
-        this.caps = { ...this.caps, uplinkKbps: Math.round(spare) };
+        // [D75] The best of up to SOURCE_PROBES children's: a probe toward one child measures that
+        // child's downlink as much as the source's uplink (gate run 45231661833: the source was
+        // given 4 children, not 6, for the whole run, and peers at depth 4 or more were 28-62%).
+        this.sourceProbes++;
+        const best = Math.max(spare, this.caps.uplinkKbps ?? 0);
+        this.caps = { ...this.caps, uplinkKbps: Math.round(best) };
         this.sendStatus();
+        const welcome = this.welcome;
+        const most = welcome.params.sourceAloneFanout ?? SOURCE_ALONE_FANOUT;
+        if (this.sourceProbes < SOURCE_PROBES && relayFanout(best, this.sessionKbps(), most) < most) {
+          this.hadParent = false;
+          this.probeTimer?.();
+          this.probeTimer = this.clock.setTimeout(() => this.probeSourceOnFirstChild(), SOURCE_REPROBE_MS);
+        }
       }
       return;
     }

@@ -557,6 +557,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   /** A probe of the link to the parent, while it runs (`runProbe`). */
   /** The probe under way, and who it goes to: the parent, or (the source, D49) its first child. */
   let probing: { probe: UplinkProbe; to: Peer } | null = null;
+  /** [D75] The children the source has probed its uplink toward. */
+  const probedToward = new Set<PeerId>();
   let lastStatus = "";
 
   /* stats */
@@ -2492,7 +2494,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     runProbe(probe) {
       // [D49] The source has no parent: it probes its uplink toward its first active child, which
       // reports what arrives in its FEEDBACK as any child does.
-      const to = role === "source" ? (activeChildren()[0] ?? null) : state === "active" ? parent : null;
+      // [D75] The source's next probe goes to a child it has not probed toward yet, if it has one.
+      const children = role === "source" ? activeChildren() : [];
+      const to = role === "source" ? (children.find((child) => !probedToward.has(child.id)) ?? children[0] ?? null) : state === "active" ? parent : null;
+      if (to && role === "source") probedToward.add(to.id);
       if (!to) {
         events.emit("probe", null);
         return;

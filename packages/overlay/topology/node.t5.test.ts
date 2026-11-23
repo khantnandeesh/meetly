@@ -329,6 +329,26 @@ describe("node: measuring spare uplink (SPEC §8.1, §11.6)", () => {
     assert.equal(source.node.status().freeSlots, 0);
   });
 
+  it("D75: the source's next probe goes toward a child it has not probed toward yet", async () => {
+    const net = new SimNet({ seed: 7, backups: false, params: { sourceFanout: 2, maxFanout: 2 } });
+    const source = net.join("0", "source", []);
+    net.publish(source);
+    await net.runAsync(300);
+    for (const id of ["1", "2"]) net.join(id, "leaf", ["0"]);
+    await net.runAsync(1000);
+    const probesTo = (id: string) => (source.links.get(id) as unknown as { sentByType: Map<number, Map<string, number>> }).sentByType.get(PacketType.Probe)?.get("replay") ?? 0;
+    const results: (number | null)[] = [];
+    source.node.on("probe", (spare) => results.push(spare));
+    source.node.runProbe(fakeProbe(2, 500).probe);
+    await net.runAsync(1500);
+    const first = ["1", "2"].filter((id) => probesTo(id) > 0);
+    assert.equal(first.length, 1, "one child probed toward");
+    source.node.runProbe(fakeProbe(2, 500).probe);
+    await net.runAsync(1500);
+    assert.ok(probesTo("1") > 0 && probesTo("2") > 0, "the second probe went to the other child");
+    assert.equal(results.filter((r) => r !== null).length, 2);
+  });
+
   it("sends PROBE packets to the parent in the lowest class, hears FEEDBACK back while they come, and reports the result", async () => {
     const made: ({ bitrateKbps: number } | undefined)[] = [];
     const heard = new Map<LinkEstimator, number>();
