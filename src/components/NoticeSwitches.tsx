@@ -23,10 +23,7 @@ export function ChatPreviewsSwitch() {
       className="menu-item"
     >
       <Bell className="size-4 shrink-0 text-muted" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        <span className="block font-medium">Chat previews</span>
-        <span className="block text-xs text-muted">Show new messages while chat is closed</span>
-      </span>
+      <span className="min-w-0 flex-1 font-medium">Chat previews</span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
   );
@@ -45,10 +42,7 @@ export function ReactionsSwitch() {
       className="menu-item"
     >
       <Smile className="size-4 shrink-0 text-muted" aria-hidden="true" />
-      <span className="min-w-0 flex-1">
-        <span className="block font-medium">Reactions</span>
-        <span className="block text-xs text-muted">Show emoji others send</span>
-      </span>
+      <span className="min-w-0 flex-1 font-medium">Reactions</span>
       <span className="switch" data-on={on} aria-hidden="true" />
     </Dropdown.CheckboxItem>
   );

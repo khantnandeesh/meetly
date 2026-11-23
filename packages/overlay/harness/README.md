@@ -52,6 +52,56 @@ fresh admission secret as an artifact, and the other shards wait for it (`ci/ren
 Shard 0's own peers, the source among them, reach the coordinator on 127.0.0.1; everyone else
 through the tunnel. Peers use STUN only.
 
+## On Google Cloud
+
+`gcp/run.sh` runs a sharded swarm on Compute Engine VMs instead of GitHub's runners, from any
+machine with `gcloud` and `jq`:
+
+```
+bash packages/overlay/harness/gcp/run.sh --scenario gate-small --peers 25 --churn-s 120 --shards 3
+bash packages/overlay/harness/gcp/run.sh --scenario gate --peers 200 --churn-s 600 --shards 10 --merge integration
+```
+
+It creates one VM per shard in one zone (`n2-standard-4`, Ubuntu 24.04), each running
+`gcp/vm.sh` at boot: Node, the pinned commit, `npm ci`, Playwright, the NAT check, and then the
+same steps as a shard of `overlay-swarm.yml`. The VMs meet through the run's folder in a private
+Cloud Storage bucket (`gs://meetly-overlay-swarm-<project number>/runs/<run>/`) instead of
+artifacts: shard 0 lays the run out once every VM is ready, starts the coordinator, and publishes
+the rendezvous; when every shard is in, it builds the report. `run.sh` waits for it, downloads
+the results to `swarm-out/gcp/<run>/`, and deletes the VMs, also when it fails or is stopped. Each
+VM also deletes itself after the run's churn plus an hour, in case nothing else does.
+
+What it changes against GitHub's runners:
+
+- **One coordinator, no tunnel.** Every VM is in the project's VPC, so the coordinator is reached on
+  shard 0's internal address: no quick tunnel and its 200-request limit, and a round trip under a
+  millisecond, so the session clock is not the tunnel's 24–30 ms.
+- **No symmetric NAT.** Peers link host to host on internal addresses (the default network's
+  `default-allow-internal` rule), and Google's one-to-one NAT is endpoint-independent for STUN.
+  No shard needs to be excluded for its NAT.
+- **As many machines as the quota allows,** all starting together, not 20 jobs shared with CI.
+
+It needs, in the project: the Compute Engine API; an account (`GCP_SERVICE_ACCOUNT_KEY`, or
+gcloud signed in) with Compute Instance Admin (v1), Service Account User, and Storage Object
+Admin on the bucket; the bucket itself; and the Compute Engine default service account, which the
+VMs run as, able to write to the bucket. `GCP_PROJECT_ID` names the project.
+
+**Quota is what limits it.** A new project has 12 vCPUs across all regions (`CPUS_ALL_REGIONS`)
+and 4 external addresses per region: three 4-vCPU VMs. The first run on it (gate-small, 25 peers,
+churn 120 s, overlay-integration at c46622c: coordinator, source, and one VM of viewers) worked end
+to end in 6 minutes, setup included, and was **invalid for the viewers' VM alone**: 24 viewers and
+their churn's joiners (48 pages over the run) put an `n2-standard-4` at load 26 and timer lag p99
+50 ms. The coordinator's and the source's VMs were at load 1 and 2.3, timer lag 10 ms, and clocks
+were 11.5 ms apart as measured (1.9 ms at p50), the tunnel's problem gone. So an `n2-standard-4`
+carries fewer viewers than GitHub's 4-vCPU runners did (H4: 40); about 12 is a guess to measure.
+At that, the gate's 199 viewers want about 17 viewer VMs plus two: some 76 vCPUs in all regions
+and in the region's N2 quota, and either that many external addresses or `--no-address` with
+Cloud NAT on the default network
+(`gcloud compute routers create swarm --network default --region us-central1` and
+`gcloud compute routers nats create swarm --router swarm --region us-central1 --auto-allocate-nat-external-ips --nat-all-subnet-ip-ranges`).
+`run.sh` checks the quota before it creates anything. Such a gate costs about $2 on demand, a
+third of that with `--spot`.
+
 ## Several tunnels: why runs 7 to 10 lost peers, and joins took 4–8 s
 
 A Cloudflare quick tunnel carries at most 200 requests in flight, and each peer's coordinator

@@ -16,7 +16,7 @@ export function JoinForm({ autoFocus = false }: { autoFocus?: boolean }) {
     event.preventDefault();
     const code = parseCode(input);
     if (!code) {
-      setError("Enter a meeting code like abc-defg-hij, or paste the whole link.");
+      setError("Not a meeting code. Try abc-defg-hij, or paste the link.");
       return;
     }
     router.push(`/${code}`);
@@ -36,7 +36,7 @@ export function JoinForm({ autoFocus = false }: { autoFocus?: boolean }) {
               setInput(e.target.value);
               setError(null);
             }}
-            placeholder="Enter a code or link"
+            placeholder="Code or link"
             aria-label="Meeting code or link"
             aria-invalid={error ? true : undefined}
             aria-describedby={error ? errorId : undefined}

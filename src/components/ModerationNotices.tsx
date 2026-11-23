@@ -114,7 +114,7 @@ export function ModerationNotices({
               priority: "you",
               icon: <ShieldCheck className="size-5" />,
               title: "You're now a co-host",
-              body: "You can mute and remove people, and decide who joins.",
+              body: "You can mute, remove and admit people.",
               duration: 7000,
             }
           : { tag: "role-self", priority: "you", icon: <ShieldMinus className="size-5" />, title: "You're no longer a co-host" },

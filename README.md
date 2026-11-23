@@ -45,8 +45,9 @@ server with `livekit-server --dev` and use `ws://localhost:7880` / `devkey` / `s
 `node test/e2e/run.cjs` runs the browser tests: real Chromium clients with fake cameras, against
 a running LiveKit build (`MEETLY_URL`, default `http://localhost:3000`). Name suites to run only
 some (`host`, `reactions`, `host-tools`, `access`, `effects`, `schedule`, `chat`, `fixes`, `polls`,
-`quality`, `mini`, `rating`, `notices`, `cost-guard`); set
-`MEETLY_SHOTS=<dir>` to keep screenshots.
+`quality`, `mini`, `rating`, `notices`, `cost-guard`, `copy`); set
+`MEETLY_SHOTS=<dir>` to keep screenshots. `copy` holds key screens to their word budgets
+(docs/UI-WRITING.md, the rules for every string on screen).
 They need [Playwright](https://playwright.dev) where Node can find it (`npm i --no-save playwright`,
 or a global install on `NODE_PATH`). `node test/e2e/realtimekit-rest.cjs` checks a RealtimeKit
 build's server routes against Cloudflare's REST API without joining a call; it creates test

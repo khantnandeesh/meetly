@@ -1,0 +1,86 @@
+# A sharded swarm on Google Cloud VMs (packages/overlay/harness/gcp, README "On Google Cloud"):
+# one GitHub runner only drives it, the shards run in one zone of the project. Manual only.
+#
+# Needs the repository secrets GCP_SERVICE_ACCOUNT_KEY (a service account key's JSON) and
+# GCP_PROJECT_ID.
+name: Overlay swarm on Google Cloud
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: "Scenario (harness/scenarios.ts)"
+        default: "gate"
+        type: string
+      peers:
+        description: "Peers in the run"
+        default: "200"
+        type: string
+      churn_s:
+        description: "Seconds of churn"
+        default: "600"
+        type: string
+      shards:
+        description: "VMs: the coordinator's, the source's, and the viewers'"
+        default: "10"
+        type: string
+      machine:
+        description: "Machine type"
+        default: "n2-standard-4"
+        type: string
+      ref:
+        description: "Commit or branch to run"
+        default: "overlay-integration"
+        type: string
+      merge:
+        description: "none, branches or integration (harness/ci/merge.sh)"
+        default: "none"
+        type: string
+      extra:
+        description: "More options for run.sh, e.g. --spot --no-address"
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overlay-swarm-gcp
+  cancel-in-progress: false
+
+jobs:
+  swarm:
+    name: ${{ inputs.scenario }}, ${{ inputs.peers }} peers on ${{ inputs.shards }} VMs
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: google-github-actions/setup-gcloud@v2
+      - name: Run it
+        env:
+          GCP_SERVICE_ACCOUNT_KEY: ${{ secrets.GCP_SERVICE_ACCOUNT_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          SCENARIO: ${{ inputs.scenario }}
+          PEERS: ${{ inputs.peers }}
+          CHURN_S: ${{ inputs.churn_s }}
+          SHARDS: ${{ inputs.shards }}
+          MACHINE: ${{ inputs.machine }}
+          REF: ${{ inputs.ref }}
+          MERGE: ${{ inputs.merge }}
+          EXTRA: ${{ inputs.extra }}
+        run: |
+          set -o pipefail
+          # shellcheck disable=SC2086
+          bash packages/overlay/harness/gcp/run.sh --scenario "$SCENARIO" --peers "$PEERS" --churn-s "$CHURN_S" --shards "$SHARDS" \
+            --machine "$MACHINE" --ref "$REF" --merge "$MERGE" --out swarm-out/gcp $EXTRA 2>&1 | grep -v '^Copying\|^ *\.*$'
+          [ -f swarm-out/gcp/reports/report.md ] && cat swarm-out/gcp/reports/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: swarm-gcp-a${{ github.run_attempt }}
+          path: swarm-out/
+          retention-days: 30
+          if-no-files-found: warn

@@ -910,10 +910,7 @@ function InviteCard({ show, code, onCopy }: { show: boolean; code: string; onCop
       className={`anim-rise absolute z-30 w-80 max-w-[calc(100%-1.5rem)] rounded-2xl bg-[rgb(20_20_26/0.92)] p-4 shadow-[inset_0_0_0_1px_var(--border-strong),0_20px_50px_-15px_rgb(0_0_0/0.8)] backdrop-blur-md max-md:top-3 max-md:left-1/2 max-md:-translate-x-1/2 md:right-4 md:bottom-4 ${presence.leaving ? "" : "[animation-delay:400ms]"}`}
     >
       <div className="flex items-start justify-between gap-2">
-        <div>
-          <p className="font-semibold">You&apos;re the only one here</p>
-          <p className="mt-1 text-sm leading-relaxed text-muted">Share the link so others can join.</p>
-        </div>
+        <p className="font-semibold">You&apos;re the only one here</p>
         <button className="icon-btn -mt-1.5 -mr-1.5 size-9" onClick={() => setDismissed(true)} aria-label="Dismiss invite reminder">
           <X className="size-4" aria-hidden="true" />
         </button>

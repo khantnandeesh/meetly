@@ -113,7 +113,7 @@ module.exports = async function webinar(browser) {
   const url = host.page.url();
   H.ok("New webinar on the home page makes a link and opens it", /\/[a-z]{3}-[a-z]{4}-[a-z]{3}$/.test(url), url);
   await host.page.getByLabel("Your name").fill("Hana Host");
-  H.ok("the host's pre-join names the webinar", (await host.page.getByPlaceholder("Shown to everyone in the webinar").count()) === 1);
+  H.ok("the host's pre-join names the webinar", (await host.page.locator("[data-call-kind]").innerText()).trim() === "Webinar");
   await host.page.getByRole("button", { name: /^Join now$/ }).click();
   await stageScreen(host).waitFor({ timeout: 20000 });
   H.ok("the host joins through the ordinary pre-join, and the grant says webinar", host.tokenBody && host.tokenBody.mode === "webinar");
@@ -393,7 +393,7 @@ module.exports = async function webinar(browser) {
   await H.until(async () => (await tilesOf(host)).includes(`${vicId}:camera`), 10000);
   await inCall(vic).getByRole("toolbar", { name: "Webinar controls" }).getByRole("button", { name: "Leave webinar" }).click();
   H.ok("the leave screen: You left the webinar", await H.until(async () => (await vic.page.getByRole("heading", { name: "You left the webinar" }).count()) === 1, 8000));
-  H.ok("…The webinar stays open for others until everyone has left.", (await vic.page.getByText("The webinar stays open for others until everyone has left.").count()) === 1);
+  H.ok("…The webinar stays open for others.", (await vic.page.getByText("The webinar stays open for others.").count()) === 1);
   await H.shot(vic, "webinar-left-desktop");
   H.ok("one speaker leaving adds one row: Left the webinar 1", await H.until(async () => (await leftSection.count()) === 1 && /left the webinar\s*1/i.test(await leftSection.innerText()), 8000));
 

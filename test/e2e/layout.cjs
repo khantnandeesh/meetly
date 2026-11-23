@@ -307,7 +307,7 @@ async function endedScreen(browser) {
     (await rows.count()) === 2 && /^Save the chat/.test(await rows.nth(0).innerText()) && /^Schedule a follow-up/.test(await rows.nth(1).innerText()),
     (await rows.allInnerTexts()).join(" / "),
   );
-  H.ok("C13 host: the chat row says how much there is to lose", (await rows.nth(0).innerText()).includes("1 message. It's gone once you close this page."));
+  H.ok("C13 host: the chat row says how much there is to lose", (await rows.nth(0).innerText()).includes("1 message. Gone when you close this page."));
   const rating = await rect(host.page.locator("[data-call-rating]"));
   H.ok("C13 1440×900: everything through the rating is visible without scrolling", inView(rating, big) && (await host.page.evaluate(() => document.scrollingElement.scrollHeight <= innerHeight)), JSON.stringify(rating));
   await H.shot(host, "c13-ended-host-desktop");

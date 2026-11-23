@@ -134,10 +134,7 @@ export function NoiseScene({ s }: { s: NoiseState }) {
         </div>
         <div className="gm-menu-item">
           <AudioLines className="size-4 shrink-0 text-muted" />
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">Noise suppression</span>
-            <span className="block text-xs text-muted">Turn off when you play music</span>
-          </span>
+          <span className="min-w-0 flex-1 font-medium">Noise suppression</span>
           <span className="switch" data-on="true" />
         </div>
         <div className="gm-menu-sep" />

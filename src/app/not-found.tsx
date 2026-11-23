@@ -22,8 +22,7 @@ export default function NotFound() {
             That meeting link doesn&apos;t look right
           </h1>
           <p className="text-lg leading-relaxed text-muted">
-            Meeting codes are ten letters, like <span className="font-mono text-[0.9em] text-text">abc-defg-hij</span>.
-            Check the link you were sent, or enter the code again.
+            Codes look like <span className="font-mono text-[0.9em] text-text">abc-defg-hij</span>.
           </p>
         </div>
         <div className="flex">
