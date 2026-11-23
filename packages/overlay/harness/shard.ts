@@ -12,6 +12,7 @@
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { availableParallelism, loadavg } from "node:os";
+import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { decodeMetricsSample, emptyHistogram, latencyBucket, mergeHistogram, signTicket, type MetricsSample, type PeerId } from "../protocol";
@@ -34,7 +35,8 @@ type PwPage = {
   close(options?: { runBeforeUnload?: boolean }): Promise<void>;
   on(event: "crash" | "pageerror" | "console", listener: (arg: never) => void): void;
 };
-type PwContext = { newPage(): Promise<PwPage> };
+type PwContext = { newPage(): Promise<PwPage>; newCDPSession?(page: PwPage): Promise<PwCdp> };
+type PwCdp = { send(method: string, params?: Record<string, unknown>): Promise<Record<string, unknown>> };
 type PwBrowser = { newContext(): Promise<PwContext>; close(): Promise<void> };
 type Playwright = { chromium: { launch(options: { args: string[]; headless?: boolean }): Promise<PwBrowser> } };
 
@@ -223,6 +225,47 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       config.admissionSecret,
     );
 
+  /**
+   * The source page profiled (OVERLAY_PROFILE_SOURCE=<dir>, a diagnosis, not the gate): its main
+   * thread sampled every millisecond by DevTools' profiler, its long tasks, and its heap every
+   * second, written to <dir> when the run ends. For the source's 150-240 ms stalls (D69).
+   */
+  const profileDir = process.env.OVERLAY_PROFILE_SOURCE || null;
+  let sourceCdp: PwCdp | null = null;
+  let sourcePage: PwPage | null = null;
+  const sourceHeap: [number, number, number][] = [];
+  let heapTimer: ReturnType<typeof setInterval> | undefined;
+  async function profileSource(page: PwPage): Promise<void> {
+    if (!profileDir || !context?.newCDPSession) return;
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Profiler.enable");
+    await cdp.send("Profiler.setSamplingInterval", { interval: 1000 });
+    await cdp.send("Profiler.start");
+    sourceCdp = cdp;
+    sourcePage = page;
+    heapTimer = setInterval(() => {
+      void cdp
+        .send("Runtime.getHeapUsage")
+        .then((heap) => sourceHeap.push([Date.now(), Number(heap.usedSize), Number(heap.totalSize)]))
+        .catch(() => undefined);
+    }, 1000);
+    log(`the source page is profiled into ${profileDir}`);
+  }
+  async function saveSourceProfile(): Promise<void> {
+    if (!sourceCdp || !profileDir) return;
+    clearInterval(heapTimer);
+    try {
+      const { profile } = await sourceCdp.send("Profiler.stop");
+      writeFileSync(join(profileDir, "source.cpuprofile"), JSON.stringify(profile));
+      const longTasks = await sourcePage!.evaluate(() => (window as unknown as { __longTasks?: unknown[] }).__longTasks ?? [], null);
+      const timeOrigin = await sourcePage!.evaluate(() => performance.timeOrigin, null);
+      writeFileSync(join(profileDir, "source-longtasks.json"), JSON.stringify({ timeOrigin, longTasks }));
+      writeFileSync(join(profileDir, "source-heap.json"), JSON.stringify(sourceHeap));
+    } catch (error) {
+      notes.push(`the source's profile was not saved: ${String(error)}`);
+    }
+  }
+
   async function newPage(): Promise<PwPage> {
     if (!context || pagesInBrowser >= Math.max(1, config.pagesPerBrowser)) {
       playwright ??= loadPlaywright();
@@ -266,6 +309,19 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
         shard: config.shard.index,
       };
       peers.set(index, handle);
+      if (role === "source" && profileDir) {
+        await profileSource(page);
+        await page.evaluate(() => {
+          const tasks: { start: number; ms: number; name: string; attribution: string }[] = [];
+          (window as unknown as { __longTasks: typeof tasks }).__longTasks = tasks;
+          new PerformanceObserver((list) => {
+            for (const entry of list.getEntries()) {
+              const attribution = ((entry as unknown as { attribution?: { containerType?: string; name?: string }[] }).attribution ?? []).map((a) => `${a.containerType ?? ""}:${a.name ?? ""}`).join(",");
+              tasks.push({ start: entry.startTime, ms: entry.duration, name: entry.name, attribution });
+            }
+          }).observe({ type: "longtask", buffered: true });
+        }, null);
+      }
       await page.evaluate((o) => window.__overlay.start(o), options);
     } catch (error) {
       const handle = peers.get(index);
@@ -416,6 +472,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     await polling;
     await Promise.race([Promise.all(running), sleep(5000)]);
     await poll();
+    await saveSourceProfile();
   } finally {
     ending = true;
     clearTimeout(lagTimer);
