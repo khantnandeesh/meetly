@@ -525,11 +525,17 @@ export class TreeMap {
       return { parents: parents.map((candidate) => ({ ...candidate.hint, free: 0 })), backups: [] };
     }
     // D38: a provisional relay only when no full relay (or the source) has a free slot.
-    const fullRoom = pool.some((candidate) => !candidate.node.provisional && candidate.free > 0 && over(candidate) === 0);
+    const reserved = (candidate: Ranked) => (options.join === true && !candidate.node.provisional && candidate.node.role === "relay" && this.fanout(candidate.node) >= 4 ? 1 : 0);
+    const fullRoom = pool.some((candidate) => !candidate.node.provisional && candidate.free > reserved(candidate) && over(candidate) === 0);
     const parents = forParent
       ? pool
           .filter((candidate) => {
             if (withheld || candidate.free <= 0) return false;
+            // D60: a join leaves a full relay's last slot to repairs. With fan-out 6 a depth-1
+            // relay carries a sixth of the audience; with every slot taken by joiners, the cut-off
+            // subtree of a killed one found nowhere to go (gate run 45146597862: ~180 cold repairs
+            // twice, 118 and 120 "no parent could be found").
+            if (candidate.free <= reserved(candidate)) return false;
             if (candidate.node.provisional && fullRoom) return false;
             if (options.shallowerThan !== undefined && candidate.node.depth + 1 >= options.shallowerThan) return false;
             return options.deeperThan === undefined || (candidate.node.depth + 1 > options.deeperThan && over(candidate) === 0);
