@@ -1,19 +1,29 @@
 "use client";
 
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronRight, LoaderCircle, Presentation, ServerOff, X } from "lucide-react";
+import { ChevronRight, LoaderCircle, Presentation, Server, ServerOff, Users, Video, X } from "lucide-react";
 import Link from "next/link";
 import { useId, type RefObject } from "react";
 import { LIVE_VIEWER_CAP } from "@/lib/live/tree";
-import { SERVERLESS_LINE } from "@/lib/live/webinar";
 
 const option =
   "group flex w-full min-w-0 cursor-pointer items-start gap-3 rounded-2xl bg-surface-2 p-4 text-left ring-1 ring-border transition-[background-color,box-shadow] duration-150 ring-inset hover:bg-surface-3 hover:ring-border-strong aria-disabled:cursor-not-allowed aria-disabled:hover:bg-surface-2 aria-disabled:hover:ring-border sm:gap-4";
 const tile = "grid size-8 shrink-0 place-items-center rounded-xl sm:size-10";
 const chevron = "mt-2.5 hidden size-5 shrink-0 text-faint transition-transform group-hover:translate-x-0.5 sm:block";
 
+/** One trait of a kind of webinar: an icon and two or three words (docs/UI-WRITING.md). */
+function Trait({ icon: Icon, children }: { icon: typeof Server; children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+      {children}
+    </span>
+  );
+}
+const traits = "flex flex-wrap gap-x-3 gap-y-1 text-sm text-muted";
+
 /**
- * "New webinar…" on the home page: the choice between the two kinds, each said in one honest line.
+ * "New webinar…" on the home page: the choice between the two kinds, each said in a few icons.
  *
  * - Standard: the webinar call (src/lib/useWebinar.ts), whose video goes through the media
  *   provider's servers. Offered only while the server says webinars are on; otherwise it is shown,
@@ -64,9 +74,7 @@ export function WebinarTypeDialog({
             </Dialog.Close>
           </div>
           <div className="scroll-quiet flex flex-col gap-3 overflow-y-auto px-4 pb-4 sm:px-6 sm:pb-6">
-            <Dialog.Description className="mb-1 px-2 text-sm leading-relaxed text-muted sm:px-0">
-              You present and everyone else watches. Choose how the video reaches them.
-            </Dialog.Description>
+            <Dialog.Description className="sr-only">You present and everyone else watches. Choose how the video reaches them.</Dialog.Description>
 
             <button
               type="button"
@@ -81,10 +89,13 @@ export function WebinarTypeDialog({
               </span>
               <span className="flex min-w-0 flex-1 flex-col gap-1">
                 <span className={`font-semibold ${standardOffered ? "" : "text-muted"}`}>Standard webinar</span>
-                <span className="text-sm leading-snug text-pretty text-muted">Video goes through our video servers. Bring people on stage, with chat, raised hands and polls.</span>
+                <span className={traits}>
+                  <Trait icon={Server}>Via our servers</Trait>
+                  <Trait icon={Users}>Stage, chat, polls</Trait>
+                </span>
                 {!standardOffered && (
                   <span id={unavailable} className="text-sm font-medium text-faint">
-                    Switched off on this server right now.
+                    Off on this server
                   </span>
                 )}
               </span>
@@ -102,9 +113,10 @@ export function WebinarTypeDialog({
                     Beta
                   </span>
                 </span>
-                <span className="text-sm leading-snug text-pretty text-muted">{SERVERLESS_LINE}</span>
-                <span className="text-sm leading-snug text-pretty text-faint">
-                  Up to {LIVE_VIEWER_CAP} viewers, just you on camera. Viewers’ browsers pass the video on to each other.
+                <span className={traits}>
+                  <Trait icon={ServerOff}>No servers</Trait>
+                  <Trait icon={Users}>Up to {LIVE_VIEWER_CAP} viewers</Trait>
+                  <Trait icon={Video}>Only you on camera</Trait>
                 </span>
               </span>
               <ChevronRight className={chevron} aria-hidden="true" />

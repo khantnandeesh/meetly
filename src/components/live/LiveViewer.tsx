@@ -1,9 +1,10 @@
 "use client";
 
-import { KeyRound, LoaderCircle, Maximize, Minimize, Play, Radio, RotateCw, Volume2, VolumeX, WifiOff } from "lucide-react";
+import { Globe, KeyRound, LoaderCircle, LockKeyhole, Maximize, Minimize, Play, Radio, RotateCw, ServerOff, Share2, Volume2, VolumeX, WifiOff } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import type { OverlayState, OverlayViewer, SFrameDecryptor } from "@meetly/overlay";
+import { Fact } from "@/components/ui/Fact";
 import { Tip } from "@/components/ui/Tip";
 import { exposeE2eeStats, keyFromHash } from "@/lib/live/e2ee";
 import { LIVE_VIEWER_CAP, audience, type LiveTree } from "@/lib/live/tree";
@@ -25,10 +26,10 @@ type Phase =
   /** The video is end-to-end encrypted and this link's key does not open it. */
   | { t: "wrong-key" };
 
-const ENDED: Over = { title: "This webinar has ended", body: "The host has ended it. Thanks for watching.", action: "home" };
+const ENDED: Over = { title: "This webinar has ended", body: "Thanks for watching.", action: "home" };
 const FULL: Over = {
   title: "This webinar is full",
-  body: `It already has ${LIVE_VIEWER_CAP} viewers, the most a serverless webinar can take in this beta. Someone may leave; try again in a little while.`,
+  body: `It has ${LIVE_VIEWER_CAP} viewers, the beta’s limit. Try again in a little while.`,
   action: "retry",
 };
 
@@ -65,11 +66,11 @@ function useLinkKey() {
 const KEY_PROBLEM = {
   missing: {
     title: "This link is missing its key",
-    body: "This webinar is end-to-end encrypted. Its key is the last part of the link the host shares, after “#k=”, and this link doesn’t have it. Ask the host for the full link.",
+    body: "The key is the part after “#k=”. Ask the host for the full link.",
   },
   wrong: {
     title: "Can’t decrypt — ask the host for the full link",
-    body: "This webinar is end-to-end encrypted, and the key in this link doesn’t open its video. The link may have been cut short when it was copied.",
+    body: "The link may have been cut short when it was copied.",
   },
 };
 
@@ -349,10 +350,7 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
               </span>
               <div className="flex min-w-0 flex-col gap-1.5">
                 <FocusedHeading>Can’t get the video on this network</FocusedHeading>
-                <p className="max-w-[40rem] text-pretty text-muted">
-                  A serverless webinar needs your browser to connect directly to the host’s or other viewers’ browsers, and this network seems to block that. Some office,
-                  school and mobile networks do. Try another network, such as home Wi-Fi or a phone hotspot.
-                </p>
+                <p className="max-w-[40rem] text-pretty text-muted">This network blocks direct connections. Try home Wi-Fi or a phone hotspot.</p>
               </div>
             </div>
             <button className="btn btn-secondary self-start sm:ml-14" onClick={() => void watch()} data-testid="live-retry">
@@ -375,7 +373,6 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
                     <span className="flex flex-col items-center gap-2">
                       <Radio className="size-6 animate-pulse text-faint" aria-hidden="true" />
                       <span className="font-medium">Waiting for the host to go live</span>
-                      <span className="text-sm text-muted">The video starts here on its own.</span>
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-2 text-sm text-muted">
@@ -389,7 +386,7 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
                   <span className="flex flex-col items-center gap-2">
                     <WifiOff className="size-6 text-faint" aria-hidden="true" />
                     <span className="font-medium">The host’s connection dropped</span>
-                    <span className="text-sm text-muted">The video carries on here if they come back.</span>
+                    <span className="text-sm text-muted">It resumes if they come back.</span>
                   </span>
                 </div>
               ) : connection === "reconnecting" ? (
@@ -455,25 +452,18 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
                 <>
                   <span className="mt-1.5 size-2 shrink-0 rounded-full bg-faint" aria-hidden="true" />
                   <span className="text-muted" role="status">
-                    Not started yet. You can start watching and wait here.
+                    Not started yet
                   </span>
                 </>
               )}
             </p>
             <div className="flex max-w-[40rem] flex-col gap-3" data-testid="live-notice">
               <h2 className="font-display text-xl font-semibold tracking-tight">Before you watch</h2>
-              <p className="text-pretty">{SERVERLESS_LINE}</p>
-              <ul className="flex flex-col gap-1.5 text-sm text-muted">
-                {[
-                  "End-to-end encrypted: only people with the full link can see the video — not us, not anyone in between.",
-                  "While you watch, your browser may pass the encrypted video on to a few other viewers.",
-                  "Browsers connected to yours can see your IP address. This is a beta.",
-                ].map((line) => (
-                  <li key={line} className="flex gap-2.5 text-pretty">
-                    <span className="mt-2 size-1 shrink-0 rounded-full bg-faint" aria-hidden="true" />
-                    {line}
-                  </li>
-                ))}
+              <ul className="flex flex-col gap-2.5">
+                <Fact icon={<ServerOff />} label="No servers in between" detail={SERVERLESS_LINE} />
+                <Fact icon={<LockKeyhole />} label="End-to-end encrypted" detail="Only people with the full link can see the video, not us or anyone in between." />
+                <Fact icon={<Share2 />} label="You may relay the video" detail="While you watch, your browser may pass the encrypted video on to a few other viewers." />
+                <Fact icon={<Globe />} label="Peers see your IP address" detail="Browsers connected to yours can see your IP address. This is a beta." />
               </ul>
             </div>
             <button className="btn btn-primary self-start" onClick={() => void watch()} disabled={phase.t === "checking"} data-testid="watch">

@@ -18,6 +18,7 @@ import {
 import { downloadText } from "@/lib/chatExport";
 import { copyText, useCopied } from "@/lib/hooks";
 import { CopyIcon } from "./ui/CopyIcon";
+import { Tip } from "./ui/Tip";
 
 const durationLabel = (minutes: number) =>
   minutes < 60 ? `${minutes} minutes` : minutes === 60 ? "1 hour" : minutes % 60 === 0 ? `${minutes / 60} hours` : `${minutes / 60} hours`.replace(".5", "½");
@@ -107,13 +108,7 @@ function ScheduleForm({ code, mode }: { code: string; mode: Mode }) {
   return (
     <div className="scroll-quiet flex flex-col gap-5 overflow-y-auto px-6 pb-6">
       <div className="flex flex-col gap-2">
-        <p className="text-sm leading-relaxed text-muted">
-          {mode === "link"
-            ? "Send this link to the people you want to meet. It doesn't expire."
-            : mode === "follow-up"
-              ? "Same link as the meeting you just left. It doesn't expire."
-              : "This link doesn't expire."}
-        </p>
+        <p className="text-sm text-muted">{mode === "follow-up" ? "Same link. Never expires." : "Never expires."}</p>
         <button
           type="button"
           onClick={copy.copy}
@@ -198,7 +193,7 @@ function ScheduleForm({ code, mode }: { code: string; mode: Mode }) {
                 {problem}
               </p>
             ) : (
-              <p className="text-sm text-faint">Times are in your time zone ({zone.replace(/_/g, " ")}). Calendars convert them for everyone else.</p>
+              <p className="text-sm text-faint">Time zone: {zone.replace(/_/g, " ")}</p>
             )}
           </div>
 
@@ -217,22 +212,21 @@ function ScheduleForm({ code, mode }: { code: string; mode: Mode }) {
                 <ExternalLink className="size-4 text-muted" aria-hidden="true" />
               </a>
             ))}
-            <button
-              type="button"
-              className="btn btn-secondary min-w-0 justify-between px-4"
-              disabled={!event}
-              onClick={() => {
-                if (event) downloadText(icsFileName(event), icsFile(event), "text/calendar");
-              }}
-            >
-              <span className="min-w-0 truncate">Download .ics</span>
-              <Download className="size-4 text-muted" aria-hidden="true" />
-            </button>
+            <Tip label="For Apple Calendar, Outlook for desktop and most calendar apps">
+              <button
+                type="button"
+                className="btn btn-secondary min-w-0 justify-between px-4"
+                disabled={!event}
+                onClick={() => {
+                  if (event) downloadText(icsFileName(event), icsFile(event), "text/calendar");
+                }}
+              >
+                <span className="min-w-0 truncate">Download .ics</span>
+                <Download className="size-4 text-muted" aria-hidden="true" />
+              </button>
+            </Tip>
           </div>
-          <p className="text-sm leading-relaxed text-faint">
-            The .ics file opens in Apple Calendar, Outlook for desktop and most other calendar apps. Meetly doesn&apos;t send
-            invitations or reminders. Your calendar does.
-          </p>
+          <p className="text-sm text-faint">Meetly sends no invitations. Your calendar does.</p>
         </>
       )}
     </div>

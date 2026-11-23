@@ -55,7 +55,7 @@ export function PollsSection() {
           </button>
         )}
       </div>
-      {polls.length === 0 && <p className="px-1 pb-1 text-sm text-muted">Ask everyone a quick question. Each person gets one vote.</p>}
+      {polls.length === 0 && <p className="px-1 pb-1 text-sm text-muted">One vote per person.</p>}
       {open.map((poll) => (
         <PollCard key={poll.id} poll={poll} canModerate={canModerate} />
       ))}

@@ -99,9 +99,10 @@ const HostContext = createContext<HostState>({
 });
 export const useHost = () => useContext(HostContext);
 
-export const ACCESS_LABELS: Record<JoinAccess, { label: string; hint: string }> = {
-  open: { label: "Anyone with the link", hint: "People join straight away" },
-  ask: { label: "People ask to join", hint: "You let each person in" },
+// The labels say it; "Locked" keeps a hint, since it could be read as locking out people already in.
+export const ACCESS_LABELS: Record<JoinAccess, { label: string; hint?: string }> = {
+  open: { label: "Anyone with the link" },
+  ask: { label: "People ask to join" },
   locked: { label: "Locked", hint: "Nobody new can join" },
 };
 

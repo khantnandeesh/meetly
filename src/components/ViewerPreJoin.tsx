@@ -1,10 +1,11 @@
 "use client";
 
-import { ArrowRight, CircleAlert, LoaderCircle, Lock, RotateCw, Users } from "lucide-react";
+import { ArrowRight, CircleAlert, LoaderCircle, Lock, RotateCw, Users, VideoOff } from "lucide-react";
 import { useId, useRef, useState } from "react";
 import { WEBINAR_FULL_MESSAGE } from "@/lib/rtc/stage";
 import type { JoinAccess, JoinChoices } from "@/lib/rtc/types";
 import { useSavedChoices } from "@/lib/usePreviewMedia";
+import { Fact, Facts } from "./ui/Fact";
 import { Logo } from "./ui/Logo";
 
 /**
@@ -70,11 +71,17 @@ export function ViewerPreJoin({
           <h1 className="font-display text-4xl leading-[1.05] font-semibold tracking-[-0.02em] sm:text-5xl">
             {waiting ? "Asking to join…" : full ? "This webinar is full" : "Ready to watch?"}
           </h1>
-          <p className="leading-relaxed text-muted">
-            {full
-              ? "Try again in a few minutes, when someone has left."
-              : "You'll see and hear the people on stage. Your camera and microphone stay off unless the host invites you to speak."}
-          </p>
+          {full ? (
+            <p className="leading-relaxed text-muted">Try again in a few minutes.</p>
+          ) : (
+            <Facts className="text-muted">
+              <Fact
+                icon={<VideoOff />}
+                label="Camera and mic off"
+                detail="You'll see and hear the people on stage. Your camera and microphone stay off unless the host invites you to speak."
+              />
+            </Facts>
+          )}
         </div>
 
         {waiting ? (
@@ -82,8 +89,8 @@ export function ViewerPreJoin({
             <p role="status" className="flex items-center gap-3.5 rounded-2xl bg-surface-2 p-4 shadow-[inset_0_0_0_1px_var(--border)]">
               <LoaderCircle className="anim-spin size-5 shrink-0 text-accent" aria-hidden="true" />
               <span className="min-w-0">
-                <span className="block font-medium">Someone in the webinar will let you in</span>
-                <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} as soon as they do.</span>
+                <span className="block font-medium">Waiting to be let in</span>
+                <span className="block text-sm break-words text-muted">You&apos;ll join as {name.trim() || "Guest"} once you&apos;re let in.</span>
               </span>
             </p>
             <button type="button" className="btn btn-secondary h-13 text-base" onClick={onCancel}>
@@ -119,11 +126,11 @@ export function ViewerPreJoin({
                 className="field"
               />
               <p id={hintId} className="text-sm text-faint">
-                Only the host and co-hosts see who is watching.
+                Only hosts see your name.
               </p>
               {nameError && (
                 <p id={nameErrorId} role="alert" className="anim-fade text-sm text-danger-text">
-                  Add your name so the host knows who is watching.
+                  Add your name.
                 </p>
               )}
             </div>
@@ -131,7 +138,7 @@ export function ViewerPreJoin({
             {access === "locked" && !error && (
               <p className="flex items-start gap-2 rounded-xl bg-surface-2 px-3.5 py-3 text-sm text-muted">
                 <Lock className="mt-px size-4 shrink-0" aria-hidden="true" />
-                This webinar is locked. Nobody new can join until the host unlocks it.
+                This webinar is locked.
               </p>
             )}
 
