@@ -148,6 +148,9 @@ export type NodeStats = {
     bufferedMaxBytes: number;
     layerDrops: number;
     retransmitsSent: number;
+    /** [D69] The node's tick at its latest, and on the source the longest gap between published video frames. */
+    tickLateMaxMs?: number;
+    publishGapMaxMs?: number;
   } | null;
   /** The node's part of the `join` metric event, on the session clock. Null before the first parent. */
   join: { linked: number; firstPacket: number | null; turn: boolean } | null;

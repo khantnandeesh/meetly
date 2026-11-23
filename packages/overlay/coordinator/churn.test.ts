@@ -93,6 +93,39 @@ describe("coordinator: the tree's depth under the gate's churn (SPEC §6.6, §12
     });
   }
 
+  it("D67: under the gate's churn the source stays within its fan-out (peers take advice for a backup that needs no free slot, as the node does)", { timeout: 120_000 }, async () => {
+    // Gate run 45211601384: the source had 7-10 children in 51% of depth-1 samples, shedding the
+    // top layer for the whole tree. The children of a depth-1 relay killed came to it as their
+    // backup, and nothing could take a depth-1 relay off it. Here, seeds 1-6 before D67: 10, 370,
+    // 240, 110, 390 and 350 s of 600 over; with it, 10 at most.
+    for (const seed of [2, 5]) {
+      const random = seeded(seed * 7 + 1);
+      const swarm = new Swarm(new Rig({ random: seeded(seed) }), undefined, { probeAfterMs: 2_000, standbyBackups: true, nodeRebalance: { perHopMs: 30, random: seeded(seed + 13) } });
+      await swarm.addSource();
+      for (let joined = 0; joined < 199; ) {
+        for (let k = 0; k < 10 && joined < 199; k++, joined++) await swarm.addViewer(random() < 0.95);
+        await swarm.second();
+      }
+      for (let s = 0; s < 60; s++) await swarm.second();
+      let over = 0;
+      for (let s = 0; s < 600; s++) {
+        if (s % 10 === 0) {
+          const relays = swarm.relays();
+          if (relays.length > 0) await swarm.kill(relays[Math.floor(random() * relays.length)]);
+          const viewers = [...swarm.peers.values()].filter((peer) => peer.alive && peer.role !== "source");
+          await swarm.leave(viewers[Math.floor(random() * viewers.length)]);
+          await swarm.addViewer(random() < 0.95);
+          await swarm.addViewer(random() < 0.95);
+        }
+        await swarm.second();
+        if (swarm.source!.kids.size > (swarm.source!.grantFanout ?? swarm.rig.options.params.sourceFanout)) over++;
+      }
+      console.log(`      seed ${seed}: the source over its fan-out ${over} s of 600; ${swarm.coldRepairs} cold repairs, ${swarm.rejoins} rejoins`);
+      assert.ok(over <= 20, `seed ${seed}: over its fan-out ${over} s`);
+      assert.equal(swarm.rejoins, 0);
+    }
+  });
+
   it("the gate's mix: 15% on bad networks (their own loss, as their parents' children report it), nodes rebalancing on round trips (SPEC §7.6): few demotions, no deepening", { timeout: 120_000 }, async () => {
     // The gate's two 200-peer runs made 85 and 109 relays leaves (one every 7 s), when a relay
     // was demoted for half of its children losing over 5%: a provisional relay with one child on

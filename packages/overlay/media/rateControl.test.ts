@@ -24,7 +24,10 @@ const BUSY: Picture = { overshoot: 1.6, floorBytes: 2000, keyTimes: 3 };
 const FINE: Picture = { overshoot: 1.5, floorBytes: 20_000, keyTimes: 5 };
 const NOISE: Picture = { overshoot: 1, floorBytes: 260_000, keyTimes: 1.1 };
 
-function simulate(pictures: { untilS: number; picture: Picture }[]) {
+/** `jitter`: each frame comes out up to this share bigger or smaller than the model says (a real encoder's spread), seeded by `seed`. */
+function simulate(pictures: { untilS: number; picture: Picture }[], jitter = 0, seed = 1) {
+  let state = seed;
+  const random = () => (state = (Math.imul(state, 1103515245) + 12345) >>> 0) / 4294967296;
   const rate = new VideoRateController(TARGET_KBPS, 3);
   const out: { at: number; bytes: number; key: boolean; level: number }[] = [];
   let sinceKey = Infinity;
@@ -56,7 +59,7 @@ function simulate(pictures: { untilS: number; picture: Picture }[]) {
     const asked = (TARGET_KBPS * factor * 1000) / 8 / FPS;
     const layerShare = [1.6, 1, 0.7][temporal] as number;
     let bytes = Math.max(picture.floorBytes * area, asked * picture.overshoot) * (key ? picture.keyTimes : layerShare);
-    bytes = Math.round(bytes);
+    bytes = Math.round(bytes * (jitter > 0 ? 1 - jitter + 2 * jitter * random() : 1));
     rate.encoded(now + 5, bytes, key, temporal);
     out.push({ at: now + 5, bytes, key, level });
   }
@@ -143,6 +146,26 @@ describe("source rate control: the stream holds its bitrate whatever the picture
     assert.equal(last.level, 0, "back to full size");
     assert.ok(worstWindow(out, 2000, 140_000) <= RATE_WINDOW_ALLOWANCE);
     assert.ok(fps(out, 130, 140) >= 29);
+  });
+
+  it("D68: frames skipped for the bitrate are spread over the key interval, not bunched before the keyframe", () => {
+    // Gate run 45211601384: every viewer froze for about 300 ms every 2 s, at every depth at once.
+    // The source's rate control had skipped the frames of the last few hundred milliseconds
+    // before each keyframe (130-200 ms gaps). Here, the busy picture with frame sizes spread
+    // ±60%, five seeds: before D68 the longest gap was 100-167 ms, and 4 to 16 of every 9 to 18
+    // skips were in the 600 ms before a keyframe; with it, 67 ms and at most 4 of 22 to 35.
+    for (let seed = 1; seed <= 5; seed++) {
+      const { out } = simulate([{ untilS: 40, picture: BUSY }], 0.6, seed);
+      const steady = out.filter((o) => o.at >= 10_000);
+      const gaps = steady.slice(1).map((o, i) => o.at - steady[i]!.at);
+      assert.ok(Math.max(...gaps) <= 70, `seed ${seed}: a gap of ${Math.max(...gaps)} ms`);
+      const keys = steady.filter((o) => o.key).map((o) => o.at);
+      const skips = steady.slice(1).filter((o, i) => o.at - steady[i]!.at > 40);
+      const late = skips.filter((o) => keys.some((k) => k >= o.at && k - o.at <= 600)).length;
+      assert.ok(late * 4 <= skips.length, `seed ${seed}: ${late} of ${skips.length} skips in the 600 ms before a keyframe`);
+      assert.ok(worstWindow(out, 2000, 40_000) <= RATE_WINDOW_ALLOWANCE, `seed ${seed}: a window over +15%`);
+      assert.ok(fps(out, 10, 40) >= 28, `seed ${seed}: ${fps(out, 10, 40)} fps`);
+    }
   });
 
   it("a lower bitrate (congestion, the audience's hint) is held to as well", () => {

@@ -577,16 +577,46 @@ export class TreeMap {
       if (parentDepth === null || parentDepth === DEPTH_UNKNOWN) return candidate.node.depth;
       return candidate.node.depth <= parentDepth ? parentDepth - candidate.node.depth : 1000 + candidate.node.depth;
     };
+    // [D67] The children of one parent repair at once when it dies, each to its own backup. A
+    // backup more of them stand by on than it has room for then goes over its fan-out (D37), and
+    // the source, which nothing is as shallow as, can never be relieved of a child that relays
+    // (gate run 45211601384: over its fan-out in 51% of depth-1 samples, shedding the top layer
+    // for the whole tree). So among backups at one level the uncrowded come first, and the source
+    // crowded comes after every other backup, deeper ones included.
+    const parentPeer = forParent ? (parents[0]?.node.peer ?? null) : joiner.parent;
+    const crowded = (candidate: Ranked) => (parentPeer !== null && this.crowdAhead(candidate.node, parentPeer, joiner.peer, false) >= this.roomFor(candidate.node, parentPeer) ? 1 : 0);
     const backups = pool
       .filter((candidate) => !parents.includes(candidate) && this.standby(candidate.node) < places)
       .map((candidate) => {
         const path = parents.length > 0 ? this.path(candidate.hint.peer) : [];
-        return { candidate, below: parents.some((parent) => path.includes(parent.hint.peer)) ? 1 : 0, held: this.standby(candidate.node), level: level(candidate) };
+        const crowd = crowded(candidate);
+        return { candidate, below: parents.some((parent) => path.includes(parent.hint.peer)) ? 1 : 0, held: this.standby(candidate.node), level: level(candidate), crowd, sourceCrowded: candidate.node.role === "source" ? crowd : 0 };
       })
-      .sort((a, b) => a.below - b.below || Number(a.candidate.node.provisional) - Number(b.candidate.node.provisional) || a.level - b.level || a.candidate.cost - b.candidate.cost || a.held - b.held || order(a.candidate, b.candidate))
+      .sort((a, b) => a.below - b.below || Number(a.candidate.node.provisional) - Number(b.candidate.node.provisional) || a.sourceCrowded - b.sourceCrowded || a.level - b.level || a.crowd - b.crowd || a.candidate.cost - b.candidate.cost || a.held - b.held || order(a.candidate, b.candidate))
       .slice(0, 3)
       .map((entry) => entry.candidate);
     return { parents: parents.map((candidate) => candidate.hint), backups: backups.map((candidate) => candidate.hint) };
+  }
+
+  /**
+   * [D67] How many children of `parent` stand by on `backup`: all but `asker`, or, with
+   * `ranked`, only those whose id sorts before it (so that of a crowd, the first `roomFor` keep
+   * their place and the rest are the ones to move).
+   */
+  crowdAhead(backup: TreeNode, parent: PeerId, asker: PeerId, ranked: boolean): number {
+    let crowd = 0;
+    for (const kid of this.childrenOf(parent)) {
+      if (kid === asker || (ranked && kid > asker)) continue;
+      if (this.nodes.get(kid)?.backup === backup.peer) crowd++;
+    }
+    return crowd;
+  }
+
+  /** [D67] The children of `parent` that `backup` could take in, if `parent` died, without going over its fan-out. */
+  roomFor(backup: TreeNode, parent: PeerId): number {
+    const taken = Math.max(backup.children, this.kids.get(backup.peer)?.size ?? 0);
+    const freed = this.nodes.get(parent)?.parent === backup.peer ? 1 : 0;
+    return Math.max(0, this.fanout(backup) - taken + freed);
   }
 
   /**
@@ -759,6 +789,15 @@ export class TreeMap {
       const backup = node.backup !== null ? this.nodes.get(node.backup) : undefined;
       const backupDepth = backup && backup.conn !== null && backup.depth !== DEPTH_UNKNOWN ? backup.depth : DEPTH_UNKNOWN;
       const height = this.height(node.peer);
+      // [D67] Standing by on the source beside more of its parent's children than the source
+      // could take in: offered a relay at the parent's depth, which keeps it and its subtree as
+      // deep as they are. Most of these chose the source while it had room, as the tree filled.
+      if (backup && backup.role === "source" && parent.role !== "source") {
+        if (this.crowdAhead(backup, parent.peer, node.peer, true) < this.roomFor(backup, parent.peer)) continue;
+        const level = this.place(node, { want: "backup", exclude: [backup.peer], now }).backups.filter((hint) => hint.depth === parent.depth && hint.peer !== node.parent);
+        if (level.length > 0) out.push({ node, placement: { parents: [], backups: level }, height });
+        continue;
+      }
       if (backupDepth <= parent.depth || backupDepth + 1 + height <= deepest) continue;
       const placement = this.place(node, { want: "backup", exclude: [], now });
       // What the node will take: nearer the source than the backup it has, and with room (its rule).

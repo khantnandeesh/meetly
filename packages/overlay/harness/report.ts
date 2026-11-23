@@ -81,6 +81,10 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const byDepth = new Map<number, number[]>();
   const repairs = { warm: 0, cold: 0, wait: 0, usedCoordinator: 0, framesLost: 0 };
   const freezes = { count: 0, totalMs: 0 };
+  // [D69] Parents that went quiet and came back; the source's own stalls.
+  const silenceEvents: { at: number; ms: number; depth: number }[] = [];
+  const sourceTickLate: number[] = [];
+  const sourcePublishGap: number[] = [];
   const frames = { rendered: 0, dropped: 0, lost: 0 };
   const links = emptyLinks();
   const impairment: ImpairmentCounters = { sent: 0, delivered: 0, lost: 0, queueDropped: 0, lateMsSum: 0, lateMsMax: 0 };
@@ -113,6 +117,10 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     if (seen.has(key)) return;
     seen.add(key);
     if (s.up && s.depth === 1 && s.role !== "source") streamKbps.push(s.up.rxKbps);
+    if (s.role === "source" && s.relay) {
+      if (s.relay.tickLateMaxMs !== undefined) sourceTickLate.push(s.relay.tickLateMaxMs);
+      if (s.relay.publishGapMaxMs !== undefined) sourcePublishGap.push(s.relay.publishGapMaxMs);
+    }
     if (s.video && s.role !== "source") {
       frames.rendered += s.video.rendered;
       frames.dropped += s.video.dropped;
@@ -146,6 +154,8 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
         repairs[event.kind]++;
         if (event.usedCoordinator) repairs.usedCoordinator++;
         repairs.framesLost += event.framesLost;
+      } else if (event.t === "silence") {
+        silenceEvents.push({ at: event.at, ms: event.ms, depth: event.depth });
       } else if (event.t === "freeze") {
         freeze[latencyBucket(event.ms)]++;
         freezes.count++;
@@ -342,6 +352,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
     glassToGlassByDepth: Object.fromEntries([...byDepth.entries()].sort((a, b) => a[0] - b[0]).map(([depth, counts]) => [depth, histogramQuantiles(counts)])),
     repairs,
     freezes,
+    silences: silenceSummary(silenceEvents, sourceTickLate, sourcePublishGap),
     gate: { pass, valid, checks, notes, validity, verdict: !valid ? "invalid" : pass ? "pass" : "fail", isGate },
     freezeMs: histogramQuantiles(freeze),
     frames,
@@ -409,6 +420,14 @@ export function renderReport(report: SwarmReport): string {
   const r = report.repairs;
   lines.push(`Repairs: ${r.warm} warm, ${r.cold} cold, ${r.wait} wait; ${r.usedCoordinator} used the coordinator; ${r.framesLost} frames lost across them.`);
   lines.push(`Frames: ${report.frames.rendered} rendered, ${report.frames.dropped} dropped, ${report.frames.lost} lost. Freezes: ${report.freezes.count}, ${Math.round(report.freezes.totalMs)} ms in all.`);
+  const quiet = report.silences;
+  if (quiet) {
+    lines.push(
+      `Silences (D69: a parent quiet 150 ms or more, then back): ${quiet.count}, ms p50 ${quiet.ms.p50 ?? "–"} p95 ${quiet.ms.p95 ?? "–"}; of the source ${quiet.ofSource}, ` +
+        `at ${quiet.sourceMoments} moments, ${quiet.sourceMomentsWide} of them at 3 or more children at once. The source's page: tick late at most ${quiet.sourceTickLateMaxMs ?? "–"} ms; ` +
+        `longest gap between its published video frames p95 ${quiet.sourcePublishGapMs.p95 ?? "–"}, max ${quiet.sourcePublishGapMs.max ?? "–"} ms.`,
+    );
+  }
   const l = report.links;
   const turnShare = l.opened ? Math.round((1000 * l.turn) / l.opened) / 10 : 0;
   const cross = l.crossShard || l.crossShardFailed ? ` Between shards: ${l.crossShard} opened, of which ${l.crossShardTurn} through TURN; ${l.crossShardFailed ?? 0} never opened.` : "";
@@ -483,4 +502,34 @@ export function renderSizes(result: ReturnType<typeof largestValid>): string {
   ];
   for (const run of result.runs) lines.push(`| ${run.peers} | ${run.verdict} | ${ms(run.lagP99Ms)} | ${run.why.join("; ") || "–"} |`);
   return lines.join("\n") + "\n";
+}
+
+/**
+ * [D69] Parents that went quiet and came back. Silences of the source at one moment (within 50 ms of
+ * each other) are one stall of the source, seen by several children: a stall at three or more is
+ * the source's own, not a link's.
+ */
+export function silenceSummary(events: { at: number; ms: number; depth: number }[], tickLate: number[], publishGap: number[]): NonNullable<SwarmReport["silences"]> {
+  const ofSource = events.filter((e) => e.depth === 0).sort((a, b) => a.at - b.at);
+  let moments = 0;
+  let wide = 0;
+  for (let i = 0; i < ofSource.length; ) {
+    let j = i + 1;
+    while (j < ofSource.length && ofSource[j]!.at - ofSource[i]!.at <= 50) j++;
+    moments++;
+    if (j - i >= 3) wide++;
+    i = j;
+  }
+  const round = (v: number | null) => (v === null ? null : Math.round(v));
+  const ms = exactQuantiles(events.map((e) => e.ms));
+  const gaps = exactQuantiles(publishGap);
+  return {
+    count: events.length,
+    ms: { p50: round(ms.p50), p95: round(ms.p95) },
+    ofSource: ofSource.length,
+    sourceMoments: moments,
+    sourceMomentsWide: wide,
+    sourceTickLateMaxMs: tickLate.length ? Math.round(Math.max(...tickLate)) : null,
+    sourcePublishGapMs: { p95: round(gaps.p95), max: round(gaps.max) },
+  };
 }

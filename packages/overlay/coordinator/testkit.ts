@@ -597,9 +597,12 @@ export class Swarm {
       // which this simulation leaves out.
       if (peer.parent === null) return;
       const current = peer.backup !== null ? this.peers.get(peer.backup) : undefined;
+      // [D67] Or, in place of the source, one at the parent's own depth.
+      const parentDepth = this.peers.get(peer.parent)?.depth ?? 255;
+      const leavesSource = current?.alive === true && current.role === "source" && parentDepth > 0 && parentDepth < 255;
       const better = assign
         .flatMap((assignment) => [...assignment.parents, ...assignment.backups])
-        .find((hint) => hint.peer !== peer.peer && hint.peer !== peer.parent && hint.peer !== peer.backup && (this.standbyBackups || hint.free > 0) && hint.depth < (current?.alive ? current.depth : 255) && !this.path(hint.peer).includes(peer.peer));
+        .find((hint) => hint.peer !== peer.peer && hint.peer !== peer.parent && hint.peer !== peer.backup && (this.standbyBackups || hint.free > 0) && (hint.depth < (current?.alive ? current.depth : 255) || (leavesSource && hint.depth === parentDepth)) && !this.path(hint.peer).includes(peer.peer));
       if (better && this.peers.get(better.peer)?.alive) {
         peer.backup = better.peer;
         peer.dirty = true;

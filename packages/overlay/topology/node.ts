@@ -68,6 +68,8 @@ export const TICK_MS = 10;
  * tab): the time it lost is not the others' silence (SPEC §7.4).
  */
 export const OWN_STALL_MS = 30;
+/** [D69] A parent silent this long, that then speaks again, is reported (a `silence` metric event). */
+export const SILENCE_REPORT_MS = 150;
 /** A gap is called a loss after this long at least (SPEC D6). */
 export const REORDER_MS = 10;
 /** SPEC D39: the window follows the parent link's p95 inter-arrival jitter, up to this. */
@@ -555,6 +557,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   let layerDrops = 0;
   let retransmitsSent = 0;
   let bufferedMax = 0;
+  /** [D69] The tick's worst lateness, the longest gap between published video frames (source), and a parent's silence under way. */
+  let tickLateMax = 0;
+  let publishGapMax = 0;
+  let lastPublishedUs: number | null = null;
+  let silence: { peer: Peer; from: number; media: number } | null = null;
   let rxBytes = 0;
   let txBytes = 0;
   let statsAt = 0;
@@ -853,6 +860,11 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     if (!fields) {
       malformed++;
       return;
+    }
+    if (silence && silence.peer === peer) {
+      // [D69] A stall that was not a death.
+      if (peer === parent) metric({ t: "silence", peer: peer.id, at: session(silence.from), ms: Math.min(3_600_000, receivedAt - silence.from), depth: Math.min(255, Math.max(0, peer.depth)), media: Math.min(3_600_000, Math.max(0, silence.media)) });
+      silence = null;
     }
     peer.lastHeardAt = receivedAt;
     peer.estimator.onReceived(fields.linkSeq, fields.sendMs, packet.byteLength, receivedAt);
@@ -2121,12 +2133,14 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
               bufferedMaxBytes: bufferedMax,
               layerDrops,
               retransmitsSent,
+              tickLateMaxMs: Math.max(0, tickLateMax),
+              ...(role === "source" ? { publishGapMaxMs: publishGapMax } : {}),
             },
       join: joinTimes ? { ...joinTimes } : null,
       malformed,
     };
     statsAt = now;
-    nacksSent = retransmitsReceived = duplicates = layerDrops = retransmitsSent = bufferedMax = rxBytes = txBytes = 0;
+    nacksSent = retransmitsReceived = duplicates = layerDrops = retransmitsSent = bufferedMax = rxBytes = txBytes = tickLateMax = publishGapMax = 0;
     return stats;
   }
 
@@ -2156,6 +2170,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const now = clock.now();
     const late = lastTickAt === lastTickAt ? now - lastTickAt - TICK_MS : 0;
     lastTickAt = now;
+    if (late > tickLateMax) tickLateMax = late;
     releasePaced(now);
     if (late > OWN_STALL_MS) {
       forgiveOwnStall(late);
@@ -2168,6 +2183,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       const deadMs = parent.depth === 0 && parent.link.state === "open" ? Math.max(params.deadMs, SOURCE_SILENT_MS) : params.deadMs;
       if (now - parent.lastHeardAt >= deadMs) parentDied(now, "silent");
       else if (state === "waiting" && now - waitingSince >= params.stallGraceMs) parentDied(now, "grace");
+    }
+    if (silence && silence.peer !== parent) silence = null;
+    if (parent && !silence && now - parent.lastHeardAt >= SILENCE_REPORT_MS) {
+      silence = { peer: parent, from: parent.lastHeardAt, media: Number.isFinite(parent.lastMediaAt) ? parent.lastHeardAt - parent.lastMediaAt : 0 };
     }
     if (next && now >= nextDeadline) attemptFailed(next, now);
     // Waiting for the source's streams is not a failed join.
@@ -2281,7 +2300,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     // Advice: the best of them becomes the backup if it sits nearer the source than the one this
     // node has, so that the next comparisons measure it. The rule of §7.6 still decides.
     // A backup needs a standby place, not an active slot: a relay with none free (free 0) may still be one.
-    const better = offered.find((c) => c.peer !== parent!.id && c.peer !== backup?.id && !path.includes(c.peer) && c.depth < (backup ? backup.depth : DEPTH_UNKNOWN));
+    // [D67] Or, in place of the source, a relay at the parent's own depth: the coordinator offers
+    // one when more of the parent's children stand by on the source than it could take in.
+    const leavesSource = backup !== null && backup.depth === 0 && parent.depth !== DEPTH_UNKNOWN && parent.depth > 0;
+    const better = offered.find((c) => c.peer !== parent!.id && c.peer !== backup?.id && !path.includes(c.peer) && (c.depth < (backup ? backup.depth : DEPTH_UNKNOWN) || (leavesSource && c.depth === parent!.depth)));
     if (!better) return;
     if (backup) {
       const old = backup;
@@ -2360,6 +2382,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       const stream = streams.get(frame.header.streamId);
       if (!stream) return;
       const now = clock.now();
+      if (!stream.audio) {
+        if (lastPublishedUs !== null) publishGapMax = Math.max(publishGapMax, Math.min(3_600_000, (frame.header.captureUs - lastPublishedUs) / 1000));
+        lastPublishedUs = frame.header.captureUs;
+      }
       for (const packet of packetizeFrame(frame.header, frame.data)) {
         const header = decodeMediaHeader(packet)!;
         if (!stream.seen.add(header.frameId, header.fragIndex, header.fragCount)) continue;

@@ -892,7 +892,11 @@ class Core implements CoordinatorCore {
           // A subtree is never moved deeper than it is (the integrator: no deepening switches); a
           // peer with nothing below it may be, within the depth the tree needs, to relieve.
           const alone = this.map.childrenOf(child.peer).size === 0;
-          const fits = (candidate: Placement) => candidate.parents.length > 0 && (candidate.parents[0].depth + 1 <= child.depth || (alone && candidate.parents[0].depth + 1 <= this.map.neededDepth(now) + 1));
+          // [D67] Except below the source, where nothing is as shallow as its children: one over
+          // its fan-out sheds the top layer for the whole tree (D37) and would stay so, as no
+          // place no deeper ever comes. Its excess child goes one level down, the smallest subtree first.
+          const down = relief.node.role === "source" ? 1 : 0;
+          const fits = (candidate: Placement) => candidate.parents.length > 0 && (candidate.parents[0].depth + 1 <= child.depth + down || (alone && candidate.parents[0].depth + 1 <= this.map.neededDepth(now) + 1));
           const options = { want: "parent" as const, exclude: [relief.node.peer], now, move: true };
           let placement = this.map.place(child, options);
           if (placement.parents.length === 0 && (await this.promoteFor(fx, child, [], now))) placement = this.map.place(child, options);

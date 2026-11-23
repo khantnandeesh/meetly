@@ -268,6 +268,16 @@ export type SwarmReport = {
   glassToGlassByDepth: Record<number, Quantiles>;
   repairs: { warm: number; cold: number; wait: number; usedCoordinator: number; framesLost: number };
   freezes: { count: number; totalMs: number };
+  /** [D69] Parents quiet 150 ms or more and back; the source's stalls (see report.ts `silenceSummary`). */
+  silences?: {
+    count: number;
+    ms: { p50: number | null; p95: number | null };
+    ofSource: number;
+    sourceMoments: number;
+    sourceMomentsWide: number;
+    sourceTickLateMaxMs: number | null;
+    sourcePublishGapMs: { p95: number | null; max: number | null };
+  };
   /** Each check of the gate, and whether the run was big and clean enough to count. */
   gate: {
     pass: boolean;

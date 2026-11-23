@@ -76,6 +76,8 @@ export const TRY_GATE = 0.88;
 export const SURPRISE_MEMORY_MS = 6_000;
 /** Room is kept for a keyframe due this soon, so that it is not late for want of it. */
 export const KEY_RESERVE_MS = 600;
+/** [D68] Room a key interval's plan leaves unspent, in delta frames: what frames bigger than expected take. */
+export const PLAN_SLACK_FRAMES = 3;
 
 export type RateDecision = "encode" | "skip";
 
@@ -110,6 +112,10 @@ export class VideoRateController {
   private keyActedOn = 0;
   /** A frame too big for the window was seen: smaller at the next tick, whatever the hold. */
   private shrinkNow = false;
+  /** [D68] The last keyframe's bytes, the delta frames' since, and the skips owed (see `offer`). */
+  private lastKeyBytes: number | null = null;
+  private gopDeltaBytes = 0;
+  private skipCredit = 0;
 
   constructor(
     targetKbps: number,
@@ -149,6 +155,17 @@ export class VideoRateController {
   }
 
   /**
+   * [D68] What a delta frame comes to on average over the temporal pattern: layer 0 is every
+   * 2^(n−1)th frame, and each layer above doubles the share of the one below.
+   */
+  private meanDeltaBytes(): number {
+    const layers = this.layerBytes.length;
+    let sum = 0;
+    for (let t = 0; t < layers; t++) sum += this.expectedBytes(false, t) * (t === 0 ? 1 : 2 ** (t - 1));
+    return sum / 2 ** (layers - 1);
+  }
+
+  /**
    * A frame from the camera: encode it, or not. `key`: it would be a keyframe; `temporal`: the
    * layer it would be; `untilKeyMs`: how soon the next keyframe is due.
    */
@@ -171,10 +188,42 @@ export class VideoRateController {
     // What the gate's own margin under the window's limit absorbs needs no more room.
     const absorbed = this.windowCapBytes() - gate / (now < this.tryingUntil ? TRY_GATE : 1);
     const surprise = Math.max(0, this.surprises.reduce((most, s) => Math.max(most, s.bytes), 0) - absorbed);
-    const fits = this.sentBytes + pending + reserved + Math.min(surprise, gate / 2) + expected <= gate;
+    const margin = Math.min(surprise, gate / 2);
+    let fits = this.sentBytes + pending + margin + expected <= gate;
+    if (fits && reserved > 0) {
+      // [D68] The keyframe's room is needed in the window it lands in, which by then no longer
+      // holds what goes out of it before: above all the last keyframe, sent a key interval (the
+      // window's length) before it. Reserved against the window now, the last keyframe was counted
+      // twice.
+      const landsAt = now + Math.max(0, untilKeyMs);
+      let stillIn = 0;
+      for (const sent of this.sent) if (sent.at > landsAt - RATE_WINDOW_MS) stillIn += sent.bytes;
+      fits = stillIn + pending + reserved + margin + expected <= gate;
+    }
     // An empty window always takes a frame, however big: otherwise a frame bigger than the
     // window would stop the stream for good.
-    const decision: RateDecision = fits || this.sentBytes + pending === 0 ? "encode" : "skip";
+    let decision: RateDecision = fits || this.sentBytes + pending === 0 ? "encode" : "skip";
+    if (decision === "encode" && !key && this.lastKeyBytes !== null && Number.isFinite(untilKeyMs) && untilKeyMs > 0) {
+      // [D68] Skips spread over the key interval, not left to its end. The tightest window is the
+      // one that holds a keyframe and every frame after it up to the next: when the frames still
+      // to come before the next keyframe will not all fit in what is left of it, a share of them
+      // is skipped from now on, evenly (one at a time, a frame interval's gap), instead of every
+      // one of the last few hundred milliseconds when the window is found full. Left to the end,
+      // the skips were a gap of 130–200 ms before every keyframe, a freeze at every viewer every
+      // 2 s (gate run 45211601384: 60,000 freezes, 16% of the time, at every depth at once).
+      // Planned to leave PLAN_SLACK_FRAMES of room: frames come out bigger than expected, and
+      // what the plan does not leave, the window takes back from the interval's last frames.
+      const left = Math.max(1, Math.round((untilKeyMs * this.fps) / 1000));
+      const mean = this.meanDeltaBytes();
+      const want = left * mean;
+      const room = gate - margin - PLAN_SLACK_FRAMES * mean - Math.max(this.lastKeyBytes, this.expectedBytes(true, 0)) - this.gopDeltaBytes - pending;
+      const keep = want <= 0 ? 1 : Math.max(0, Math.min(1, room / want));
+      this.skipCredit += 1 - keep;
+      if (this.skipCredit >= 1) {
+        this.skipCredit -= 1;
+        decision = "skip";
+      }
+    }
     this.offered.push({ at: now, skipped: decision === "skip" });
     if (decision === "skip") this.counters.skipped++;
     else this.inFlight.push(expected);
@@ -197,6 +246,12 @@ export class VideoRateController {
     this.sentBytes += bytes;
     // The latest of each kind, a little pessimistic: pictures change fast.
     const remember = (old: number | null) => (old === null ? bytes : Math.max(bytes, 0.5 * old + 0.5 * bytes));
+    if (key) {
+      // [D68] A new key interval.
+      this.lastKeyBytes = bytes;
+      this.gopDeltaBytes = 0;
+      this.skipCredit = 0;
+    } else this.gopDeltaBytes += bytes;
     if (key) {
       this.keysSeen++;
       // Only what a keyframe of this size really came to.
