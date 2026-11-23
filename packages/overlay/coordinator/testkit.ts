@@ -251,6 +251,11 @@ export type SimPeer = {
   switchedAt?: number;
   /** For `badNetworks`: this peer's link loses packets. */
   bad?: boolean;
+  /**
+   * What its probe finds, if not the swarm's `probedUplinkKbps`: the gate's "slow" viewer (900 kbps)
+   * claims everything a relay needs and is found out only by its probe (SPEC §8.1).
+   */
+  probeKbps?: number;
 };
 
 export type SwarmOptions = {
@@ -417,9 +422,10 @@ export class Swarm {
     return n;
   }
 
-  async addSource(): Promise<SimPeer> {
-    const { conn, peer, welcome } = await this.rig.join("host", "source", relayCaps({ uplinkKbps: 50_000 }));
-    const sim: SimPeer = { conn, peer, identity: "host", grant: welcome.grant, stuck: false, capable: true, role: "source", grantFanout: null, caps: relayCaps({ uplinkKbps: 50_000 }), parent: null, backup: null, depth: 0, kids: new Set(), joinedAt: this.rig.now, placedAt: this.rig.now, statusAt: 0, dirty: true, alive: true, backupAskedAt: 0, lost: null };
+  /** `uplinkKbps`: what the source's own probe found (D49, D75): 900, toward "slow" first children, keeps it at `sourceFanout`. */
+  async addSource(uplinkKbps = 50_000): Promise<SimPeer> {
+    const { conn, peer, welcome } = await this.rig.join("host", "source", relayCaps({ uplinkKbps }));
+    const sim: SimPeer = { conn, peer, identity: "host", grant: welcome.grant, stuck: false, capable: true, role: "source", grantFanout: null, caps: relayCaps({ uplinkKbps }), parent: null, backup: null, depth: 0, kids: new Set(), joinedAt: this.rig.now, placedAt: this.rig.now, statusAt: 0, dirty: true, alive: true, backupAskedAt: 0, lost: null };
     this.network(sim);
     this.peers.set(peer, sim);
     this.source = sim;
@@ -428,7 +434,8 @@ export class Swarm {
     return sim;
   }
 
-  async addViewer(capable: boolean): Promise<SimPeer> {
+  /** `probeKbps`: what this viewer's probe will find, if not `probedUplinkKbps` (a "slow" viewer: 900). */
+  async addViewer(capable: boolean, probeKbps?: number): Promise<SimPeer> {
     const caps = capable ? relayCaps() : leafCaps();
     const identity = `viewer-${this.count++}`;
     const conn = await this.rig.open(identity, "viewer");
@@ -436,7 +443,7 @@ export class Swarm {
     // A welcome may wait for the streams (core.ts `helloWaiting`): it then comes in `flush`.
     const welcome = answers.find((message): message is ServerMessageOf<"welcome"> => message.t === "welcome");
     this.rig.inbox.set(conn, answers.filter((message) => message !== welcome));
-    const sim: SimPeer = { conn, peer: welcome?.peer ?? `(waiting ${identity})`, identity, grant: welcome?.grant ?? "", stuck: welcome !== undefined && welcome.streams.length === 0, capable, role: "leaf", grantFanout: null, caps, parent: null, backup: null, depth: 255, kids: new Set(), joinedAt: this.rig.now, placedAt: null, statusAt: 0, dirty: false, alive: true, backupAskedAt: 0, lost: null };
+    const sim: SimPeer = { conn, peer: welcome?.peer ?? `(waiting ${identity})`, identity, grant: welcome?.grant ?? "", stuck: welcome !== undefined && welcome.streams.length === 0, capable, role: "leaf", grantFanout: null, caps, parent: null, backup: null, depth: 255, kids: new Set(), joinedAt: this.rig.now, placedAt: null, statusAt: 0, dirty: false, alive: true, backupAskedAt: 0, lost: null, ...(probeKbps !== undefined ? { probeKbps } : {}) };
     this.network(sim);
     if (welcome) {
       this.peers.set(sim.peer, sim);
@@ -669,6 +676,7 @@ export class Swarm {
       // it first, and a joiner sent to the new relay needs a link set up before it arrives.
       const assigns: [SimPeer, ServerMessageOf<"assign">][] = [];
       const demoted: SimPeer[] = [];
+      const dropped: [SimPeer, PeerId][] = [];
       for (const peer of [...this.unwelcomed]) {
         const messages = this.rig.take(peer.conn);
         const welcome = messages.find((message): message is ServerMessageOf<"welcome"> => message.t === "welcome");
@@ -690,6 +698,8 @@ export class Swarm {
         for (const message of this.rig.take(peer.conn)) {
           if (message.t === "assign") assigns.push([peer, message]);
           else if (message.t === "grant") peer.grant = message.grant;
+          // "Close any link to it": a child's link closed by its parent is, for the child, a lost parent.
+          else if (message.t === "peer-gone" && peer.kids.has(message.peer)) dropped.push([peer, message.peer]);
           else if (message.t === "role") {
             peer.grant = message.grant;
             if (peer.role === "relay" && message.role === "leaf") {
@@ -704,6 +714,10 @@ export class Swarm {
       }
       // A relay made a leaf says `bye` to its children (SPEC §6.6, §7.7): they repair.
       for (const peer of demoted) for (const kid of [...peer.kids]) await this.repair(this.peers.get(kid)!, peer.peer);
+      for (const [parent, kid] of dropped) {
+        const child = this.peers.get(kid);
+        if (child?.alive && child.parent === parent.peer) await this.repair(child, parent.peer);
+      }
       for (const [peer, message] of assigns) {
         if (message.id !== undefined && this.pending.has(message.id)) this.onAnswer(message);
         else this.onAssign(peer, message.assign, message.reason);
@@ -735,7 +749,7 @@ export class Swarm {
       if (!peer.alive) continue;
       // SPEC §8.1: a peer able to relay, in the tree, measures its spare uplink (D19, D38).
       if (peer.capable && peer.role === "leaf" && peer.placedAt !== null && peer.caps.uplinkKbps === null && this.rig.now >= (this.probeAt ? this.probeAt({ joinedAt: peer.joinedAt, placedAt: peer.placedAt }) : peer.placedAt + this.probeAfterMs)) {
-        peer.caps = relayCaps({ uplinkKbps: this.probedUplinkKbps });
+        peer.caps = relayCaps({ uplinkKbps: peer.probeKbps ?? this.probedUplinkKbps });
         peer.dirty = true;
       }
       if (this.rig.now - peer.statusAt >= this.rig.options.params.statusMs) peer.dirty = true;
