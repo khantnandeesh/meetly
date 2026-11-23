@@ -1,0 +1,164 @@
+# Deploys `main` to the `meetly-staging` Cloudflare Worker (https://staging.meet.nandeesh.dev).
+#
+# Runs on every push to main (a merged pull request), or by hand (Actions → Staging → Run
+# workflow, branch main). The CI jobs run first, and staging is deployed only if all of them pass.
+# Production is not touched: it is deployed from cloudflare-deploy by deploy.yml.
+#
+# Staging is `env.staging` in wrangler.jsonc: the same build as production, its own Worker,
+# Durable Objects and secrets, no Cron Trigger, webinars off, a "Staging" label on every page and
+# `noindex` (src/lib/environmentLabel.ts). Its Worker secrets (OVERLAY_ADMISSION_SECRET,
+# OVERLAY_SERVER_SECRET, MEETLY_SESSION_SECRET) live on the Worker and are kept by every deploy;
+# nothing here sets or reads them. It has no RealtimeKit token, so meetings cannot start there.
+#
+# The GitHub secrets CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID are only for Wrangler, as in
+# deploy.yml. The deploy job uses the `staging` environment: if those secrets are kept only on
+# the `production` environment, add them to `staging` too (Settings → Environments → staging).
+name: Staging
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One staging deploy at a time. A newer push waits for the running one, and replaces any that is
+# already waiting, so an older commit is never deployed over a newer one.
+concurrency:
+  group: staging-cloudflare
+  cancel-in-progress: false
+
+env:
+  STAGING_URL: https://staging.meet.nandeesh.dev
+  # The version the browser tests were written against (as in ci.yml).
+  PLAYWRIGHT_VERSION: "1.63.0"
+
+jobs:
+  checks:
+    name: CI
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: Deploy to staging
+    needs: checks
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: https://staging.meet.nandeesh.dev
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Check the deploy setup
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          for file in wrangler.jsonc open-next.config.ts .env.production; do
+            [ -f "$file" ] || { echo "::error::$file is missing from main."; exit 1; }
+          done
+          [ -n "$CLOUDFLARE_API_TOKEN" ] || { echo "::error::The GitHub secret CLOUDFLARE_API_TOKEN is not available to the staging environment (see the top of staging.yml)."; exit 1; }
+          [ -n "$CLOUDFLARE_ACCOUNT_ID" ] || { echo "::error::The GitHub secret CLOUDFLARE_ACCOUNT_ID is not available to the staging environment (see the top of staging.yml)."; exit 1; }
+
+      - run: npm ci
+
+      # The staging Worker must never run the cost guard while it shares production's RealtimeKit
+      # app: it would end production's sessions (wrangler.jsonc, env.staging.triggers).
+      - name: Check env.staging (Worker name, no Cron Trigger)
+        run: |
+          # shellcheck disable=SC2016 # the single-quoted text is JavaScript, not shell
+          node -e '
+            const { unstable_readConfig } = require("wrangler");
+            const c = unstable_readConfig({ config: "wrangler.jsonc", env: "staging" });
+            const crons = (c.triggers && c.triggers.crons) || [];
+            if (c.name !== "meetly-staging") throw new Error(`env.staging deploys to "${c.name}", not meetly-staging`);
+            if (crons.length) throw new Error("env.staging has a Cron Trigger: it would run the cost guard on production RealtimeKit sessions");
+            console.log(`env.staging: ${c.name}, ${(c.routes || []).map((r) => r.pattern || r).join(" ")}, no Cron Trigger`);
+          '
+
+      # The same build as production's (.env.production). No credentials.
+      - name: Build (opennextjs-cloudflare build)
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+        run: npx opennextjs-cloudflare build
+
+      # Not plain `wrangler deploy`: opennextjs-cloudflare deploy fills the page cache first.
+      - name: Deploy (opennextjs-cloudflare deploy --env staging)
+        id: deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_OUTPUT_FILE_PATH: ${{ runner.temp }}/wrangler-output.ndjson
+        run: |
+          set -euo pipefail
+          npx opennextjs-cloudflare deploy --env staging
+          # shellcheck disable=SC2016 # the single-quoted text is JavaScript, not shell
+          node -e '
+            const fs = require("node:fs");
+            const lines = fs.readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+            const deploy = lines.filter((l) => l.type === "deploy").pop() || {};
+            const out = [`version_id=${deploy.version_id || ""}`, `targets=${(deploy.targets || []).join(" ")}`];
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, out.join("\n") + "\n");
+          ' "$WRANGLER_OUTPUT_FILE_PATH"
+          echo "build_id=$(cat .next/BUILD_ID)" >> "$GITHUB_OUTPUT"
+
+      # Playwright is not a dependency of the app: installed outside the project, found through
+      # NODE_PATH, as in ci.yml.
+      - name: Install Playwright ${{ env.PLAYWRIGHT_VERSION }} and Chromium
+        run: |
+          set -euo pipefail
+          npm install --no-audit --no-fund --prefix "$RUNNER_TEMP/pw" "playwright@${PLAYWRIGHT_VERSION}"
+          echo "NODE_PATH=$RUNNER_TEMP/pw/node_modules" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/pw/node_modules/.bin/playwright" install --with-deps --only-shell chromium
+
+      # The production checks, plus: noindex and the Staging label (also after hydration), webinars
+      # off, no RealtimeKit credentials, and Live (beta) with a fake-camera host and one viewer.
+      # Waits until staging serves the build just deployed. No RealtimeKit participant is created.
+      - name: Smoke test ${{ env.STAGING_URL }}
+        env:
+          EXPECT_BUILD_ID: ${{ steps.deploy.outputs.build_id }}
+          SMOKE_STAGING: "1"
+          # Remove once staging has its own RealtimeKit CLOUDFLARE_API_TOKEN secret.
+          SMOKE_RTK_OFF: "1"
+          SMOKE_LIVE: "1"
+        run: node scripts/smoke-test.mjs "$STAGING_URL"
+
+      - name: Summary
+        if: always()
+        env:
+          OUTCOME_DEPLOY: ${{ steps.deploy.outcome }}
+          VERSION_ID: ${{ steps.deploy.outputs.version_id }}
+          TARGETS: ${{ steps.deploy.outputs.targets }}
+          BUILD_ID: ${{ steps.deploy.outputs.build_id }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "## Deploy to staging"
+            echo
+            if [ "$OUTCOME_DEPLOY" = "success" ]; then
+              echo "Deployed to **$STAGING_URL**"
+            else
+              echo "Deploy step: **$OUTCOME_DEPLOY**."
+            fi
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${GITHUB_SHA}\` |"
+            echo "| Worker version | \`${VERSION_ID:-unknown}\` |"
+            echo "| Next.js build | \`${BUILD_ID:-unknown}\` |"
+            echo "| Targets | ${TARGETS:-unknown} |"
+            echo "| Job status | $JOB_STATUS |"
+            echo
+            echo "Staging only. Production is released from cloudflare-deploy (docs/RELEASING.md)."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -811,3 +811,26 @@ body {
     backdrop-filter: none;
   }
 }
+
+/* A deployment that is not production (staging). custom-worker.ts puts data-meetly-env on <html>
+   when the Worker has MEETLY_ENVIRONMENT_LABEL (src/lib/environmentLabel.ts); production never
+   has it. A tab at the top of every screen, above everything, that takes no clicks. */
+html[data-meetly-env]::after {
+  content: attr(data-meetly-env);
+  position: fixed;
+  top: 0;
+  left: 50%;
+  z-index: 2147483647;
+  translate: -50% 0;
+  padding: 0.125rem 0.875rem 0.1875rem;
+  border-radius: 0 0 0.5rem 0.5rem;
+  background: var(--warn);
+  color: #1a1205;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1.125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  pointer-events: none;
+}

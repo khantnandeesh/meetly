@@ -1,9 +1,9 @@
 # Checks every change: types, lint, unit tests, a production build for each media provider, and
 # the browser tests against a local LiveKit dev server.
 #
-# Runs on pull requests and on pushes to every branch except cloudflare-deploy. Pushes to
-# cloudflare-deploy run these same jobs through deploy.yml (workflow_call), and deploy only if
-# they pass, so they are not run twice.
+# Runs on pull requests and on pushes to every branch except cloudflare-deploy and main. Pushes
+# to cloudflare-deploy run these same jobs through deploy.yml (workflow_call), and pushes to main
+# through staging.yml, and deploy only if they pass, so they are not run twice.
 name: CI
 
 on:
@@ -11,6 +11,7 @@ on:
   push:
     branches-ignore:
       - cloudflare-deploy
+      - main
   workflow_call:
 
 permissions:
