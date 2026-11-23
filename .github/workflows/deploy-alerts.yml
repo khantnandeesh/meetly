@@ -1,0 +1,92 @@
+# Opens a GitHub issue when a deploy fails: Deploy (production), Staging or Rollback.
+#
+# GitHub emails the people watching the repository about new issues, so a failed deploy reaches
+# the founder even when nobody is looking at Actions. One open issue per workflow and branch: a
+# second failure while it is open adds a comment instead of a new issue. Close the issue once the
+# deploy is fixed.
+#
+# Errors in the running Workers (meetly, meetly-staging) are alerted by Cloudflare instead:
+# Workers Issues emails them (wrangler.jsonc, observability.issues).
+#
+# workflow_run workflows always run from the default branch's copy of this file.
+name: Deploy alerts
+
+on:
+  workflow_run:
+    workflows: [Deploy, Staging, Rollback]
+    types: [completed]
+
+permissions:
+  actions: read
+  issues: write
+
+jobs:
+  alert:
+    name: Open an issue for a failed deploy
+    if: contains(fromJSON('["failure", "timed_out", "startup_failure"]'), github.event.workflow_run.conclusion)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Open or update the issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          EVENT: ${{ github.event.workflow_run.event }}
+          ACTOR: ${{ github.event.workflow_run.triggering_actor.login }}
+        run: |
+          set -euo pipefail
+          case "$WORKFLOW" in
+            Deploy) what="Production deploy (meet.nandeesh.dev)" ;;
+            Staging) what="Staging deploy (staging.meet.nandeesh.dev)" ;;
+            Rollback) what="Production rollback" ;;
+            *) what="$WORKFLOW" ;;
+          esac
+          title="$what failed on $BRANCH"
+
+          # The jobs and steps that failed, from the run itself.
+          failed=$(gh api "repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '
+            .jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out")
+            | "- **\(.name)**: \(.conclusion)" + (
+                [.steps[]? | select(.conclusion == "failure" or .conclusion == "timed_out") | .name]
+                | if length > 0 then " at step \"" + join("\", \"") + "\"" else "" end)' || true)
+          [ -n "$failed" ] || failed="- (no failed job listed; open the run)"
+
+          body_file="$RUNNER_TEMP/body.md"
+          {
+            echo "The **$WORKFLOW** workflow ended with **$CONCLUSION**."
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| Run | $RUN_URL |"
+            echo "| Branch | \`$BRANCH\` |"
+            echo "| Commit | \`$SHA\` |"
+            echo "| Started by | $EVENT, by $ACTOR |"
+            echo
+            echo "Failed:"
+            echo
+            echo "$failed"
+            echo
+            if [ "$WORKFLOW" = "Deploy" ] || [ "$WORKFLOW" = "Rollback" ]; then
+              echo "Check https://meet.nandeesh.dev first. If production is broken, roll back (Actions → Rollback, or \`npx wrangler rollback --name meetly\`), then fix. See docs/RELEASING.md."
+            else
+              echo "Production is not affected: staging is the \`meetly-staging\` Worker. Fix it on \`main\` with a pull request."
+            fi
+            echo
+            echo "_Opened by .github/workflows/deploy-alerts.yml. Close it once the deploy is fixed._"
+          } > "$body_file"
+
+          # An open issue with exactly this title (open issues only; pull requests left out).
+          existing=$(gh api "repos/$REPO/issues?state=open&per_page=100" \
+            | jq -r --arg t "$title" '[.[] | select(.pull_request == null and .title == $t) | .number][0] // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$REPO" --body-file "$body_file"
+            echo "Commented on issue #$existing"
+          else
+            gh issue create --repo "$REPO" --title "$title" --body-file "$body_file"
+          fi
