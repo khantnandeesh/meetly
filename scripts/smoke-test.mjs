@@ -11,7 +11,8 @@
 // provider is "peek" for a random meeting code, which on RealtimeKit is one meeting search (a
 // GET); no meeting and no participant is created, so nothing is billed.
 //
-// It also checks /live (Go live, beta) and the webinars switch answer, and which kind of
+// It also checks /live (Go live, beta), that Live can start a stream (its two secrets are set),
+// the webinars switch answer, and which kind of
 // deployment answered:
 //
 // - production (the default): pages are indexable and carry no environment label;
@@ -143,6 +144,18 @@ const checks = [
       const page = await get("/live");
       if (page.status !== 200) return `status ${page.status}`;
       return page.body.includes("Go live") ? null : "expected text missing";
+    },
+  ],
+  [
+    "POST /api/live (Go live): 200 with an id, so Live's secrets are set",
+    async () => {
+      // Stores nothing (src/app/api/live/route.ts): an id and its keys are derived, not saved.
+      // A 503 here is "Live isn't set up on this server yet": OVERLAY_ADMISSION_SECRET or
+      // OVERLAY_SERVER_SECRET is missing from this deployment.
+      const answer = await get("/api/live", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      if (answer.status !== 200) return `status ${answer.status}: ${answer.body.slice(0, 200)}`;
+      const json = JSON.parse(answer.body);
+      return typeof json.id === "string" && typeof json.hostKey === "string" ? null : "no id or host key in the answer";
     },
   ],
   [
