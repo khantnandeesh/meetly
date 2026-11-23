@@ -1315,6 +1315,20 @@ given up for the next keyframe, up to 2 s away. So while a replay is coming (fra
 
 Without a replay, nothing of this applies, and §10.4 is as it was.
 
+**[D80] A replay's speed is what it has delivered, judged after 50 ms.** *(Integration engineer,
+2026-11-23; for ratification.)* D45's "capture time it delivers per second of arrival" was read
+from the replay's first and last frames to arrive. A burst's frames complete out of capture order,
+and with the newest first that read as a speed below one, often below zero: "cannot catch up", and
+the GOP was given up for the next keyframe, up to 2 s away, though the rest of the replay was a few
+milliseconds behind. Gate run 45261992168, the first measured on rendered frames (D79): 76 of 791
+repairs rendered nothing for 500 ms to 4 s longer than their frames took to arrive (41–60 frames
+lost around each, against 12 for the others), and 14 of the 20 slowest joins took 1.7–3.6 s from
+first packet to first frame (join p95 3,111 ms). The speed is now the span of capture times the
+replay has delivered (newest less oldest) over the span of its arrivals, and it is not judged
+before the replay has been arriving for 50 ms. Locally (10 peers, the player's give-ups logged):
+give-ups during a replay 10 → 2 a run; repairs rendering 500 ms more than their arrival 21 of 137
+and 37 of 151 → 0 of 32; joins' first packet to first frame p95 1,154 → 99 ms.
+
 ### 10.4 Catching up
 
 After a join, a repair or a stall, the buffer may hold more than *D* of media: a replay arrives
