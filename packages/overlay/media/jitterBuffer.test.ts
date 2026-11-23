@@ -138,16 +138,18 @@ describe("jitter buffer §10.1: in and out", () => {
 });
 
 describe("jitter buffer §10.2: the playout delay D", () => {
-  it("D = clamp(min + 2.5 × jitter + (loss > 0.5 ? rtt + 20 : 0), min, max)", () => {
+  it("[D62] D = clamp(2.5 × jitter + max(min, loss > 0.5 ? rtt + 35 : 0), min, max)", () => {
     assert.equal(playoutDelayTarget({ jitterMs: 0, rttMs: null, lossPct: 0 }, 60, 400), 60);
     assert.equal(playoutDelayTarget({ jitterMs: 10, rttMs: 40, lossPct: 0 }, 60, 400), 85);
     assert.equal(playoutDelayTarget({ jitterMs: 10, rttMs: 40, lossPct: 0.5 }, 60, 400), 85);
-    assert.equal(playoutDelayTarget({ jitterMs: 10, rttMs: 40, lossPct: 0.6 }, 60, 400), 145);
-    assert.equal(playoutDelayTarget({ jitterMs: 4, rttMs: 30, lossPct: 3 }, 60, 400), 120);
+    assert.equal(playoutDelayTarget({ jitterMs: 10, rttMs: 40, lossPct: 0.6 }, 60, 400), 100);
+    assert.equal(playoutDelayTarget({ jitterMs: 4, rttMs: 30, lossPct: 3 }, 60, 400), 75);
     assert.equal(playoutDelayTarget({ jitterMs: 200, rttMs: 300, lossPct: 5 }, 60, 400), 400);
     assert.equal(playoutDelayTarget({ jitterMs: -3, rttMs: 0, lossPct: 0 }, 60, 400), 60);
+    // A short round trip is answered within playoutMinMs: nothing is added for it.
+    assert.equal(playoutDelayTarget({ jitterMs: 2, rttMs: 20, lossPct: 1 }, 60, 400), 65);
     // Before the link's RTT is known, a NACK is taken to cost 50 ms.
-    assert.equal(playoutDelayTarget({ jitterMs: 0, rttMs: null, lossPct: 2 }, 60, 400), 130);
+    assert.equal(playoutDelayTarget({ jitterMs: 0, rttMs: null, lossPct: 2 }, 60, 400), 85);
   });
 
   it("starts at playoutMinMs, and frames are due by it", () => {
@@ -163,14 +165,14 @@ describe("jitter buffer §10.2: the playout delay D", () => {
     const delays: number[] = [];
     buffer.on("delay", (ms) => delays.push(ms));
     clock.advance(1000);
-    buffer.setLinkHints({ jitterMs: 20, rttMs: 30, lossPct: 1 });
+    buffer.setLinkHints({ jitterMs: 20, rttMs: 75, lossPct: 1 });
     assert.equal(buffer.stats().targetDelayMs, 160);
     assert.deepEqual(delays, [160]);
   });
 
   it("falls by at most 10 ms a second", () => {
     const { clock, buffer } = setup();
-    buffer.setLinkHints({ jitterMs: 20, rttMs: 30, lossPct: 1 });
+    buffer.setLinkHints({ jitterMs: 20, rttMs: 75, lossPct: 1 });
     buffer.setLinkHints({ jitterMs: 0, rttMs: 30, lossPct: 0 });
     assert.equal(buffer.stats().targetDelayMs, 160);
     let previous = 160;

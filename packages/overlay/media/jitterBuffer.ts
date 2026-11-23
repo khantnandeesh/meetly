@@ -30,6 +30,12 @@ export const CATCH_UP_SHOW_EVERY_US = 100_000;
 export const DELAY_FALL_MS_PER_S = 10;
 /** What a NACK round trip is taken to cost before the link's RTT has been measured. */
 export const UNKNOWN_RTT_MS = 50;
+/**
+ * [D62] Beyond the round trip, what a NACK's answer needs before it is played: the reordering
+ * window before the gap is called (D39, at least 10 ms), the next packet that shows the gap, and
+ * the answer's own trip. The jitter margin is not paid twice.
+ */
+export const NACK_MARGIN_MS = 35;
 /** More frames than this waiting is a stream nobody is popping: the oldest go. */
 const MAX_BUFFERED_FRAMES = 2048;
 /** How far back `refDelta` can reach (one byte). */
@@ -38,8 +44,10 @@ const MAX_REF_DELTA = 255;
 /** The playout delay the link's numbers ask for (§10.2), before the rule about how fast it may fall. */
 export function playoutDelayTarget(hints: { jitterMs: number; rttMs: number | null; lossPct: number }, playoutMinMs: number, playoutMaxMs: number): number {
   const jitter = Number.isFinite(hints.jitterMs) ? Math.max(0, hints.jitterMs) : 0;
-  const nack = hints.lossPct > 0.5 ? (hints.rttMs ?? UNKNOWN_RTT_MS) + 20 : 0;
-  return Math.min(Math.max(playoutMinMs + 2.5 * jitter + nack, playoutMinMs), Math.max(playoutMinMs, playoutMaxMs));
+  // [D62] Time for a NACK to be answered overlaps playoutMinMs: a frame waits for whichever of the
+  // two is longer, not for both.
+  const nack = hints.lossPct > 0.5 ? (hints.rttMs ?? UNKNOWN_RTT_MS) + NACK_MARGIN_MS : 0;
+  return Math.min(2.5 * jitter + Math.max(playoutMinMs, nack), Math.max(playoutMinMs, playoutMaxMs));
 }
 
 type Entry = {
