@@ -63,6 +63,8 @@ function configFrom(name: string, flags: Map<string, string>): SwarmConfig {
   });
   const startAt = number(flags, "start-at");
   if (startAt !== undefined) config.startAtMs = startAt;
+  const alternates = flags.get("coordinator-alt");
+  if (alternates) config.coordinatorAlternates = alternates.split(",").filter((url) => url && url !== config.coordinatorUrl);
   const engine = flags.get("engine");
   if (engine) config.engine = engine as SwarmConfig["engine"];
   const pages = number(flags, "pages-per-browser");

@@ -52,6 +52,25 @@ fresh admission secret as an artifact, and the other shards wait for it (`ci/ren
 Shard 0's own peers, the source among them, reach the coordinator on 127.0.0.1; everyone else
 through the tunnel. Peers use STUN only.
 
+## Several tunnels: why runs 7 to 10 lost peers, and joins took 4–8 s
+
+A Cloudflare quick tunnel carries at most 200 requests in flight, and each peer's coordinator
+WebSocket is one. A 200-peer gate sat at that line. Gate run 45130383283 (fan-out 4) held 198
+peers between churn steps and 5% of its churn joiners waited over 900 ms for `welcome`. From
+fan-out 6 on (runs 45146597862 to 45167723003) there were fewer relays, a shard's turn to kill
+one more often found none, and the swarm held 199–201: 60–67% of churn joiners were refused once
+or twice ("connection failed" after about 3 s, then the page's 1 s wait: `connect()` to `welcome`
+of 4.5 s or 7.5 s, clustered), the page's retries ran past their minute for 2 to 18 viewers
+("coordinator: unreachable"), and the last joiners were still retrying when the run ended ("page
+closed"). cloudflared's own log shows no refused request outside the coordinator's outage: they
+were turned away at Cloudflare's edge, before the tunnel. `welcome` never waits for a place
+(`core.ts` `onHello`), so none of this was the engine.
+
+Now shard 0 starts `TUNNELS` (4) quick tunnels to the one coordinator; each shard uses the one its
+index falls to and has the others as alternates (`--coordinator-alt`), which a viewer refused at
+one tries in turn. A peer still starting when the run ends is judged as any viewer that has not
+rendered (failed if it had more than 30 s), not as a page that broke.
+
 ## What the report checks
 
 - The gate (SPEC §12.3): repair, latency and join p95, with p50, p95 and p99 of each and of

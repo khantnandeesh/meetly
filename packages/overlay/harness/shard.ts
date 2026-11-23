@@ -200,6 +200,8 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
   let context: PwContext | null = null;
   let engine: "real" | "standin" | null = null;
   let ticketNonce = 0;
+  /** The run is over and its browsers are closing. */
+  let ending = false;
 
   // The driver's own event loop: if it is late, everything it times is late.
   const loopDelay = monitorEventLoopDelay({ resolution: 10 });
@@ -250,6 +252,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       await page.goto(server!.url);
       const options: PageStartOptions = {
         coordinatorUrl: config.coordinatorUrl,
+        coordinatorAlternates: config.coordinatorAlternates,
         room: config.room,
         ticket: await ticket(index, role),
         role,
@@ -266,6 +269,9 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       await page.evaluate((o) => window.__overlay.start(o), options);
     } catch (error) {
       const handle = peers.get(index);
+      // The run ended (its browsers closed) while this peer was still starting: it is judged below
+      // as any viewer that has not rendered is, by how long it had, not as a page that broke.
+      if (ending && handle) return;
       if (handle) handle.alive = false;
       failed.push({ index, why: `did not start: ${(error as Error).message.split("\n")[0].slice(0, 300)}` });
       log(`peer ${index}: FAILED to start: ${(error as Error).message.split("\n")[0]}`);
@@ -411,6 +417,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     await Promise.race([Promise.all(running), sleep(5000)]);
     await poll();
   } finally {
+    ending = true;
     clearTimeout(lagTimer);
     loopDelay.disable();
     await Promise.all(browsers.map((browser) => browser.close().catch(() => undefined)));

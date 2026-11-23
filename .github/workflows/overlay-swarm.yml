@@ -45,6 +45,8 @@ env:
   PLAYWRIGHT_VERSION: "1.63.0"
   PORT: "4280"
   STUN: "stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478"
+  # Quick tunnels in front of the coordinator: 200 requests at once each (see the shard job).
+  TUNNELS: "4"
 
 jobs:
   plan:
@@ -166,15 +168,27 @@ jobs:
           cat "$OUT/layout.json"
           secret=$(openssl rand -hex 24)
           echo "::add-mask::$secret"
-          # Two and a half minutes for the tunnel and for the others to find the rendezvous.
-          start_at=$(( $(date +%s%3N) + 150000 ))
+          # Three and a half minutes for the tunnels and for the others to find the rendezvous.
+          start_at=$(( $(date +%s%3N) + 210000 ))
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
           nohup node packages/overlay/harness/swarm.mjs coordinator --scenario "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" \
             --port "$PORT" --host 127.0.0.1 --start-at "$start_at" --secret "$secret" --stun "$STUN" > "$OUT/coordinator.log" 2>&1 &
           for _ in $(seq 1 30); do curl -fsS -o /dev/null "http://127.0.0.1:$PORT/overlay/v1/health" && break; sleep 1; done
+          # A quick tunnel carries 200 requests at once, and each viewer's WebSocket is one: with 200
+          # peers behind one tunnel, joiners were refused (gate runs 45161787212 and before). So
+          # several tunnels to the one coordinator, the shards dealt over them. The first must come
+          # up; the rest are started together, and one that does not come up is done without.
           url=$(bash packages/overlay/harness/ci/tunnel.sh "$PORT" "$OUT/cloudflared.log")
-          jq -n --arg url "$url" --argjson startAt "$start_at" --arg secret "$secret" --slurpfile layout "$OUT/layout.json" \
-            '{url: $url, startAt: $startAt, secret: $secret, layout: $layout[0]}' > rendezvous/rendezvous.json
+          echo "$url" > tunnel-1.url
+          for i in $(seq 2 "$TUNNELS"); do
+            ( bash packages/overlay/harness/ci/tunnel.sh "$PORT" "$OUT/cloudflared-$i.log" > "tunnel-$i.url" || rm -f "tunnel-$i.url" ) &
+          done
+          wait
+          urls=$(cat tunnel-*.url | jq -R . | jq -cs .)
+          echo "tunnels: $(echo "$urls" | jq length) of $TUNNELS"
+          jq -n --arg url "$url" --argjson urls "$urls" --argjson startAt "$start_at" --arg secret "$secret" --slurpfile layout "$OUT/layout.json" \
+            '{url: $url, urls: $urls, startAt: $startAt, secret: $secret, layout: $layout[0]}' > rendezvous/rendezvous.json
+          jq '{tunnels: (.urls | length)}' rendezvous/rendezvous.json > "$OUT/tunnels.json"
           jq '{layout}' rendezvous/rendezvous.json > "$OUT/layout.json"
           echo "COORDINATOR=http://127.0.0.1:$PORT" >> "$GITHUB_ENV"
           echo "START_AT=$start_at" >> "$GITHUB_ENV"
@@ -194,7 +208,9 @@ jobs:
           bash packages/overlay/harness/ci/rendezvous.sh "rendezvous-$RUN-a$GITHUB_RUN_ATTEMPT" rendezvous
           secret=$(jq -r .secret rendezvous/rendezvous.json)
           echo "::add-mask::$secret"
-          echo "COORDINATOR=$(jq -r .url rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
+          # This shard's tunnel, and the others as alternates (see shard 0's step).
+          echo "COORDINATOR=$(jq -r --argjson s "$SHARD" '(.urls // [.url]) as $u | $u[$s % ($u | length)]' rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
+          echo "COORDINATOR_ALT=$(jq -r '(.urls // [.url]) | join(",")' rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
           echo "START_AT=$(jq -r .startAt rendezvous/rendezvous.json)" >> "$GITHUB_ENV"
           echo "SECRET=$secret" >> "$GITHUB_ENV"
           jq '{layout}' rendezvous/rendezvous.json > "$OUT/layout.json"
@@ -230,7 +246,7 @@ jobs:
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")
           merged=(); [ -f "$OUT/merged.json" ] && merged=(--merged "$OUT/merged.json")
           node packages/overlay/harness/swarm.mjs run "$SCENARIO" --peers "$PEERS" "${churn[@]}" --seed "$SEED" --run-id "$RUN_ID" \
-            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --start-at "$START_AT" --secret "$SECRET" --ice stun \
+            --shard "$SHARD/$SHARDS" --coordinator "$COORDINATOR" --coordinator-alt "${COORDINATOR_ALT:-}" --start-at "$START_AT" --secret "$SECRET" --ice stun \
             --layout "$OUT/layout.json" "${merged[@]}" --nat "$OUT/nat.json" --out "$OUT"
       - name: Keep the coordinator up until the others are done
         if: matrix.shard == 0
@@ -339,7 +355,7 @@ jobs:
             {
               cat "reports/$run/report.md"
               if [ -f "$dir/merged.json" ]; then echo; echo "Merged before the run: \`$(tr -d '\n' < "$dir/merged.json")\`"; fi
-              if [ -f "$dir/cloudflared.log" ]; then echo; echo "Coordinator reached through a Cloudflare quick tunnel."; fi
+              if [ -f "$dir/cloudflared.log" ]; then echo; echo "Coordinator reached through $(jq -r '.tunnels // 1' "$dir/tunnels.json" 2>/dev/null || echo 1) Cloudflare quick tunnel(s)."; fi
               echo
             } >> "$GITHUB_STEP_SUMMARY"
           done

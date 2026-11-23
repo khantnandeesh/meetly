@@ -84,6 +84,12 @@ export type SwarmConfig = {
   seed: number;
   /** "http://127.0.0.1:4100", or the deployed coordinator. */
   coordinatorUrl: string;
+  /**
+   * Other URLs of the same coordinator. A Cloudflare quick tunnel carries 200 requests at once,
+   * and a 200-peer gate is 200 WebSockets: the run has several tunnels, each shard has its own as
+   * `coordinatorUrl`, and a viewer refused at one tries the others.
+   */
+  coordinatorAlternates?: string[];
   room: string;
   admissionSecret: string;
   /** Peers in the whole run, the source included. */
@@ -352,6 +358,8 @@ export interface PageApi {
 
 export type PageStartOptions = {
   coordinatorUrl: string;
+  /** Other ways to the same coordinator (the gate's other tunnels): a viewer that finds one unreachable tries the next. */
+  coordinatorAlternates?: string[];
   room: string;
   ticket: string;
   role: "source" | "viewer";

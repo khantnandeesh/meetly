@@ -67,8 +67,10 @@ async function start(options: PageStartOptions): Promise<void> {
 
   if (options.engine !== "standin") {
     try {
-      const base = options.coordinatorUrl.replace(/^http/, "ws").replace(/\/$/, "");
-      const connect = { coordinatorUrl: `${base}/overlay/v1/rooms/${encodeURIComponent(options.room)}/ws`, ticket: nextTicket, wrapChannel };
+      const ws = (url: string): string => `${url.replace(/^http/, "ws").replace(/\/$/, "")}/overlay/v1/rooms/${encodeURIComponent(options.room)}/ws`;
+      // The coordinator's URLs: this shard's own first, then the run's other tunnels.
+      const urls = [options.coordinatorUrl, ...(options.coordinatorAlternates ?? [])].map(ws);
+      const connect = { coordinatorUrl: urls[0], ticket: nextTicket, wrapChannel };
       if (options.role === "source") {
         const source = createOverlaySource(connect);
         real = source;
@@ -86,7 +88,8 @@ async function start(options: PageStartOptions): Promise<void> {
         const firstTry = clock.now();
         for (;;) {
           connectAttempts++;
-          const viewer = createOverlayViewer({ ...connect, decode: options.decode });
+          // Refused at one tunnel (it is full, or gone), a viewer tries the next: the coordinator is one.
+          const viewer = createOverlayViewer({ ...connect, coordinatorUrl: urls[(connectAttempts - 1) % urls.length], decode: options.decode });
           real = viewer;
           engine = "real";
           viewer.on("metrics", (sample) => {
