@@ -258,7 +258,10 @@ async function scale(browser) {
     }, 30000, 500);
     ok(`relay failure: tree has ${N - 1}, all placed`, treeAfter, JSON.stringify(await tree(id)).slice(0, 300));
     await sleep(3000);
-    const countsAfter = await Promise.all(viewers.map((viewer) => watchingOf(viewer.page, "viewer-live")));
+    // "Watching" counts placed viewers, and the tree keeps moving for a few seconds after a relay
+    // goes (re-parenting, promotions): each page polls every 2 s, so they agree within a few polls.
+    let countsAfter = [];
+    await until(async () => (countsAfter = await Promise.all(viewers.map((viewer) => watchingOf(viewer.page, "viewer-live")))).every((n) => n === N - 1), 10000, 500);
     ok(`relay failure: viewers say ${N - 1} watching`, countsAfter.every((n) => n === N - 1), countsAfter.join(","));
     const movingAfter = await Promise.all(viewers.map((viewer) => pictureMoves(viewer.page)));
     ok("relay failure: every remaining picture moves", movingAfter.every((m) => m.moves), movingAfter.map((m) => `${m.frames}f`).join(","));
