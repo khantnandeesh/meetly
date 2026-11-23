@@ -207,7 +207,8 @@ async function liveInBrowser() {
   const browser = await chromium.launch({ args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] });
   const errors = [];
   const contextFor = async () => {
-    const context = await browser.newContext({ permissions: ["camera", "microphone"], userAgent: "meetly-smoke-test (Playwright)" });
+    // The clipboard: the host's share link, key and all, is had by "Copy link", as people do.
+    const context = await browser.newContext({ permissions: ["camera", "microphone", "clipboard-read", "clipboard-write"], userAgent: "meetly-smoke-test (Playwright)" });
     context.on("page", (page) => page.on("pageerror", (error) => errors.push(error.message)));
     return context;
   };
@@ -231,8 +232,14 @@ async function liveInBrowser() {
     await host.getByTestId("go-live").click();
     const share = host.getByTestId("share-link");
     await share.waitFor({ timeout: 30_000 });
-    const link = await share.inputValue();
-    if (!link.startsWith(`${base}/live/`)) return `share link ${link} is not on ${base}`;
+    // A button that copies the link (an <input> before the serverless webinar UI). The link ends
+    // with its end-to-end key; only its start is ever printed.
+    const link = (await share.evaluate((element) => element.tagName)) === "INPUT" ? await share.inputValue() : await (async () => {
+      await share.click();
+      await host.getByText("Copied").waitFor({ timeout: 5_000 });
+      return host.evaluate(() => navigator.clipboard.readText());
+    })();
+    if (!link.startsWith(`${base}/live/`)) return `share link ${link.replace(/#.*/, "#…")} is not on ${base}`;
 
     const viewer = await (await contextFor()).newPage();
     viewer.on("pageerror", (error) => errors.push(error.message));
@@ -247,8 +254,12 @@ async function liveInBrowser() {
       return `${video.videoWidth}x${video.videoHeight}`;
     });
 
-    await host.getByTestId("host-viewer-count").filter({ hasText: /^\s*1 watching/ }).waitFor({ timeout: 30_000 });
+    // "1 watching": on the picture's Live chip (host-viewers), or the older count (host-viewer-count).
+    await host.locator('[data-testid="host-viewers"], [data-testid="host-viewer-count"]').filter({ hasText: /(^|\D)1 watching/ }).first().waitFor({ timeout: 30_000 });
     await host.getByTestId("end-live").click();
+    // End asks first, in a dialog, where there is one.
+    const confirm = host.getByTestId("end-live-confirm");
+    if (await confirm.waitFor({ timeout: 3_000 }).then(() => true, () => false)) await confirm.click();
     await viewer.getByTestId("live-over").waitFor({ timeout: 30_000 });
     if (errors.length) return `page errors: ${errors.slice(0, 3).join(" | ").slice(0, 300)}`;
     console.log(`     the viewer got a ${size} picture; the host saw 1 watching; the stream ended for the viewer`);
