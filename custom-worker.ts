@@ -17,6 +17,7 @@ import { default as handler } from "./.open-next/worker.js";
 import { OverlayRoom as CoordinatorRoom, type CoordinatorEnv, type DurableObjectStateLike } from "./packages/overlay/coordinator/durableObject";
 import type { IceServer } from "./packages/overlay/protocol";
 import { runScheduledCostGuard, type CostGuardEnv } from "./src/lib/costGuard.server";
+import { environmentLabel, labelResponse, robotsResponse, type HtmlRewriter } from "./src/lib/environmentLabel";
 import { LIVE_VIEWER_CAP } from "./src/lib/live/tree";
 
 type Env = Record<string, unknown>;
@@ -59,12 +60,24 @@ function liveSocket(request: Request, rooms: CoordinatorEnv["OVERLAY_ROOM"], id:
 
 const next = handler as { fetch: (request: Request, env: Env, ctx: Context) => Promise<Response> };
 
+/** The Workers runtime's HTMLRewriter (a global there; absent anywhere else). */
+const htmlRewriter = (): HtmlRewriter => new (globalThis as unknown as { HTMLRewriter: new () => HtmlRewriter }).HTMLRewriter();
+
+function respond(request: Request, env: Env, ctx: Context): Promise<Response> {
+  const live = LIVE_SOCKET.exec(new URL(request.url).pathname);
+  const rooms = env.OVERLAY_ROOM as CoordinatorEnv["OVERLAY_ROOM"] | undefined;
+  if (live && rooms && request.headers.get("upgrade")?.toLowerCase() === "websocket") return liveSocket(request, rooms, live[1]);
+  return next.fetch(request, env, ctx);
+}
+
 const worker = {
-  fetch(request: Request, env: Env, ctx: Context): Promise<Response> {
-    const live = LIVE_SOCKET.exec(new URL(request.url).pathname);
-    const rooms = env.OVERLAY_ROOM as CoordinatorEnv["OVERLAY_ROOM"] | undefined;
-    if (live && rooms && request.headers.get("upgrade")?.toLowerCase() === "websocket") return liveSocket(request, rooms, live[1]);
-    return next.fetch(request, env, ctx);
+  async fetch(request: Request, env: Env, ctx: Context): Promise<Response> {
+    // Production has no label, and answers exactly as before.
+    const label = environmentLabel(env.MEETLY_ENVIRONMENT_LABEL);
+    if (!label) return respond(request, env, ctx);
+    // Staging (src/lib/environmentLabel.ts): kept out of search engines, and marked on every page.
+    if (new URL(request.url).pathname === "/robots.txt") return robotsResponse();
+    return labelResponse(await respond(request, env, ctx), label, htmlRewriter);
   },
 
   /**

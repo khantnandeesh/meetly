@@ -47,13 +47,80 @@ export async function hostKey(id: string): Promise<string> {
   return base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8.encode(id))));
 }
 
-export async function isHostKey(id: string, presented: unknown): Promise<boolean> {
+/** `presented` is `expected`, compared in constant time (for its length), after a cheap shape check. */
+function matches(expected: string, presented: unknown): boolean {
   if (typeof presented !== "string" || presented.length === 0 || presented.length > 128) return false;
-  const expected = await hostKey(id);
   if (expected.length !== presented.length) return false;
   let diff = 0;
   for (let i = 0; i < expected.length; i++) diff |= expected.charCodeAt(i) ^ presented.charCodeAt(i);
   return diff === 0;
+}
+
+export async function isHostKey(id: string, presented: unknown): Promise<boolean> {
+  if (typeof presented !== "string" || presented.length === 0 || presented.length > 128) return false;
+  return matches(await hostKey(id), presented);
+}
+
+/**
+ * The viewers' pass for a stream: what a viewer's browser shows to get a ticket, so that knowing
+ * the id alone (it is in the link's path, on the host's screen, in logs) does not let anyone take
+ * a viewer's place or join the tree and learn viewers' addresses. It travels in the link's
+ * fragment with the media key (`&a=…`, src/lib/live/e2ee.ts), so it is no wider than the key; the
+ * server sees it only in the ticket request's body, and it is not the key. HMAC-SHA-256 of the id
+ * under the admission secret in its own domain, cut to 128 bits.
+ */
+export async function viewerPass(id: string): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", utf8.encode(`meetly-live-viewer:${secrets().admission}`), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return base64url(new Uint8Array(await crypto.subtle.sign("HMAC", key, utf8.encode(id))).slice(0, 16));
+}
+
+export async function isViewerPass(id: string, presented: unknown): Promise<boolean> {
+  if (typeof presented !== "string" || presented.length === 0 || presented.length > 128) return false;
+  return matches(await viewerPass(id), presented);
+}
+
+/** The most a Live request's JSON body may be: they carry a title, a key or a pass, and a role. */
+export const BODY_MAX = 4096;
+
+export class BodyTooLarge extends Error {}
+
+/**
+ * A request's JSON body, read no further than `max` bytes: a larger one is refused (BodyTooLarge)
+ * by its Content-Length when it says, or as soon as that many bytes have come. Malformed JSON, or
+ * JSON that is not an object, is a SyntaxError.
+ */
+export async function readJsonBody(request: Request, max = BODY_MAX): Promise<Record<string, unknown>> {
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > max) throw new BodyTooLarge();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (request.body) {
+    const reader = request.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) {
+        await reader.cancel().catch(() => undefined);
+        throw new BodyTooLarge();
+      }
+      chunks.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, at);
+    at += chunk.byteLength;
+  }
+  const body: unknown = JSON.parse(new TextDecoder().decode(bytes));
+  if (typeof body !== "object" || body === null || Array.isArray(body)) throw new SyntaxError("not an object");
+  return body as Record<string, unknown>;
+}
+
+/** The answer for a body readJsonBody refused: 413 when too large, 400 otherwise. */
+export function badBody(error: unknown): Response {
+  return error instanceof BodyTooLarge ? json(413, { error: "Request too large." }) : json(400, { error: "Bad request." });
 }
 
 const VIEWER_IDENTITY = /^v-[A-Za-z0-9]{16}$/;

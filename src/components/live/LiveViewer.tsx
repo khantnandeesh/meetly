@@ -1,22 +1,81 @@
 "use client";
 
-import { CircleAlert, LoaderCircle, Play, Volume2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import type { OverlayState, OverlayViewer } from "@meetly/overlay";
-import type { LiveTree } from "@/lib/live/tree";
-import { Card, LiveHeader, LiveRequestError, coordinatorUrl, fetchTree, postJson, useLiveTree, useOwnKey } from "./shared";
+import { KeyRound, LoaderCircle, Maximize, Minimize, Play, Radio, RotateCw, Volume2, VolumeX, WifiOff } from "lucide-react";
+import Link from "next/link";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { OverlayState, OverlayViewer, SFrameDecryptor } from "@meetly/overlay";
+import { Tip } from "@/components/ui/Tip";
+import { exposeE2eeStats, keyFromHash } from "@/lib/live/e2ee";
+import { LIVE_VIEWER_CAP, audience, type LiveTree } from "@/lib/live/tree";
+import { SERVERLESS_LINE } from "@/lib/live/webinar";
+import { Card, FocusedHeading, LiveChip, LiveHeader, LiveRequestError, ServerlessNote, WebinarHeading, coordinatorUrl, fetchTree, postJson, useLiveTree, useOwnKey } from "./shared";
 import { WhoIsConnected } from "./WhoIsConnected";
+
+type Over = { title: string; body: string; action: "home" | "retry" };
 
 type Phase =
   | { t: "checking" }
   | { t: "notice"; started: boolean }
   | { t: "joining" }
   | { t: "watching" }
-  /** The stream cannot be watched: ended, full, removed, or not set up. Said plainly. */
-  | { t: "over"; title: string; body: string };
+  /** The browser could not get the picture on this network, and gave up its place: see STUCK_AFTER_MS. */
+  | { t: "stuck" }
+  /** The webinar cannot be watched: ended, full, removed, or not set up. Said plainly. */
+  | ({ t: "over" } & Over)
+  /** The video is end-to-end encrypted and this link's key does not open it. */
+  | { t: "wrong-key" };
 
-const ENDED = { title: "This stream has ended", body: "The host has ended the stream." };
-const FULL = { title: "This stream is full", body: "It already has 50 viewers, the most one stream can take in this beta. Try again later." };
+const ENDED: Over = { title: "This webinar has ended", body: "The host has ended it. Thanks for watching.", action: "home" };
+const FULL: Over = {
+  title: "This webinar is full",
+  body: `It already has ${LIVE_VIEWER_CAP} viewers, the most a serverless webinar can take in this beta. Someone may leave; try again in a little while.`,
+  action: "retry",
+};
+
+/**
+ * With the host live and this browser connected, no picture after this long most likely means
+ * no viewer's browser (nor the host's) could be reached from this network: there is no TURN
+ * relay yet, so a strict NAT or firewall cannot join the tree. The browser then leaves, so it
+ * does not hold one of the places or count as watching.
+ */
+const STUCK_AFTER_MS = 20_000;
+
+/**
+ * Frames under another key, or not signed by the link's signing key, with none yet played,
+ * before the page says the link does not open the video. Such a frame could also be a relay's
+ * doing; while real frames still open, those are dropped and counted, and the picture plays on.
+ */
+const WRONG_KEY_AFTER = 5;
+
+/** The key in this page's link (`#k=…`, src/lib/live/e2ee.ts): read in the browser only. */
+const onHashChange = (changed: () => void) => {
+  window.addEventListener("hashchange", changed);
+  return () => window.removeEventListener("hashchange", changed);
+};
+function useLinkKey() {
+  const hash = useSyncExternalStore(
+    onHashChange,
+    () => location.hash,
+    () => null,
+  );
+  return useMemo(() => (hash === null ? null : keyFromHash(hash)), [hash]);
+}
+
+/** Copy for a link whose key is missing, or does not open the video. */
+const KEY_PROBLEM = {
+  missing: {
+    title: "This link is missing its key",
+    body: "This webinar is end-to-end encrypted. Its key is the last part of the link the host shares, after “#k=”, and this link doesn’t have it. Ask the host for the full link.",
+  },
+  wrong: {
+    title: "Can’t decrypt — ask the host for the full link",
+    body: "This webinar is end-to-end encrypted, and the key in this link doesn’t open its video. The link may have been cut short when it was copied.",
+  },
+};
+
+/** A round button laid on the picture, in the status chip's dark glass. */
+const onPicture =
+  "grid size-10 cursor-pointer place-items-center rounded-xl bg-[rgb(11_11_15/0.72)] text-text backdrop-blur-[10px] transition-[background-color,transform] duration-150 hover:bg-[rgb(11_11_15/0.9)] active:scale-[0.96]";
 
 function over(tree: LiveTree): Phase | null {
   if (tree.ended) return { t: "over", ...ENDED };
@@ -25,22 +84,42 @@ function over(tree: LiveTree): Phase | null {
 }
 
 /**
- * Live (beta), a viewer: a short notice, then "Watch". The picture and sound come from the
- * overlay (packages/overlay): from the host's browser or from another viewer's, and this
- * browser may pass them on to others.
+ * A serverless webinar (Live, beta), a viewer: a short, honest notice, then "Watch". The picture
+ * and sound come from the overlay (packages/overlay): from the host's browser or from another
+ * viewer's, and this browser may pass them on to others. Its states: waiting for the host,
+ * connecting, live, reconnecting, can't connect on this network, and the ends (ended, full,
+ * refused, unavailable). The video takes the page's width; "Who's connected" is folded below it.
  */
-export function LiveViewer({ id }: { id: string }) {
+export function LiveViewer({ id, title }: { id: string; title: string }) {
   const [phase, setPhase] = useState<Phase>({ t: "checking" });
   const [connection, setConnection] = useState<OverlayState>("idle");
   const [hasPicture, setHasPicture] = useState(false);
   const [soundBlocked, setSoundBlocked] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  // Read once in the browser; the buttons that use it only appear with a picture, after hydration.
+  const [canFullscreen] = useState(
+    () => typeof document !== "undefined" && (document.fullscreenEnabled || "webkitEnterFullscreen" in HTMLVideoElement.prototype),
+  );
   const [peer, setPeer] = useState<string | null>(null);
   const video = useRef<HTMLVideoElement>(null);
+  const stage = useRef<HTMLDivElement>(null);
   const viewer = useRef<OverlayViewer | null>(null);
   const identity = useRef<string | null>(null);
+  const linkKey = useLinkKey();
+  const decryptor = useRef<SFrameDecryptor | null>(null);
+  /** Frames that did not open, or were not the host's, and were dropped, not played: counted. */
+  const [dropped, setDropped] = useState(0);
+  // The link's key is read while nothing is connected. Once "Watch" is pressed, the session goes
+  // on with the key it started with: an address bar edited meanwhile does not hide a picture
+  // that keeps playing (and relaying) behind the message.
+  const unconnected = phase.t === "checking" || phase.t === "notice" || phase.t === "stuck";
+  const keyProblem =
+    unconnected && linkKey?.t === "none" ? KEY_PROBLEM.missing : (unconnected && linkKey?.t === "malformed") || phase.t === "wrong-key" ? KEY_PROBLEM.wrong : null;
 
-  const tree = useLiveTree(phase.t === "over" ? null : id);
+  const tree = useLiveTree(phase.t === "over" || keyProblem ? null : id);
   const ownKey = useOwnKey(peer);
+  const started = !!tree?.started;
 
   useEffect(() => {
     let stale = false;
@@ -50,7 +129,7 @@ export function LiveViewer({ id }: { id: string }) {
       },
       (error) => {
         if (stale) return;
-        if (error instanceof LiveRequestError && error.status === 503) setPhase({ t: "over", title: "Live isn't available", body: error.message });
+        if (error instanceof LiveRequestError && error.status === 503) setPhase({ t: "over", title: "Serverless webinars aren’t available", body: error.message, action: "home" });
         else setPhase({ t: "notice", started: false });
       },
     );
@@ -59,7 +138,7 @@ export function LiveViewer({ id }: { id: string }) {
     };
   }, [id]);
 
-  // While on the notice, a stream that ends or fills up says so before "Watch" is pressed.
+  // While on the notice, a webinar that starts, ends or fills up says so before "Watch" is pressed.
   useEffect(() => {
     if (!tree) return;
     setPhase((current) => (current.t === "notice" ? (over(tree) ?? { t: "notice", started: tree.started }) : current));
@@ -82,16 +161,84 @@ export function LiveViewer({ id }: { id: string }) {
     }
   }, [hasPicture, phase.t]);
 
+  // Frames dropped for not opening, counted once a second while watching (the stage's data-e2ee-dropped).
+  useEffect(() => {
+    if (phase.t !== "watching") return;
+    const timer = setInterval(() => {
+      const stats = decryptor.current?.stats();
+      if (stats) setDropped(stats.tampered + stats.forged + stats.unencrypted + stats["wrong-key"]);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [phase.t]);
+
+  useEffect(() => {
+    const changed = () => setFullscreen(document.fullscreenElement === stage.current && !!stage.current);
+    document.addEventListener("fullscreenchange", changed);
+    return () => document.removeEventListener("fullscreenchange", changed);
+  }, []);
+
+  // The host is live and this browser is connected, but no picture comes: see STUCK_AFTER_MS.
+  const waitingForPicture = phase.t === "watching" && connection === "connected" && started && !hasPicture;
+  useEffect(() => {
+    if (!waitingForPicture) return;
+    const timer = setTimeout(() => {
+      const current = viewer.current;
+      viewer.current = null;
+      setPeer(null);
+      setPhase({ t: "stuck" });
+      void current?.close().catch(() => undefined);
+    }, STUCK_AFTER_MS);
+    return () => clearTimeout(timer);
+  }, [waitingForPicture]);
+
   async function watch() {
+    if (linkKey?.t !== "ok") return;
     setPhase({ t: "joining" });
+    setHasPicture(false);
+    setDropped(0);
+    let passRefused = false;
     try {
-      const { createOverlayViewer } = await import("@meetly/overlay");
+      const { createOverlayViewer, createSFrameDecryptor, importSFrameKey, importSFrameVerifier, sframeTransform } = await import("@meetly/overlay");
+      // The host's public signing key: only frames the host signed play (a link has it, or is malformed).
+      const verifier = await importSFrameVerifier(linkKey.publicKey).catch(() => null);
+      const pass = linkKey.pass;
+      if (verifier === null) {
+        setPhase({ t: "wrong-key" });
+        return;
+      }
+      // Each frame is decrypted just before it is played, with the key from this page's link; one
+      // that does not open is dropped and counted (packages/overlay/media/sframe.ts).
+      const opener = createSFrameDecryptor(await importSFrameKey(linkKey.raw), {
+        verifier,
+        onOutcome: (outcome) => {
+          // Unencrypted frames count too: with a key in hand, a picture in the clear is never played,
+          // so a stream of them would otherwise end as "can't get the video on this network".
+          if ((outcome !== "wrong-key" && outcome !== "forged" && outcome !== "unencrypted") || viewer.current !== overlay) return;
+          const stats = opener.stats();
+          if (stats.ok > 0 || stats["wrong-key"] + stats.forged + stats.unencrypted < WRONG_KEY_AFTER) return;
+          // Nothing has played: this link's keys are not the webinar's. Its place goes back.
+          viewer.current = null;
+          setPeer(null);
+          setHasPicture(false);
+          setPhase({ t: "wrong-key" });
+          void overlay.close().catch(() => undefined);
+        },
+      });
+      decryptor.current = opener;
+      exposeE2eeStats(() => opener.stats());
       const overlay = createOverlayViewer({
+        frameTransform: sframeTransform({ decryptor: opener }),
         coordinatorUrl: coordinatorUrl(id),
         ticket: async () => {
-          const answer = await postJson<{ ticket: string; identity: string }>(`/api/live/${id}/ticket`, { role: "viewer", identity: identity.current });
-          identity.current = answer.identity;
-          return answer.ticket;
+          try {
+            const answer = await postJson<{ ticket: string; identity: string }>(`/api/live/${id}/ticket`, { role: "viewer", pass, identity: identity.current });
+            identity.current = answer.identity;
+            return answer.ticket;
+          } catch (error) {
+            // The link's pass is not this webinar's: the link was edited or put together by hand.
+            if (error instanceof LiveRequestError && error.status === 403) passRefused = true;
+            throw error;
+          }
         },
       });
       viewer.current = overlay;
@@ -99,12 +246,15 @@ export function LiveViewer({ id }: { id: string }) {
       overlay.on("firstFrame", () => setHasPicture(true));
       overlay.on("audioBlocked", setSoundBlocked);
       overlay.on("closed", (reason) => {
+        if (viewer.current !== overlay) return;
         setHasPicture(false);
         if (reason === "ended") setPhase({ t: "over", ...ENDED });
         else if (reason === "full") setPhase({ t: "over", ...FULL });
-        else if (reason === "kicked" || reason === "denied") setPhase({ t: "over", title: "You can't watch this stream", body: "The stream didn't let this browser in." });
+        else if (reason === "kicked" || reason === "denied") setPhase({ t: "over", title: "You can’t watch this webinar", body: "The webinar didn’t let this browser in.", action: "home" });
       });
       await overlay.connect();
+      if (viewer.current !== overlay) return;
+      overlay.setVolume(muted ? 0 : 1);
       setPeer(overlay.status()?.path[0] ?? null);
       setPhase({ t: "watching" });
       // Pressing Watch was the gesture the browser wants before it plays sound.
@@ -112,89 +262,231 @@ export function LiveViewer({ id }: { id: string }) {
     } catch (error) {
       await viewer.current?.close().catch(() => undefined);
       viewer.current = null;
+      if (passRefused) {
+        setPhase({ t: "wrong-key" });
+        return;
+      }
       setPhase((current) =>
         current.t === "over"
           ? current
-          : { t: "over", title: "Couldn't connect", body: error instanceof Error && /unreachable/i.test(error.message) ? "The stream couldn't be reached. Reload to try again." : "Reload to try again." },
+          : {
+              t: "over",
+              title: "Couldn’t connect",
+              body: error instanceof Error && /unreachable/i.test(error.message) ? "The webinar couldn’t be reached." : "Something went wrong while connecting.",
+              action: "retry",
+            },
       );
     }
   }
 
-  async function unmute() {
-    await viewer.current?.resumeAudio().catch(() => undefined);
+  async function toggleSound() {
+    if (soundBlocked) {
+      await viewer.current?.resumeAudio().catch(() => undefined);
+      setMuted(false);
+      viewer.current?.setVolume(1);
+      return;
+    }
+    viewer.current?.setVolume(muted ? 1 : 0);
+    setMuted(!muted);
   }
 
-  const status =
-    connection === "reconnecting"
-      ? "Reconnecting…"
-      : !hasPicture
-        ? tree && !tree.started
-          ? "Waiting for the host to go live…"
-          : "Finding someone to get the stream from…"
-        : null;
+  // Full screen takes the stage (picture and buttons) where the browser allows it; iPhone Safari
+  // allows only the <video> itself, in its own player.
+  function toggleFullscreen() {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined);
+    else if (document.fullscreenEnabled && stage.current?.requestFullscreen) void stage.current.requestFullscreen().catch(() => undefined);
+    else (video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null)?.webkitEnterFullscreen?.();
+  }
+
+  // The picture came, then the host's browser left the stream without ending it (its network, or
+  // a crash): the last frame stays on the <video>, so it is said, not left looking live.
+  const hostAway = phase.t === "watching" && hasPicture && !!tree && !tree.started && !tree.ended;
+
+  const name = title || "Webinar";
+  const soundLabel = muted ? "Turn on sound" : "Mute";
+  const viewersNow = audience(tree).watching;
 
   return (
     <div className="backdrop-glow flex flex-1 flex-col">
-      <LiveHeader />
-      <main className="mx-auto grid w-full max-w-6xl flex-1 content-start gap-5 px-4 pb-16 sm:px-8 lg:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)] lg:gap-6">
-        <div className="flex min-w-0 flex-col gap-5">
-          <div className="flex flex-col gap-2 pt-2">
-            <h1 className="font-display text-[clamp(2rem,5vw,2.75rem)] leading-[1.05] font-semibold tracking-[-0.03em]">Live stream</h1>
-            <p className="font-mono text-sm text-muted">{id}</p>
-          </div>
+      <LiveHeader narrow />
+      <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-5 px-4 pb-16 sm:px-8">
+        <WebinarHeading title={name} />
 
-          {phase.t === "watching" || phase.t === "joining" ? (
-            <div className="relative aspect-video overflow-hidden rounded-3xl bg-surface-2 ring-1 ring-border">
-              <video ref={video} className={`size-full object-contain ${hasPicture ? "" : "opacity-0"}`} autoPlay muted playsInline data-testid="live-video" />
-              {status && (
-                <div className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-muted">
-                  <span className="inline-flex items-center gap-2">
-                    <LoaderCircle className="anim-spin size-4" aria-hidden="true" />
-                    {phase.t === "joining" ? "Connecting…" : status}
-                  </span>
-                </div>
-              )}
-              {hasPicture && (
-                <span className="chip absolute top-3 left-3">
-                  <span className="size-2 rounded-full bg-danger" aria-hidden="true" />
-                  Live · {tree?.viewers ?? 1} {tree?.viewers === 1 ? "viewer" : "viewers"}
-                </span>
-              )}
-              {soundBlocked && (
-                <button className="btn btn-primary absolute right-3 bottom-3 h-10 rounded-xl px-4 text-sm" onClick={() => void unmute()}>
-                  <Volume2 className="size-4" aria-hidden="true" />
-                  Turn on sound
-                </button>
-              )}
+        {phase.t !== "over" && keyProblem ? (
+          <Card className="flex flex-col gap-4" data-testid="live-key-problem" data-problem={keyProblem === KEY_PROBLEM.missing ? "missing" : "wrong"}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-warn/12 text-warn" aria-hidden="true">
+                <KeyRound className="size-5" />
+              </span>
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <FocusedHeading>{keyProblem.title}</FocusedHeading>
+                <p className="max-w-[40rem] text-pretty text-muted">{keyProblem.body}</p>
+              </div>
             </div>
-          ) : phase.t === "over" ? (
-            <Card className="flex flex-col gap-2" >
-              <h2 className="font-display text-xl font-semibold tracking-tight" data-testid="live-over">
-                {phase.title}
-              </h2>
-              <p className="text-muted">{phase.body}</p>
-            </Card>
-          ) : (
-            <Card className="flex flex-col gap-5">
-              <div className="flex items-start gap-3">
-                <CircleAlert className="mt-0.5 size-5 shrink-0 text-warn" aria-hidden="true" />
-                <p className="text-pretty" data-testid="live-notice">
-                  Beta. This stream reaches you through other viewers&apos; browsers, and you may pass it on to others. People connected to you can see your IP address. It is not
-                  encrypted.
+          </Card>
+        ) : phase.t === "over" ? (
+          <Card className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <FocusedHeading data-testid="live-over">{phase.title}</FocusedHeading>
+              <p className="max-w-[40rem] text-pretty text-muted">{phase.body}</p>
+            </div>
+            {phase.action === "retry" ? (
+              <button className="btn btn-secondary self-start" onClick={() => location.reload()}>
+                <RotateCw className="size-4" aria-hidden="true" />
+                Try again
+              </button>
+            ) : (
+              <Link href="/" className="btn btn-secondary self-start">
+                Back to home
+              </Link>
+            )}
+          </Card>
+        ) : phase.t === "stuck" ? (
+          <Card className="flex flex-col gap-4" data-testid="live-stuck">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-warn/12 text-warn" aria-hidden="true">
+                <WifiOff className="size-5" />
+              </span>
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <FocusedHeading>Can’t get the video on this network</FocusedHeading>
+                <p className="max-w-[40rem] text-pretty text-muted">
+                  A serverless webinar needs your browser to connect directly to the host’s or other viewers’ browsers, and this network seems to block that. Some office,
+                  school and mobile networks do. Try another network, such as home Wi-Fi or a phone hotspot.
                 </p>
               </div>
-              {phase.t === "notice" && !phase.started && <p className="text-sm text-muted">The host hasn&apos;t gone live yet. You can start watching and wait here.</p>}
-              <button className="btn btn-primary self-start" onClick={() => void watch()} disabled={phase.t === "checking"} data-testid="watch">
-                {phase.t === "checking" ? <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" /> : <Play className="size-[1.125rem] fill-current" aria-hidden="true" />}
-                Watch
-              </button>
-            </Card>
-          )}
-        </div>
+            </div>
+            <button className="btn btn-secondary self-start sm:ml-14" onClick={() => void watch()} data-testid="live-retry">
+              <RotateCw className="size-4" aria-hidden="true" />
+              Try again
+            </button>
+          </Card>
+        ) : phase.t === "watching" || phase.t === "joining" ? (
+          <div className="flex flex-col gap-3">
+            <div
+              ref={stage}
+              className="relative aspect-video overflow-hidden rounded-3xl bg-surface-2 ring-1 ring-border data-[fullscreen=true]:rounded-none"
+              data-fullscreen={fullscreen}
+              data-e2ee-dropped={dropped}
+            >
+              <video ref={video} className={`size-full object-contain ${hasPicture ? "" : "opacity-0"}`} autoPlay muted playsInline data-testid="live-video" />
+              {!hasPicture ? (
+                <div className="absolute inset-0 grid place-items-center p-6 text-center" data-testid="live-status" role="status">
+                  {phase.t === "watching" && tree && !started ? (
+                    <span className="flex flex-col items-center gap-2">
+                      <Radio className="size-6 animate-pulse text-faint" aria-hidden="true" />
+                      <span className="font-medium">Waiting for the host to go live</span>
+                      <span className="text-sm text-muted">The video starts here on its own.</span>
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-2 text-sm text-muted">
+                      <LoaderCircle className="anim-spin size-4" aria-hidden="true" />
+                      {phase.t === "joining" ? "Connecting…" : connection === "reconnecting" ? "Reconnecting…" : "Connecting to the video…"}
+                    </span>
+                  )}
+                </div>
+              ) : hostAway ? (
+                <div className="absolute inset-0 grid place-items-center bg-bg/75 p-6 text-center" role="status" data-testid="live-host-away">
+                  <span className="flex flex-col items-center gap-2">
+                    <WifiOff className="size-6 text-faint" aria-hidden="true" />
+                    <span className="font-medium">The host’s connection dropped</span>
+                    <span className="text-sm text-muted">The video carries on here if they come back.</span>
+                  </span>
+                </div>
+              ) : connection === "reconnecting" ? (
+                <div className="absolute inset-0 grid place-items-center bg-bg/60 text-sm" role="status">
+                  <span className="chip h-9 px-3">
+                    <LoaderCircle className="anim-spin size-4" aria-hidden="true" />
+                    Reconnecting…
+                  </span>
+                </div>
+              ) : null}
+              {hasPicture && !hostAway && <LiveChip watching={Math.max(1, viewersNow)} testId="viewer-live" />}
+              {/* The player's own buttons, on the picture, so they stay there in full screen. */}
+              {hasPicture && (
+                <div className="absolute right-3 bottom-3 flex items-center gap-2" role="group" aria-label="Player">
+                  {soundBlocked ? (
+                    <button className="btn btn-primary h-10 rounded-xl px-4 text-sm" onClick={() => void toggleSound()}>
+                      <Volume2 className="size-4" aria-hidden="true" />
+                      Turn on sound
+                    </button>
+                  ) : (
+                    <Tip label={soundLabel}>
+                      <button className={onPicture} aria-label={soundLabel} onClick={() => void toggleSound()} data-testid="viewer-sound">
+                        {muted ? <VolumeX className="size-5 text-danger-text" aria-hidden="true" /> : <Volume2 className="size-5" aria-hidden="true" />}
+                      </button>
+                    </Tip>
+                  )}
+                  {canFullscreen && (
+                    <Tip label={fullscreen ? "Exit full screen" : "Full screen"}>
+                      <button className={onPicture} aria-label={fullscreen ? "Exit full screen" : "Full screen"} onClick={toggleFullscreen}>
+                        {fullscreen ? <Minimize className="size-5" aria-hidden="true" /> : <Maximize className="size-5" aria-hidden="true" />}
+                      </button>
+                    </Tip>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : phase.t === "wrong-key" ? null : (
+          <Card className="flex flex-col gap-5">
+            <p className="flex items-start gap-2 text-sm font-medium" data-testid="live-start-state">
+              {phase.t === "checking" ? (
+                <>
+                  <LoaderCircle className="anim-spin mt-0.5 size-4 shrink-0 text-muted" aria-hidden="true" />
+                  <span className="text-muted" role="status">
+                    Checking the webinar…
+                  </span>
+                </>
+              ) : phase.started ? (
+                <>
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-danger" aria-hidden="true" />
+                  <span>
+                    {/* Only the state is announced, not the count, which changes every few seconds. */}
+                    <span role="status">Live now</span>
+                    {tree && (
+                      <span className="font-normal text-muted">
+                        {" · "}
+                        <span className="tabular-nums">{viewersNow}</span> watching
+                      </span>
+                    )}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full bg-faint" aria-hidden="true" />
+                  <span className="text-muted" role="status">
+                    Not started yet. You can start watching and wait here.
+                  </span>
+                </>
+              )}
+            </p>
+            <div className="flex max-w-[40rem] flex-col gap-3" data-testid="live-notice">
+              <h2 className="font-display text-xl font-semibold tracking-tight">Before you watch</h2>
+              <p className="text-pretty">{SERVERLESS_LINE}</p>
+              <ul className="flex flex-col gap-1.5 text-sm text-muted">
+                {[
+                  "End-to-end encrypted: only people with the full link can see the video — not us, not anyone in between.",
+                  "While you watch, your browser may pass the encrypted video on to a few other viewers.",
+                  "Browsers connected to yours can see your IP address. This is a beta.",
+                ].map((line) => (
+                  <li key={line} className="flex gap-2.5 text-pretty">
+                    <span className="mt-2 size-1 shrink-0 rounded-full bg-faint" aria-hidden="true" />
+                    {line}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <button className="btn btn-primary self-start" onClick={() => void watch()} disabled={phase.t === "checking"} data-testid="watch">
+              {phase.t === "checking" ? <LoaderCircle className="anim-spin size-[1.125rem]" aria-hidden="true" /> : <Play className="size-[1.125rem] fill-current" aria-hidden="true" />}
+              Watch
+            </button>
+          </Card>
+        )}
 
-        <div className="min-w-0 lg:pt-[5.5rem]">
-          <WhoIsConnected tree={tree} ownKey={ownKey} />
-        </div>
+        {(phase.t === "watching" || phase.t === "joining") && !keyProblem && <ServerlessNote />}
+
+        {/* Not once over, nor once this browser has given up its place: the tree would be stale. */}
+        {phase.t !== "over" && phase.t !== "stuck" && !keyProblem && <WhoIsConnected tree={tree} ownKey={ownKey} collapsible />}
       </main>
     </div>
   );
