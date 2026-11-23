@@ -15,7 +15,19 @@ const H = require("./lib.cjs");
 const { BASE, ok, sleep, until } = H;
 const WIDE = { width: 1280, height: 900 };
 const PHONE = { width: 375, height: 812 };
-const LIVE_LINK = /\/live\/([a-z]{3}-[a-z]{4}-[a-z]{3})(\?|$)/;
+const LIVE_LINK = /\/live\/([a-z]{3}-[a-z]{4}-[a-z]{3})(\?|#|$)/;
+/**
+ * The link's end-to-end key (`#k=…`, src/lib/live/e2ee.ts) is made by the host's page when it goes
+ * live. A viewer who has the link before that (the early viewer below) is given this one, and the
+ * host's page is made to use it (`useKey`): the browser's AES-GCM key generation returns it.
+ */
+const EARLY_KEY = Buffer.alloc(32, 7).toString("base64url");
+const useKey = `(() => {
+  const raw = Uint8Array.from(atob(${JSON.stringify(Buffer.alloc(32, 7).toString("base64"))}), (c) => c.charCodeAt(0));
+  const generate = crypto.subtle.generateKey.bind(crypto.subtle);
+  crypto.subtle.generateKey = (algorithm, extractable, usages) =>
+    algorithm && algorithm.name === "AES-GCM" ? crypto.subtle.importKey("raw", raw, "AES-GCM", true, usages) : generate(algorithm, extractable, usages);
+})();`;
 
 /** Console errors and page errors, per page, so each section can say none were raised. */
 const consoleErrors = new Map();
@@ -136,7 +148,7 @@ async function happy(browser) {
   );
   ok("host preview shows the camera", previewMoves);
   const { link, id, path } = await goLive(host, "QA happy path");
-  ok("share link carries the signed title", /\?title=QA%20happy%20path&ts=[\w-]{20,}$/.test(link), link);
+  ok("share link carries the signed title, and the end-to-end key in its fragment", /\?title=QA%20happy%20path&ts=[\w-]{20,}#k=[\w-]{43}&s=[\w-]{87}$/.test(link), link);
   ok("host page is titled after the webinar", (await page.locator('[data-testid="webinar-title"]').innerText()) === "QA happy path");
   await page.click('[data-testid="share-link"]');
   await page.getByText("Copied").waitFor({ timeout: 5000 });
@@ -314,12 +326,12 @@ async function viewer(browser) {
   /* the link before anyone is live: the wait, then the picture on its own */
   const created = await api("/api/live", { title: "QA early" });
   const early = await person(browser);
-  await early.page.goto(`${BASE}/live/${created.id}?title=${encodeURIComponent(created.title.title)}&ts=${created.title.sig}`);
+  await early.page.goto(`${BASE}/live/${created.id}?title=${encodeURIComponent(created.title.title)}&ts=${created.title.sig}#k=${EARLY_KEY}`);
   ok("before the host is live: “Not started yet”", await early.page.getByText("Not started yet").waitFor({ timeout: 15000 }).then(() => true, () => false));
   await early.page.click('[data-testid="watch"]');
   ok("…Watch: “Waiting for the host to go live”", await early.page.getByText("Waiting for the host to go live").waitFor({ timeout: 20000 }).then(() => true, () => false));
-  const host = await person(browser);
-  // This host's "Go live" gets the stream the early viewer is waiting on.
+  const host = await person(browser, { init: useKey });
+  // This host's "Go live" gets the stream the early viewer is waiting on, and its key.
   await host.page.route("**/api/live", (route) => (route.request().method() === "POST" ? route.fulfill({ json: created }) : route.continue()));
   const { path } = await goLive(host);
   const auto = await untilMoving(early.page, 30000);
@@ -385,7 +397,7 @@ async function viewer(browser) {
   await tampered.page.goto(`${BASE}/live/not-a-code`);
   ok("an invalid id shows the not-found page", (await tampered.page.locator('meta[name="robots"][content*="noindex"]').count()) > 0 && (await tampered.page.locator('[data-testid="live-notice"]').count()) === 0);
   ok("…and so is its tree", (await fetch(`${BASE}/api/live/NOT-AN-ID/tree`)).status === 404);
-  await tampered.page.goto(`${BASE}/live/zzz-zzzz-zzz`);
+  await tampered.page.goto(`${BASE}/live/zzz-zzzz-zzz#k=${EARLY_KEY}`);
   ok("a well-formed id nobody made reads as not started", await tampered.page.getByText("Not started yet").waitFor({ timeout: 15000 }).then(() => true, () => false));
   const end = await fetch(`${BASE}/api/live/${created.id}/end`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hostKey: "nope" }) });
   ok("ending without the host key is refused", end.status === 403, String(end.status));

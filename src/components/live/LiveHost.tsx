@@ -455,7 +455,7 @@ export function LiveHost() {
                     </span>
                   </button>
                   <p className="text-sm text-muted">
-                    The copied link ends with the video’s key. Anyone with the full link can watch, up to {tree?.cap ?? LIVE_VIEWER_CAP} at once.
+                    The link you copy ends with the video’s key. Anyone with the full link can watch, up to {tree?.cap ?? LIVE_VIEWER_CAP} at once.
                   </p>
                 </Card>
 
