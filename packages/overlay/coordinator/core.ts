@@ -42,6 +42,12 @@ export const HELLO_TIMEOUT_MS = 10_000;
 export const HOUSEKEEPING_MS = 1_000;
 /** A grant shown in `resume` may be this long past its expiry: the coordinator may have been away. */
 const RESUME_LEEWAY_S = 3_600;
+/**
+ * [D63] A session whose source has gone without `/end` (a crash, a lost network) is ended with
+ * `source-left` once it has been gone this long. Long enough for a host's browser to restart or
+ * its network to come back and resume, and for the coordinator's own outage (30 s in the gate).
+ */
+export const SOURCE_GONE_END_MS = 180_000;
 /** SPEC §11.4: the audience-wide hint. */
 const HINT = { downShare: 0.3, downAfterMs: 10_000, upShare: 0.1, upAfterMs: 60_000, ladderKbps: [800, 500] } as const;
 /** SPEC §6.3: messages a second, per peer and type. `time` is not in the spec's list; 20 is ample for §4.1. */
@@ -88,6 +94,8 @@ class Core implements CoordinatorCore {
   private streams: StreamConfig[] = [];
   private key: SessionKey | null = null;
   private ended: string | null = null;
+  /** [D63] Since when the session has had no source connected, once one has said what the streams are. */
+  private sourceGoneAt: number | null = null;
   private lastWake: number | null = null;
   private lastHousekeeping = 0;
   private lastPrune = 0;
@@ -106,6 +114,7 @@ class Core implements CoordinatorCore {
     if (stored.session) this.key = await this.importSession(stored.session).catch(() => null);
     await this.ready(fx, now);
     this.ended = stored.ended ?? null;
+    if (stored.sourceGoneAt !== undefined && Number.isFinite(Number(stored.sourceGoneAt))) this.sourceGoneAt = Number(stored.sourceGoneAt);
     // What the source said the streams are, kept with the session: so that a viewer arriving
     // before the source has resumed is welcomed with them, and can be placed as soon as the
     // feeders have reported (found by the harness: joiners admitted just after a restart were
@@ -366,6 +375,8 @@ class Core implements CoordinatorCore {
     let at: number | null = null;
     if (this.conns.size > 0 || this.map.nodes.size > 0) at = this.lastHousekeeping + HOUSEKEEPING_MS;
     else for (const exp of this.nonces.values()) at = Math.min(at ?? Infinity, exp * 1000 + 1000);
+    // [D63] An empty room whose source has gone is still ended on time, for whoever comes later.
+    if (this.ended === null && this.sourceGoneAt !== null) at = Math.min(at ?? Infinity, this.sourceGoneAt + SOURCE_GONE_END_MS);
     if (at !== null && at !== this.lastWake) {
       this.lastWake = at;
       fx.push({ type: "wake", at });
@@ -735,6 +746,49 @@ class Core implements CoordinatorCore {
     }
   }
 
+  /** Ends the session for everyone (`/end`, or [D63]). */
+  private end(fx: Effect[], reason: "ended" | "limit" | "paused" | "source-left"): void {
+    if (this.ended !== null) return;
+    this.ended = reason;
+    fx.push({ type: "persist", key: "ended", value: reason });
+    for (const conn of this.conns.values()) {
+      if (conn.peer !== null) this.send(fx, conn.id, { t: "end", reason });
+      fx.push({ type: "close", conn: conn.id, code: CLOSE.ended, reason });
+    }
+    this.conns.clear();
+    for (const node of [...this.map.nodes.values()]) this.map.remove(node.peer);
+    this.byIdentity.clear();
+    if (this.sourceGoneAt !== null) {
+      this.sourceGoneAt = null;
+      fx.push({ type: "persist", key: "sourceGoneAt", value: null });
+    }
+  }
+
+  /**
+   * [D63] Keeps `sourceGoneAt`: set when a session that has had a source (it said what the streams
+   * are) has none connected, cleared when one is; and ends the session with `source-left` once
+   * the source has been gone `SOURCE_GONE_END_MS`. True if it ended it.
+   */
+  private sourceGone(fx: Effect[], now: number): boolean {
+    const source = this.map.source !== null ? this.map.nodes.get(this.map.source) : undefined;
+    if (source && source.conn !== null) {
+      if (this.sourceGoneAt !== null) {
+        this.sourceGoneAt = null;
+        fx.push({ type: "persist", key: "sourceGoneAt", value: null });
+      }
+      return false;
+    }
+    if (this.streams.length === 0) return false;
+    if (this.sourceGoneAt === null) {
+      // Gone since its socket closed, if the map still holds it; otherwise since now.
+      this.sourceGoneAt = source?.closedAt ?? now;
+      fx.push({ type: "persist", key: "sourceGoneAt", value: String(this.sourceGoneAt) });
+    }
+    if (now - this.sourceGoneAt < SOURCE_GONE_END_MS) return false;
+    this.end(fx, "source-left");
+    return true;
+  }
+
   /* ------------------------------ time passing ------------------------------ */
 
   private async housekeeping(fx: Effect[], now: number): Promise<void> {
@@ -752,6 +806,7 @@ class Core implements CoordinatorCore {
     }
     for (const node of [...this.map.nodes.values()]) if (node.conn === null && node.closedAt !== null && now - node.closedAt >= FORGET_MS) this.forget(fx, node);
     if (this.ended !== null) return;
+    if (this.sourceGone(fx, now)) return;
 
     for (const node of this.map.nodes.values()) {
       if (node.conn === null || node.grantExp - now / 1000 > GRANT_RENEW_S) continue;
@@ -957,17 +1012,7 @@ class Core implements CoordinatorCore {
         return { status: 200, body: { samples: this.samples } };
       case "/end": {
         const reason = (["ended", "limit", "paused", "source-left"] as const).find((value) => value === body.reason) ?? "ended";
-        if (this.ended === null) {
-          this.ended = reason;
-          fx.push({ type: "persist", key: "ended", value: reason });
-          for (const conn of this.conns.values()) {
-            if (conn.peer !== null) this.send(fx, conn.id, { t: "end", reason });
-            fx.push({ type: "close", conn: conn.id, code: CLOSE.ended, reason });
-          }
-          this.conns.clear();
-          for (const node of [...this.map.nodes.values()]) this.map.remove(node.peer);
-          this.byIdentity.clear();
-        }
+        this.end(fx, reason);
         return { status: 200, body: { ended: true } };
       }
       default: {
