@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { decodeClientMessage, decodeServerMessage, encodeServerMessage } from "@meetly/overlay/protocol";
 import type { ClientMessage, IceServer, PeerId, ServerMessage, ServerMessageOf } from "@meetly/overlay/protocol";
-import { turnFrom } from "./durableObject";
+import { turnFrom } from "./turn";
 import { Rig, STREAMS, Swarm, leafCaps, relayCaps, seeded } from "./testkit";
 
 type ClientMessageOf<T extends ClientMessage["t"]> = Extract<ClientMessage, { t: T }>;

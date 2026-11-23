@@ -18,6 +18,7 @@ import { DEFAULT_PARAMS, encodeServerMessage } from "../protocol";
 import type { IceServer, OverlayParams } from "../protocol";
 import { createCore } from "./core";
 import { HEALTH_PATH, createSerial, parseRoomPath } from "./routing";
+import { turnFrom } from "./turn";
 import type { ConnId, CoordinatorCore, CoreRequest, Effect } from "./types";
 
 /** What this file uses of a Durable Object's state. */
@@ -78,7 +79,7 @@ const CORE_PREFIX = "core:";
 const ROOM_KEY = "room";
 const STUN: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
 /** TURN credentials last this long, and each peer is given fresh ones at half that (SPEC §6.7, [D80]). */
-export const TURN_TTL_S = 6 * 3600;
+const TURN_TTL_S = 6 * 3600;
 
 /** What a socket carries with it across hibernation: its id, and what the core attached. */
 type SocketAttachment = { id: ConnId; core?: string };
@@ -112,26 +113,6 @@ export type OverlayRoomOptions = {
    */
   testTurn?: { urls: string[]; secret: string; ttlS: number };
 };
-
-type MintedServer = { urls: string | string[]; username?: string; credential?: string };
-
-/**
- * Cloudflare's TURN servers for one peer, from its answer: TURN URLs only (the configured STUN
- * servers are kept, see `iceServers`), and none on port 53, which browsers block (Cloudflare's
- * own advice: an ICE agent would wait on it for nothing).
- */
-export function turnFrom(answer: unknown): IceServer[] {
-  const raw = (answer as { iceServers?: MintedServer | MintedServer[] } | null)?.iceServers;
-  // The older `generate` endpoint answers with one object, `generate-ice-servers` with a list.
-  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  const out: IceServer[] = [];
-  for (const server of list) {
-    const urls = (Array.isArray(server?.urls) ? server.urls : [server?.urls]).filter((url): url is string => typeof url === "string" && /^turns?:/i.test(url) && !/:53(\?|$)/.test(url));
-    if (urls.length === 0 || typeof server.username !== "string" || typeof server.credential !== "string") continue;
-    out.push({ urls: urls.slice(0, 8), username: server.username, credential: server.credential });
-  }
-  return out;
-}
 
 /** The TURN REST API's credentials (what coturn's `use-auth-secret` checks): "<expiry>:<name>", and its HMAC-SHA1. */
 async function restCredentials(secret: string, ttlS: number): Promise<{ username: string; credential: string }> {
