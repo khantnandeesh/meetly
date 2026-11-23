@@ -870,6 +870,13 @@ each relay at what its probe shows: six children take 6 × 1.15 × *B* (8.5 Mbps
 at the 0.7 share, a spare uplink of 12.1 Mbps; a relay with less takes fewer. The gate mix
 (D28) caps no relay's uplink ("slow", the only capped profile, never relays), so the gate's
 relays reach six; a home uplink of 10 Mbps reaches four.
+**[D60] A join leaves a full relay's last slot to repairs** (decided by integrator 2026-11-23). A
+full relay with a fan-out of 4 or more is offered to joiners only while it has two or more slots
+free; its last is kept for a repair (warm or cold) or a move. With fan-out 6 a depth-1 relay
+carries a sixth of the audience: in gate run 45146597862, with every slot taken by joiners, two
+kills of such relays each ended in about 180 cold repairs and 120 peers rejoining for want of a
+place. In the simulator depth p95 stays 3 (78% of peers at depth 3, 0–1% at 4).
+
 **[D57] The source keeps its probed fan-out** (decided by integrator 2026-11-23): D49's
 `sourceFanout` to `sourceAloneFanout`, at its measured uplink, holds whether or not other relays
 exist. Its probe measures what is spare beyond what it already sends, the stage included. In the
@@ -1629,6 +1636,7 @@ Rotating speakers on the overlay. Out of scope.
 | D57 | The source keeps its probed fan-out (up to `sourceAloneFanout`), not only while alone (integrator, 2026-11-23) | 8.1 |
 | D58 | The honesty check compares light and decoding viewers at the same depths (integrator, 2026-11-23) | 13.2 |
 | D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23) | 7.4 |
+| D60 | A join leaves a full relay's last slot (fan-out 4 or more) to repairs (integrator, 2026-11-23) | 6.6, 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
