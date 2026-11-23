@@ -96,6 +96,21 @@ export class FakePeerConnection {
   private busy = 0;
   /** Tests set this to make the route look like a TURN one. */
   relayed = false;
+  /** What `setConfiguration` was last given, and how many times ICE was restarted ([D80]). */
+  configuration: { iceServers?: unknown[] } = {};
+  iceRestarts = 0;
+
+  getConfiguration(): { iceServers?: unknown[] } {
+    return { ...this.configuration };
+  }
+
+  setConfiguration(configuration: { iceServers?: unknown[] }): void {
+    this.configuration = configuration;
+  }
+
+  restartIce(): void {
+    this.iceRestarts++;
+  }
 
   constructor(
     private readonly net: FakeNet,

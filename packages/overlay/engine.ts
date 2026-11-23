@@ -242,8 +242,14 @@ abstract class PeerEngine {
       });
       node.on("config", (config) => this.onConfig(config));
       // The session's streams, later than welcome: a viewer welcomed before the source started.
+      // [D80] Fresh ICE servers, in a `grant` before the TURN credentials expire, or in the
+      // `welcome` of a reconnection: the links take them.
       this.client.on("message", (message) => {
         if (message.t === "streams" && welcome.role !== "source") node.setStreams(message.streams);
+        else if (message.t === "grant" && message.ice) links.setIce?.(message.ice);
+      });
+      this.client.on("welcome", (again) => {
+        if (again !== welcome) links.setIce?.(again.ice);
       });
       node.on("probe", (spare) => this.onProbe(spare));
       await this.beforeStart(welcome);
@@ -252,13 +258,16 @@ abstract class PeerEngine {
       this.timers.push(this.clock.setInterval(() => this.sample(), welcome.params.metricsMs));
       this.setState("connected");
       this.sendStatus();
-      // NAT type, once the ICE servers are known. A session offering none is one network (the
-      // harness on one machine, a LAN): every peer's host candidates reach every other's.
+      // NAT type, once the ICE servers are known. A session offering no STUN server is one network
+      // (the harness on one machine, a LAN, a local TURN test): every peer's host candidates reach
+      // every other's, and there is nothing to classify against.
       this.natPending = !this.options.capabilities?.nat;
-      void (welcome.ice.length === 0 ? Promise.resolve<Capabilities["nat"]>("open") : probeNat(welcome.ice)).then((nat) => {
+      const stun = welcome.ice.some((server) => server.urls.some((url) => /^stuns?:/i.test(url)));
+      void (stun ? probeNat(welcome.ice) : Promise.resolve<Capabilities["nat"]>("open")).then((nat) => {
         this.natPending = false;
         if (!this.caps || this.options.capabilities?.nat) return;
-        this.caps = { ...this.caps, nat };
+        // [D80] Behind TURN stays "relay", whatever the probe found.
+        this.caps = { ...this.caps, nat: this.turnSeen ? "relay" : nat };
         this.sendStatus();
         // A short probe that was waiting for the NAT type runs now (`maybeProbe`).
         if (this.probePhase === "short" && this.hadParent && !this.probeRunning) this.scheduleProbe(0);
@@ -282,9 +291,28 @@ abstract class PeerEngine {
 
   /* --- status, the probe --- */
 
+  /**
+   * SPEC §8.1 [D80]: a viewer whose link to its parent goes through TURN only watches, for the
+   * rest of the session. It says so in `status`, and its NAT is "relay" from then on, which makes
+   * it ineligible by `judgeRelay` (here: no uplink probe, which would go through TURN; and to a
+   * coordinator that does not read `turn`). True when this call found it.
+   */
+  private turnSeen = false;
+  private checkRoute(): boolean {
+    const node = this.node;
+    if (this.turnSeen || !node || !this.links || this.welcome?.role === "source") return false;
+    const behindTurn = node.status().stripes.some((stripe) => stripe.parent !== null && this.links!.get(stripe.parent)?.turn === true);
+    if (!behindTurn) return false;
+    this.turnSeen = true;
+    if (this.caps) this.caps = { ...this.caps, nat: "relay" };
+    this.options.logger?.info("overlay", "the link to the parent goes through TURN: this viewer only watches");
+    return true;
+  }
+
   protected sendStatus(): void {
     const node = this.node;
     if (!node || !this.caps) return;
+    this.checkRoute();
     const status = node.status();
     const up = this.lastUp;
     this.client.sendStatus({
@@ -296,6 +324,7 @@ abstract class PeerEngine {
       caps: this.caps,
       lossPct: up?.lossPct ?? 0,
       rttMs: up?.rttMs ?? null,
+      ...(this.turnSeen ? { turn: true } : {}),
     });
   }
   protected lastUp: NodeStats["up"] = null;
@@ -365,6 +394,8 @@ abstract class PeerEngine {
     // Nothing to probe until there is a parent to send the probe to.
     const stripe = node.status().stripes[0];
     if (!stripe || stripe.state !== "active" || stripe.parent === null) return this.scheduleProbe(PROBE_WAIT_MS);
+    // [D80] Behind TURN: no probe, ever (the verdict below says "nat").
+    if (this.checkRoute()) this.sendStatus();
     const verdict = judgeRelay(this.caps, { uptimeMs: this.clock.now() - this.welcomedAt, spareUplinkKbps: null, lossPct: this.lastUp?.lossPct ?? 0, churnPerMin: 0 }, this.sessionKbps(), welcome.params);
     // Only the uplink is unknown (and, for the short probe, probation not over): the probe is what
     // finds the one, and the other passes by itself. Anything else, and it would be wasted.
@@ -416,6 +447,8 @@ abstract class PeerEngine {
     this.sampledAt = now;
     const stats = node.takeStats();
     this.lastUp = stats.up;
+    // [D80] A route that has fallen back to TURN since the last status is said at once.
+    if (this.checkRoute()) this.sendStatus();
     const status = node.status();
     const sample: MetricsSample = {
       peer: welcome.peer,

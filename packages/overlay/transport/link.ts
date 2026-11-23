@@ -17,6 +17,7 @@
 import {
   PROTOCOL_VERSION,
   PacketType,
+  type IceServer,
   ProtocolError,
   decodePeerMessage,
   encodePeerMessage,
@@ -57,6 +58,8 @@ const DRAIN_MS = 4;
 const MAX_HELD_MESSAGES = 64;
 
 const CLASSES: readonly SendClass[] = ["control", "audio", "video", "replay"];
+
+const rtcIce = (ice: readonly IceServer[]): RTCIceServer[] => ice.map((server) => ({ urls: server.urls, username: server.username, credential: server.credential }));
 
 /** `RTCDataChannel` as a `PacketChannel`: the one place the DOM type is touched. */
 function adaptChannel(dc: RTCDataChannel): PacketChannel {
@@ -120,12 +123,13 @@ class LinkImpl implements Link {
     peer: PeerId,
     private readonly options: TransportOptions,
     private readonly onClosed: (link: LinkImpl) => void,
+    ice: readonly IceServer[] = options.ice,
   ) {
     this.peer = peer;
     this.polite = options.self > peer;
     this.highWater = options.highWaterBytes ?? DEFAULT_HIGH_WATER_BYTES;
     this.maxQueue = options.maxQueueBytes ?? DEFAULT_MAX_QUEUE_BYTES;
-    const config: RTCConfiguration = { iceServers: options.ice.map((server) => ({ urls: server.urls, username: server.username, credential: server.credential })) };
+    const config: RTCConfiguration = { iceServers: rtcIce(ice) };
     this.pc = options.peerConnection ? options.peerConnection(config) : new RTCPeerConnection(config);
     const wrap = (kind: "ctl" | "media"): PacketChannel => {
       const { label, ...init } = CHANNELS[kind];
@@ -226,21 +230,62 @@ class LinkImpl implements Link {
       });
   }
 
-  /** Whether the route chosen goes through TURN. Asked once ICE has connected. */
+  /**
+   * Whether the route chosen goes through TURN. Asked whenever ICE connects (again, after a
+   * restart) and, [D80], whenever the selected pair changes: a route can fall back to TURN later.
+   */
   private async readRoute(): Promise<void> {
+    this.watchRoute();
     try {
       const stats = await this.pc.getStats();
+      if (this.state === "closed") return;
       const byId = new Map<string, Record<string, unknown>>();
       stats.forEach((report: Record<string, unknown>) => byId.set(report.id as string, report));
+      const relay = (pair: Record<string, unknown>) => byId.get(pair.localCandidateId as string)?.candidateType === "relay" || byId.get(pair.remoteCandidateId as string)?.candidateType === "relay";
+      // The transport names its selected pair where the browser says (Chromium, Firefox).
+      for (const report of byId.values()) {
+        const pair = report.type === "transport" && typeof report.selectedCandidatePairId === "string" ? byId.get(report.selectedCandidatePairId) : undefined;
+        if (pair) {
+          this.turn = relay(pair);
+          return;
+        }
+      }
       for (const report of byId.values()) {
         if (report.type !== "candidate-pair" || report.state !== "succeeded" || !(report.nominated || report.selected)) continue;
-        const local = byId.get(report.localCandidateId as string);
-        const remote = byId.get(report.remoteCandidateId as string);
-        this.turn = local?.candidateType === "relay" || remote?.candidateType === "relay";
+        this.turn = relay(report);
         return;
       }
     } catch {
-      // No statistics: leave it as not through TURN.
+      // No statistics: leave it as it was.
+    }
+  }
+
+  private watchingRoute = false;
+
+  /** [D80] The ICE transport says when its selected pair changes, where the browser has it. */
+  private watchRoute(): void {
+    if (this.watchingRoute) return;
+    const ice = (this.pc as RTCPeerConnection & { sctp?: { transport?: { iceTransport?: EventTarget } } | null }).sctp?.transport?.iceTransport;
+    if (!ice || typeof ice.addEventListener !== "function") return;
+    this.watchingRoute = true;
+    ice.addEventListener("selectedcandidatepairchange", () => {
+      if (this.state !== "closed") void this.readRoute();
+    });
+  }
+
+  /**
+   * SPEC §5.1 [D80]: fresh ICE servers. The connection is given them; if its route goes through
+   * TURN its relay was allocated with the old credentials, so ICE restarts (the old pair carries
+   * on until a new one is chosen).
+   */
+  setIce(ice: readonly IceServer[]): void {
+    if (this.state === "closed") return;
+    try {
+      if (typeof this.pc.getConfiguration !== "function" || typeof this.pc.setConfiguration !== "function") return;
+      this.pc.setConfiguration({ ...this.pc.getConfiguration(), iceServers: rtcIce(ice) });
+      if (this.turn && typeof this.pc.restartIce === "function") this.pc.restartIce();
+    } catch (error) {
+      this.options.logger?.warn("link", `new ICE servers for the link to ${this.peer} not taken`, error);
     }
   }
 
@@ -461,11 +506,17 @@ class LinkImpl implements Link {
 export function createLinkManager(options: TransportOptions): LinkManager {
   const events = new Emitter<LinkManagerEvents>((error) => options.logger?.error("links", "a listener threw", error));
   const links = new Map<PeerId, LinkImpl>();
+  let ice: readonly IceServer[] = options.ice;
 
   const make = (peer: PeerId): LinkImpl => {
-    const link = new LinkImpl(peer, options, (closed) => {
-      if (links.get(peer) === closed) links.delete(peer);
-    });
+    const link = new LinkImpl(
+      peer,
+      options,
+      (closed) => {
+        if (links.get(peer) === closed) links.delete(peer);
+      },
+      ice,
+    );
     links.set(peer, link);
     return link;
   };
@@ -492,6 +543,10 @@ export function createLinkManager(options: TransportOptions): LinkManager {
     links: () => [...links.values()],
     closeAll() {
       for (const link of [...links.values()]) link.close("local");
+    },
+    setIce(next) {
+      ice = next.slice();
+      for (const link of links.values()) link.setIce(ice);
     },
   };
 }

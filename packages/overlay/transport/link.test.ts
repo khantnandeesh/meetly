@@ -186,6 +186,37 @@ describe("links: making one (SPEC §5.1)", () => {
     assert.equal(ab.turn, true);
   });
 
+  it("[D80] takes fresh ICE servers: new links start with them, open links are given them, and a relayed one restarts ICE", async () => {
+    const w = world();
+    const started: RTCConfiguration[] = [];
+    const first = [{ urls: ["turn:t.example.org:3478"], username: "old", credential: "old" }];
+    const fresh = [{ urls: ["turn:t.example.org:3478"], username: "new", credential: "new" }];
+    const a = w.peer("a", {
+      ice: first,
+      peerConnection: (config) => {
+        started.push(config);
+        const pc = w.net.factory();
+        w.pcs.set("a", [...(w.pcs.get("a") ?? []), pc as unknown as FakePeerConnection]);
+        return pc;
+      },
+    });
+    w.peer("b");
+    w.peer("c");
+    const ab = a.manager.connect("b");
+    const ac = a.manager.connect("c");
+    w.pcs.get("a")![0].relayed = true;
+    await w.run(40);
+    assert.deepEqual([ab.state, ab.turn, ac.state, ac.turn], ["open", true, "open", false]);
+    a.manager.setIce!(fresh);
+    const [toB, toC] = w.pcs.get("a")!;
+    assert.deepEqual(toB.configuration.iceServers, fresh);
+    assert.deepEqual(toC.configuration.iceServers, fresh);
+    assert.deepEqual([toB.iceRestarts, toC.iceRestarts], [1, 0], "only the relayed link restarts ICE");
+    w.peer("d");
+    a.manager.connect("d");
+    assert.deepEqual(started.map((config) => (config.iceServers as { username?: string }[])[0].username), ["old", "old", "new"]);
+  });
+
   it("gives up with \"timeout\" on a peer that never answers", async () => {
     const w = world();
     const a = w.peer("a");
