@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DEFAULT_PARAMS, type Capabilities } from "@meetly/overlay";
+const DEFAULTS = DEFAULT_PARAMS;
 import { PROVISIONAL_FANOUT, createParentSelector, judgeProvisional, judgeRelay, parentCost } from "@meetly/overlay/topology/index";
 import { relayFanout, relayScore } from "@meetly/overlay/topology/scoring";
 import type { Candidate, Observed } from "@meetly/overlay/topology/types";
@@ -125,6 +126,7 @@ describe("judgeProvisional: a relay before probation ends (SPEC §8.1 [D38])", (
 
 describe("relay score (SPEC §8.2)", () => {
   it("is 1 for ten minutes on a fast, clean, mains-powered line that never changed parent", () => {
+    const DEFAULT_PARAMS = { ...DEFAULTS, maxFanout: 4 };
     near(relayScore(good, { uptimeMs: 600_000, spareUplinkKbps: 4 * 1.15 * KBPS, lossPct: 0, churnPerMin: 0 }, KBPS, DEFAULT_PARAMS), 1);
   });
 
@@ -133,6 +135,8 @@ describe("relay score (SPEC §8.2)", () => {
   });
 
   it("weighs uplink 0.35, uptime 0.25, loss 0.20, power 0.10, churn 0.10", () => {
+    // A fan-out of 4 here, the proof's (the default is 6 since D56): the numbers below are 4's.
+    const DEFAULT_PARAMS = { ...DEFAULTS, maxFanout: 4 };
     const observed: Observed = { uptimeMs: 150_000, spareUplinkKbps: 2 * 1.15 * 1000, lossPct: 0.5, churnPerMin: 1 };
     // uplink 2/4 = 0.5, uptime 0.25, loss 1 − 0.25 = 0.75, power unknown = 0, churn 1 − 0.5 = 0.5
     near(relayScore({ ...good, onPower: null }, observed, 1000, DEFAULT_PARAMS), 0.35 * 0.5 + 0.25 * 0.25 + 0.2 * 0.75 + 0 + 0.1 * 0.5);
@@ -140,6 +144,7 @@ describe("relay score (SPEC §8.2)", () => {
   });
 
   it("caps every term at 1", () => {
+    const DEFAULT_PARAMS = { ...DEFAULTS, maxFanout: 4 };
     near(relayScore(good, { uptimeMs: 9e9, spareUplinkKbps: 9e9, lossPct: 0, churnPerMin: 0 }, KBPS, DEFAULT_PARAMS), 1);
     near(relayScore(good, { uptimeMs: 600_000, spareUplinkKbps: 4 * 1.15 * KBPS, lossPct: 50, churnPerMin: 50 }, KBPS, DEFAULT_PARAMS), 0.7);
   });

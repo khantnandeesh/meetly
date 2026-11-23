@@ -70,7 +70,8 @@ describe("node: joining and forwarding on a fixed tree", () => {
       peers.map((p) => p.node.status().depth),
       [0, 1, 1, 2, 2, 2, 2],
     );
-    assert.equal(peers[1].node.status().freeSlots, 2);
+    // A relay with two children: maxFanout (6, D56) less two.
+    assert.equal(peers[1].node.status().freeSlots, 4);
     assert.equal(peers[0].node.status().freeSlots, 1);
     assert.equal(peers[3].node.status().freeSlots, 0);
     // A joiner starts from the newest keyframe and then misses nothing.
@@ -119,7 +120,7 @@ describe("node: joining and forwarding on a fixed tree", () => {
 });
 
 describe("node: failure detection and warm repair (SPEC §7.4, §7.5)", () => {
-  it("a parent silent for 200 ms is detected between 200 and 210 ms, and the backup takes over with nothing lost", async () => {
+  it("a parent silent for 150 ms (D59) is detected between 150 and 160 ms, and the backup takes over with nothing lost", async () => {
     const { net, peers } = await proofTree({ keepFrames: true });
     const killedAt = net.clock.now();
     net.kill("1");
@@ -135,8 +136,8 @@ describe("node: failure detection and warm repair (SPEC §7.4, §7.5)", () => {
       assert.equal(repair.next, "2");
       assert.equal(repair.usedCoordinator, false);
       const silentFor = repair.detected - repair.lastHeard;
-      assert.ok(silentFor >= 200 && silentFor <= 210, `detected after ${silentFor} ms of silence`);
-      assert.ok(repair.detected - net.sessionClock.fromLocal(killedAt) <= 210);
+      assert.ok(silentFor >= 150 && silentFor <= 160, `detected after ${silentFor} ms of silence`);
+      assert.ok(repair.detected - net.sessionClock.fromLocal(killedAt) <= 160);
       assert.equal(repair.resubscribed, repair.detected);
       assert.ok(repair.firstPacket! - repair.detected <= 5, "the backup answered at once");
       assert.ok(repair.freezeMs <= 250, `froze for ${repair.freezeMs} ms`);
@@ -204,7 +205,7 @@ describe("node: cold repair (SPEC §7.5)", () => {
       assert.equal(repair.kind, "cold");
       assert.equal(repair.usedCoordinator, true);
       assert.equal(repair.framesLost, 0);
-      // Detection (200–210), the coordinator's answer (5) and the link (20), on this fake network.
+      // Detection (150–160, D59), the coordinator's answer (5) and the link (20), on this fake network.
       assert.ok(repair.freezeMs <= 300, `froze for ${repair.freezeMs} ms`);
       assert.deepEqual(missing(peer, Math.min(...peer.video), net.published - 3), []);
     }
@@ -287,12 +288,12 @@ describe("node: STALLED, so one death is one repair (SPEC §7.4, D17)", () => {
     assert.equal(stateOf(two).state, "repairing");
     assert.deepEqual([stateOf(three).state, stateOf(three).parent], ["waiting", "2"]);
     await net.runAsync(150);
-    // 200 ms for peer 2 to notice, then 600 ms of grace.
+    // 150 ms for peer 2 to notice (D59), then 600 ms of grace.
     assert.equal(stateOf(three).state, "cold-repair");
     assert.equal(stateOf(three).parent, null);
-    assert.ok(net.clock.now() - at >= 800);
+    assert.ok(net.clock.now() - at >= 750);
     // It asked nobody for a parent before the grace ran out (only, as always, for a backup).
-    assert.deepEqual(net.coordinatorLog.filter((entry) => entry.peer === "3" && entry.what !== "need:backup" && entry.at < at + 800), []);
+    assert.deepEqual(net.coordinatorLog.filter((entry) => entry.peer === "3" && entry.what !== "need:backup" && entry.at < at + 750), []);
     assert.ok(net.coordinatorLog.some((entry) => entry.peer === "3" && entry.what === "need:parent"));
   });
 });

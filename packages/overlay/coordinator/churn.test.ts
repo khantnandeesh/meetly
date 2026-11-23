@@ -88,7 +88,8 @@ describe("coordinator: the tree's depth under the gate's churn (SPEC §6.6, §12
       // could, is moved only up (the integrator's rule; a few here are the simulator's peers
       // acting on a move while the coordinator's view of depths is a status behind).
       assert.ok(result.deepening <= 10, `${result.deepening} deepening moves`);
-      assert.ok(result.eventsMedian <= 5, `median ${result.eventsMedian} events per kill`);
+      // A killed relay orphans up to its fan-out (6 since D56), each with an event of its own.
+      assert.ok(result.eventsMedian <= 7, `median ${result.eventsMedian} events per kill`);
     });
   }
 

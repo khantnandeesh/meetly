@@ -194,6 +194,8 @@ export type TreeMapOptions = {
    * source for peers that can; "shallow" is SPEC §6.6 read literally, kept for comparison.
    */
   leafPlacement?: "deep" | "shallow";
+  /** D57: whether the source keeps its probed fan-out ("always", the default) or only while it is the only relay ("alone", D49 as first decided). */
+  sourcePolicy?: "alone" | "always";
 };
 
 export class TreeMap {
@@ -208,6 +210,7 @@ export class TreeMap {
   private readonly scoring: Scoring;
   private readonly streamKbps: () => number;
   private readonly leafPlacement: "deep" | "shallow";
+  private readonly sourcePolicy: "alone" | "always";
   source: PeerId | null = null;
   /** Relays that `moves` last found deeper than they need be, with nowhere yet to go. */
   private misplaced = 0;
@@ -218,6 +221,7 @@ export class TreeMap {
     this.streamKbps = options.streamKbps;
     // D54: every joiner, dead end or not, under the shallowest feeder with room.
     this.leafPlacement = options.leafPlacement ?? "shallow";
+    this.sourcePolicy = options.sourcePolicy ?? "always";
   }
 
   /* ------------------------------ who is here ------------------------------ */
@@ -385,7 +389,7 @@ export class TreeMap {
   sourceFanout(node: TreeNode): number {
     const base = this.params.sourceFanout;
     const uplink = node.caps.uplinkKbps;
-    if (uplink === null || uplink === undefined || !this.sourceAlone()) return base;
+    if (uplink === null || uplink === undefined || (this.sourcePolicy === "alone" && !this.sourceAlone())) return base;
     return Math.max(base, relayFanout(uplink, this.streamKbps(), this.params.sourceAloneFanout ?? SOURCE_ALONE_FANOUT));
   }
 

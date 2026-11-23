@@ -72,7 +72,7 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.equal(swarm.offeredBeyondFree, 0);
   });
 
-  it("D49: while it is the only relay, the source with the uplink for six is told six; once a relay appears, its own again", async () => {
+  it("D49, D57: the source with the uplink for six is told six, and keeps it once relays appear", async () => {
     // Viewers that can never relay: the source stays alone. 50 Mbps at the session's 1,232 kbps is room for 24.
     const params = { ...DEFAULT_PARAMS, sourceFanout: 3, maxFanout: 4, probationMs: 3000 };
     const swarm = new Swarm(new Rig({ random: seeded(5), params }), undefined, { linkMs: 50, probedUplinkKbps: 20_000 });
@@ -93,7 +93,8 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     // The source is told within a housekeeping round of the first relay.
     await swarm.step(3000);
     assert.ok(swarm.shape().relays > 0, "a relay was made");
-    assert.equal(swarm.source!.grantFanout, 3, "back to sourceFanout");
+    // D57: the source keeps its probed fan-out; it is no longer only while it is alone.
+    assert.equal(swarm.source!.grantFanout, 6, "still six");
   });
 
   it("the smoke's tree (7 peers, fan-outs 2): relays whose probe shows two children each take two, as the smoke needs", async () => {

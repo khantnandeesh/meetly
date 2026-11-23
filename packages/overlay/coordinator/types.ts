@@ -92,6 +92,8 @@ export type CoordinatorCoreOptions = {
   params: OverlayParams;
   /** Where a joiner that can never relay goes: "shallow" (D54, the default) or "deep" (before D54), for tests. */
   leafPlacement?: "deep" | "shallow";
+  /** D57: the source's probed fan-out "always" (the default), or only while it is "alone" (D49). For tests. */
+  sourcePolicy?: "alone" | "always";
   /** The most viewers admitted. The source is never refused. */
   viewerCap: number;
   /** STUN and TURN servers for a new peer, with fresh credentials. */

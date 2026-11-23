@@ -73,6 +73,9 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const catchUpAge = emptyHistogram();
   const glassDecoding = emptyHistogram();
   const glassLight = emptyHistogram();
+  // D58: per depth, so the light viewers can be weighed to the decoding viewers' depths.
+  const lightByDepth = new Map<number, number[]>();
+  const decodingByDepth = new Map<number, number>();
   const freeze = emptyHistogram();
   const lag = emptyHistogram();
   const byDepth = new Map<number, number[]>();
@@ -117,6 +120,15 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
       mergeHistogram(glass, s.video.glassToGlass);
       if (s.video.catchUp) mergeHistogram(catchUpAge, s.video.catchUp.age);
       if (decodersKnown) mergeHistogram(decoders.has(s.peer) ? glassDecoding : glassLight, s.video.glassToGlass);
+      if (decodersKnown) {
+        const count = s.video.glassToGlass.reduce((sum, n) => sum + n, 0);
+        if (decoders.has(s.peer)) decodingByDepth.set(s.depth, (decodingByDepth.get(s.depth) ?? 0) + count);
+        else {
+          let h = lightByDepth.get(s.depth);
+          if (!h) lightByDepth.set(s.depth, (h = emptyHistogram()));
+          mergeHistogram(h, s.video.glassToGlass);
+        }
+      }
       let depth = byDepth.get(s.depth);
       if (!depth) byDepth.set(s.depth, (depth = emptyHistogram()));
       mergeHistogram(depth, s.video.glassToGlass);
@@ -279,8 +291,21 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   const lightQ = histogramQuantiles(glassLight);
   const honesty: GateCheck[] = [];
   if (decodingQ.n > 0 && lightQ.n > 0) {
-    const gap = Math.abs((decodingQ.p50 as number) - (lightQ.p50 as number));
-    honesty.push(below("light viewers' latency p50 against decoding viewers' (ms apart)", gap, HONESTY.lightVsDecodingP50Ms));
+    // D58: one in twenty viewers decodes, and those few do not sit at the light viewers' depths
+    // (in run 45130383283, 21% of decoding samples at depth 2 against 12% of light ones). Latency
+    // grows ~40 ms a hop, so the raw p50s differ by the depth mix alone. The light viewers are
+    // weighed to the decoding viewers' depths before their p50s are compared.
+    const weighed = emptyHistogram();
+    for (const [depth, n] of decodingByDepth) {
+      const h = lightByDepth.get(depth);
+      const total = h ? h.reduce((sum, c) => sum + c, 0) : 0;
+      if (!h || total === 0) continue;
+      for (let i = 0; i < weighed.length; i++) weighed[i] += Math.round(((h[i] ?? 0) * n * 1000) / total);
+    }
+    const weighedQ = histogramQuantiles(weighed);
+    const lightP50 = weighedQ.n > 0 ? (weighedQ.p50 as number) : (lightQ.p50 as number);
+    const gap = Math.abs((decodingQ.p50 as number) - lightP50);
+    honesty.push(below("light viewers' latency p50 (at the decoding viewers' depths, D58) against decoding viewers' (ms apart)", gap, HONESTY.lightVsDecodingP50Ms));
     if (gap > HONESTY.lightVsDecodingP50Ms) notes.push(`light and decoding viewers disagree by ${gap} ms at p50 (D29 allows ${HONESTY.lightVsDecodingP50Ms}): the light viewers' numbers are suspect`);
   } else if (decodersKnown) notes.push(decodingQ.n === 0 ? "no viewer decoded for real: the light viewers are unchecked (D29)" : "every viewer decoded: no light viewer to check");
   if (lagMissing) notes.push("a shard did not report its event-loop lag: starvation cannot be ruled out");

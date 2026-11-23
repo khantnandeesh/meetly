@@ -220,14 +220,14 @@ describe("node: its own stall is not its parent's death (SPEC §7.4)", () => {
     assert.deepEqual(missing(leaf, from, net.published - 3), []);
   });
 
-  it("a parent that really is silent is still found dead in 200–210 ms", async () => {
+  it("a parent that really is silent is still found dead in 150–160 ms (D59)", async () => {
     const { net, leaf } = await tree();
     net.kill("1");
     await net.runAsync(1500);
     const [repair] = repairs(leaf) as Extract<MetricsEvent, { t: "repair" }>[];
     assert.equal(repair.kind, "warm");
     const silentFor = repair.detected - repair.lastHeard;
-    assert.ok(silentFor >= 200 && silentFor <= 210, `detected after ${silentFor} ms`);
+    assert.ok(silentFor >= 150 && silentFor <= 160, `detected after ${silentFor} ms`);
   });
 });
 

@@ -550,7 +550,8 @@ describe("coordinator messages", () => {
 
   it("keeps the default timings the proof measured", () => {
     assert.equal(DEFAULT_PARAMS.heartbeatMs, 50);
-    assert.equal(DEFAULT_PARAMS.deadMs, 200);
+    // D59: 150 ms, three heartbeats missed (the proof's was 200).
+    assert.equal(DEFAULT_PARAMS.deadMs, 150);
   });
 });
 
