@@ -616,7 +616,10 @@ fan-out (D49, D57), not `sourceFanout` (3): with 3, 200 peers "needed" depth 4, 
 placed at depth 4 was ever too deep for placement, moves or backup advice. In the coordinator's
 simulator (gate churn, 16 seeds): peers at depth 4 or more 21.7% → 14.2% (the over-full source of
 run 45211601384 had kept it near 14%), cold repairs 69 → 42; with a quarter able to relay, depth
-p95 at most 4 in every seed (one 6 before).
+p95 at most 4 in every seed (one 6 before). **Withdrawn the same day** (integration engineer): in
+gate run 45238521551 depth 4 or more was 35% of samples (33% without D72 and the source at six,
+45225920753), and after the coordinator's outage the tree reached depth 11–13 and stayed there,
+deeper than any run before. The simulator's gain did not carry over.
 
 **Rebalancing** is the peer's own (§7.6); the coordinator's part is to keep answering `need`
 well and, at most once a minute per peer, to send an unasked `assign { reason: "rebalance" }`
@@ -731,6 +734,10 @@ over a fan-out would not hold a place the next relay needs; with D67 the source'
 one level down as soon as a relay has room. Simulated (the gate's start with the engine's
 timers, provisional.test.ts): welcome to linked p95 2.0 → 1.0 s at 4 joining a second, 3.2 →
 1.6 s at 6.7; the source over its fan-out for 4–19 s of the fill and not after; depth unchanged.
+Gate run 45231661833: welcome to linked p95 996 ms (2,534 before), join p95 2,500. *Amended the
+same day:* only where `maxFanout` is 4 or more. A tree of fan-outs one or two (the proof's tree, a
+chain) has no other slot at the parent's depth to relieve the source into, and waits 3 s for the
+probe as before (chain.test.ts formed 1, 1, 2, 2 instead of 1, 2, 3, 4 on a loaded runner).
 
 Budget for the 3 s gate: ticket and socket 200 ms, `welcome` 100 ms, link (ICE and DTLS) 300 ms
 to 2 s, replay and first frame 100 ms. The proof measured 20–45 ms from joining to first frame
@@ -814,7 +821,12 @@ nothing for 4.5 s while that parent's heartbeats kept coming, and its subtree (3
 3-5) froze with it until it left the session; their repairs came with 1.6-2.0 s of staleness
 each, 87 of them over a second, and repair p95 was 3,000 ms. The 2,500 ms is above what a slow link costs its own subtree
 before congestion's layer drop settles it (PLAN C3: within 2 s; a child of the capped relay froze
-1.5-2.5 s in slowChildSim and is not moved).
+1.5-2.5 s in slowChildSim and is not moved). **Withdrawn the same day** (integration engineer):
+in gate run 45238521551, 52 repairs were D74's and as many wait repairs below them, each a freeze
+of 2.5 s or more by construction; 39 of the 52 followed no move or switch of the child's own, some
+children left two or three parents in turn, and viewers' freezes did not shrink (4,140 s, against
+3,778 s without it). Repair p95 4,000 ms. The frozen parent of run 45231661833 is not answered:
+moves of several subtrees into one relay at once are the likelier cause to remove.
 
 **[D17] A parent that is alive but cut off says so.** When a relay's own parent dies, the relay
 keeps sending heartbeats, with the STALLED flag, while it repairs. Its children then move to
@@ -1863,9 +1875,9 @@ Rotating speakers on the overlay. Out of scope.
 | D68 | Frames the source skips for want of room are spread over the key interval; the keyframe's room is reserved in the window it lands in (integration engineer, 2026-11-23) | 9.2 |
 | D69 | Stalls are reported: `silence` events, the tick's lateness, the source's longest gap between published frames (integration engineer, 2026-11-23) | 12.1 |
 | D70 | The honesty check pairs each decoding viewer with its light siblings (same parent, network profile and 2 s); the p50 of the differences within 15 ms (integration engineer, 2026-11-23) | 13.2 |
-| D71 | A joiner with nowhere to go is sent over a fan-out after 1 s, not 3 (integration engineer, 2026-11-23) | 7.1 |
-| D72 | An eligible leaf shallower than the depth the tree needs is made a relay whatever the free slots; the needed depth counts the source's own fan-out (integration engineer, 2026-11-23) | 6.6 |
-| D74 | A parent that is not STALLED nor the source, holding a keyframe the child has not decoded for 2.5 s while nothing has become decodable, is left as `frozen` (integration engineer, 2026-11-23) | 7.4 |
+| D71 | A joiner with nowhere to go is sent over a fan-out after 1 s, not 3, where `maxFanout` is 4 or more (integration engineer, 2026-11-23) | 7.1 |
+| D72 | An eligible leaf shallower than the depth the tree needs is made a relay whatever the free slots; the needed depth counts the source's own fan-out (integration engineer, 2026-11-23); withdrawn the same day, deeper in the gate run, not shallower | 6.6 |
+| D74 | A parent that is not STALLED nor the source, holding a keyframe the child has not decoded for 2.5 s while nothing has become decodable, is left as `frozen` (integration engineer, 2026-11-23); withdrawn the same day, 2.5 s freezes surfaced as repairs, none saved | 7.4 |
 | D75 | The source probes toward up to three of its children, 500 ms apart, while under `sourceAloneFanout`, and keeps the best (integration engineer, 2026-11-23) | 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
