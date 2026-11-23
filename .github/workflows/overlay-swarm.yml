@@ -245,6 +245,10 @@ jobs:
             --layout "$OUT/layout.json" --nat "$OUT/nat.json" --ice stun --out "$OUT"
       - name: Run shard ${{ matrix.shard }} of ${{ matrix.shards }}
         if: env.EXCLUDED != '1'
+        env:
+          # The source page's main thread, sampled every 2 ms, its long tasks and its heap (harness/shard.ts):
+          # written beside the shard's result by the shard that runs the source, for its stalls (D69).
+          OVERLAY_PROFILE_SOURCE: ${{ github.workspace }}/swarm-out/${{ matrix.run }}
         run: |
           set -euo pipefail
           churn=(); [ "$CHURN_S" != "0" ] && churn=(--churn-s "$CHURN_S")

@@ -227,7 +227,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
 
   /**
    * The source page profiled (OVERLAY_PROFILE_SOURCE=<dir>, a diagnosis, not the gate): its main
-   * thread sampled every millisecond by DevTools' profiler, its long tasks, and its heap every
+   * thread sampled every 2 ms (OVERLAY_PROFILE_SOURCE_US) by DevTools' profiler, its long tasks, and its heap every
    * second, written to <dir> when the run ends. For the source's 150-240 ms stalls (D69).
    */
   const profileDir = process.env.OVERLAY_PROFILE_SOURCE || null;
@@ -239,7 +239,7 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
     if (!profileDir || !context?.newCDPSession) return;
     const cdp = await context.newCDPSession(page);
     await cdp.send("Profiler.enable");
-    await cdp.send("Profiler.setSamplingInterval", { interval: 1000 });
+    await cdp.send("Profiler.setSamplingInterval", { interval: Number(process.env.OVERLAY_PROFILE_SOURCE_US) || 2000 });
     await cdp.send("Profiler.start");
     sourceCdp = cdp;
     sourcePage = page;
@@ -310,7 +310,11 @@ export async function runShard(config: SwarmConfig): Promise<ShardResult> {
       };
       peers.set(index, handle);
       if (role === "source" && profileDir) {
-        await profileSource(page);
+        // A diagnosis: a profiler that will not attach costs the run nothing.
+        await profileSource(page).catch(async () => {
+          await sleep(500);
+          await profileSource(page).catch((error: unknown) => notes.push(`the source page could not be profiled: ${String(error)}`));
+        });
         await page.evaluate(() => {
           const tasks: { start: number; ms: number; name: string; attribution: string }[] = [];
           (window as unknown as { __longTasks: typeof tasks }).__longTasks = tasks;
