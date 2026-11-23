@@ -1293,6 +1293,19 @@ arrives, playout resumes and is now late; §10.4 brings it back. If not, the buf
 this GOP: it announces `skip` and resumes at the next keyframe, at most 2 s later. Everything in
 between is counted `lost`.
 
+**[D81] A missing base-layer frame is waited for until the next keyframe is due, up to 600 ms.**
+*(Integration engineer, 2026-11-23; for ratification.)* Giving a GOP up costs all of it to the
+next keyframe, up to 2 s, however long the wait was; a retransmission or the end of a replay that
+comes meanwhile saves it. So the wait is not 150 ms but until the GOP's next keyframe is due,
+between 150 and 600 ms (`BASE_WAIT_MAX_US`); a keyframe sooner than the schedule (one the source
+sends for a joiner), here and due, ends it at once. D45's wait during a replay still applies on top.
+Gate run 45272584683 (D79, D80): 138 of 888 repairs rendered nothing 0.5–5.5 s longer than their
+frames took to arrive, rendering resuming 1.4–2 s (p10–p50) after the first decodable frame, 46
+frames lost around each: GOPs given up. With the player's give-ups logged locally (16 peers,
+fan-outs 2), most were a base-layer frame or a keyframe still missing 150 ms past its due time,
+and some of those frames came 160 and 350 ms past it, the GOP already gone; with the longer wait:
+give-ups 21 → 12, freezes 539 → 350 (285 → 193 s), frames lost 5,465 → 4,724 (one run each).
+
 **Missing audio never waits.** At its due time it is concealed (§10.5).
 
 A frame that arrives after its due time is used only if a later frame needs it, and then
