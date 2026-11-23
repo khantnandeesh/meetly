@@ -801,6 +801,21 @@ followed, most of them waiting 10 s on "no parent could be found". Repair p95 7,
 loss of the source ends the session (D63) whatever its children do; a broken link to one child
 closes, which is still a death at once.
 
+**[D74] A parent whose media does not get through is left too.** *(Integration engineer,
+2026-11-23.)* Heartbeats prove a parent alive, not that its media reaches this peer. A parent
+that is not STALLED, not the source, has been the parent for `FROZEN_PARENT_MS` (2,500), and
+has held for that long a keyframe (its heartbeats' `keyFrameId`) newer than any frame this peer
+could decode, while no frame has become decodable here for that long either, is taken for dead
+(`frozen`): a warm repair to the backup, the old parent asked to stand by as after any death on
+an open link. A parent whose own feed stopped holds no newer keyframe, so its children wait for
+it (its own repair, D17). Gate run 45231661833: a relay moved into a parent a second after that
+parent's promotion, with four other moved subtrees, whose uplink queued 322 kB; it decoded
+nothing for 4.5 s while that parent's heartbeats kept coming, and its subtree (34 peers at depth
+3-5) froze with it until it left the session; their repairs came with 1.6-2.0 s of staleness
+each, 87 of them over a second, and repair p95 was 3,000 ms. The 2,500 ms is above what a slow link costs its own subtree
+before congestion's layer drop settles it (PLAN C3: within 2 s; a child of the capped relay froze
+1.5-2.5 s in slowChildSim and is not moved).
+
 **[D17] A parent that is alive but cut off says so.** When a relay's own parent dies, the relay
 keeps sending heartbeats, with the STALLED flag, while it repairs. Its children then move to
 `waiting` instead of repairing: they hold for up to `stallGraceMs` (600). If media resumes, they
@@ -1841,6 +1856,7 @@ Rotating speakers on the overlay. Out of scope.
 | D70 | The honesty check pairs each decoding viewer with its light siblings (same parent, network profile and 2 s); the p50 of the differences within 15 ms (integration engineer, 2026-11-23) | 13.2 |
 | D71 | A joiner with nowhere to go is sent over a fan-out after 1 s, not 3 (integration engineer, 2026-11-23) | 7.1 |
 | D72 | An eligible leaf shallower than the depth the tree needs is made a relay whatever the free slots; the needed depth counts the source's own fan-out (integration engineer, 2026-11-23) | 6.6 |
+| D74 | A parent that is not STALLED nor the source, holding a keyframe the child has not decoded for 2.5 s while nothing has become decodable, is left as `frozen` (integration engineer, 2026-11-23) | 7.4 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
