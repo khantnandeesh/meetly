@@ -120,19 +120,37 @@ export function LiveHost() {
     if (preview.current && media) preview.current.srcObject = media;
   }, [media, phase.t]);
 
-  // Leaving the page ends the webinar; the browser asks first while it is on.
+  // Leaving the page ends the webinar: closing or reloading the tab (the browser asks first while
+  // it is on), or following a link away from it. A reload is a new webinar (the key lives as long
+  // as the page), so without the end, viewers would be left on the last frame of one that can
+  // never come back. `sendBeacon` still goes out as the page unloads.
+  const liveId = phase.t === "live" ? phase.id : null;
+  const leaving = useRef<string | null>(null);
+  /** Ends the webinar that is live, if one is, as this page goes away. */
+  const endOnLeave = useCallback(() => {
+    const id = leaving.current;
+    if (!id) return;
+    leaving.current = null;
+    navigator.sendBeacon(`/api/live/${id}/end`, new Blob([JSON.stringify({ hostKey: hostKey.current })], { type: "application/json" }));
+  }, []);
   useEffect(() => {
-    if (phase.t !== "live") return;
+    leaving.current = liveId;
+    if (!liveId) return;
     const warn = (event: BeforeUnloadEvent) => event.preventDefault();
     window.addEventListener("beforeunload", warn);
-    return () => window.removeEventListener("beforeunload", warn);
-  }, [phase.t]);
+    window.addEventListener("pagehide", endOnLeave);
+    return () => {
+      window.removeEventListener("beforeunload", warn);
+      window.removeEventListener("pagehide", endOnLeave);
+    };
+  }, [liveId, endOnLeave]);
 
   useEffect(
     () => () => {
+      endOnLeave();
       void source.current?.close();
     },
-    [],
+    [endOnLeave],
   );
   useEffect(() => () => media?.getTracks().forEach((track) => track.stop()), [media]);
 
@@ -163,6 +181,9 @@ export function LiveHost() {
       const started = { at: 0 };
       overlay.on("closed", (reason) => {
         if (reason === "left") return;
+        // Over for good: the camera is let go, as it is when the host ends it.
+        media.getTracks().forEach((track) => track.stop());
+        setMedia(null);
         setPhase({
           t: "ended",
           id: created.id,

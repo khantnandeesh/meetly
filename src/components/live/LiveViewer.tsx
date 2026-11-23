@@ -200,6 +200,10 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
     else (video.current as (HTMLVideoElement & { webkitEnterFullscreen?: () => void }) | null)?.webkitEnterFullscreen?.();
   }
 
+  // The picture came, then the host's browser left the stream without ending it (its network, or
+  // a crash): the last frame stays on the <video>, so it is said, not left looking live.
+  const hostAway = phase.t === "watching" && hasPicture && !!tree && !tree.started && !tree.ended;
+
   const name = title || "Webinar";
   const soundLabel = muted ? "Turn on sound" : "Mute";
   const viewersNow = audience(tree).watching;
@@ -265,6 +269,14 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
                     </span>
                   )}
                 </div>
+              ) : hostAway ? (
+                <div className="absolute inset-0 grid place-items-center bg-bg/75 p-6 text-center" role="status" data-testid="live-host-away">
+                  <span className="flex flex-col items-center gap-2">
+                    <WifiOff className="size-6 text-faint" aria-hidden="true" />
+                    <span className="font-medium">The host’s connection dropped</span>
+                    <span className="text-sm text-muted">The video carries on here if they come back.</span>
+                  </span>
+                </div>
               ) : connection === "reconnecting" ? (
                 <div className="absolute inset-0 grid place-items-center bg-bg/60 text-sm" role="status">
                   <span className="chip h-9 px-3">
@@ -273,7 +285,7 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
                   </span>
                 </div>
               ) : null}
-              {hasPicture && <LiveChip watching={Math.max(1, viewersNow)} testId="viewer-live" />}
+              {hasPicture && !hostAway && <LiveChip watching={Math.max(1, viewersNow)} testId="viewer-live" />}
               {/* The player's own buttons, on the picture, so they stay there in full screen. */}
               {hasPicture && (
                 <div className="absolute right-3 bottom-3 flex items-center gap-2" role="group" aria-label="Player">
