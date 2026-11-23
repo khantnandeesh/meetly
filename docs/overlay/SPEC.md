@@ -385,14 +385,18 @@ sorts later. **[D7]**
 
 ICE servers come from `welcome`. A peer first tries without a relay. The link's `turn` property
 says whether the chosen route goes through TURN: the selected candidate pair's local or remote
-candidate is of type "relay" (`getStats`). It is read again whenever ICE connects and whenever the
-selected pair changes, so a route that falls back to TURN later is seen. **[D80]** Fresh ICE
-servers (new TURN credentials) can arrive later in `grant` (§6.5) or in the `welcome` of a
-reconnection: links made after that use them, open links are given them (`setConfiguration`),
-and an open link whose route goes through TURN restarts ICE (`restartIce`, make-before-break) so
-that its relay is allocated again with credentials that have not expired. A link whose ICE fails
-is not restarted: it closes ("ice-failed") and §7.5's repair takes over, which is faster than an
-ICE restart through the coordinator.
+candidate is of type "relay" (`getStats`). **[D80]** `localTurn` says whether *this end's*
+candidate is the relay: this peer reaches the other through its own TURN allocation. The other
+end's relay says nothing of this peer. Both are read again whenever ICE connects and whenever the
+selected pair changes, so a route that falls back to TURN later is seen. Fresh ICE servers can
+arrive later in `grant` (§6.5, new TURN credentials before the old expire) or in the `welcome` of
+a reconnection. Links made after that use them and open links are given them
+(`setConfiguration`); servers with no TURN in them (a mint that failed) are not taken. Only a
+`grant`'s make an open link whose own end is relayed restart ICE (`restartIce`,
+make-before-break), so that its relay is allocated again with credentials that have not expired;
+a reconnection does not restart anything. A link whose ICE fails is not restarted: it closes
+("ice-failed") and §7.5's repair takes over, which is faster than an ICE restart through the
+coordinator. The NAT probe (§8.1) is given the STUN servers only.
 
 ### 5.2 `hello`
 
@@ -627,12 +631,18 @@ The app reaches it through `NEXT_PUBLIC_OVERLAY_URL` (the browser's WebSocket) a
 TURN credentials are minted per peer by the coordinator from a Cloudflare TURN key and sent in
 `welcome.ice`, alongside the configured STUN servers (two of them, which §8.1's NAT probe needs:
 Cloudflare's answer is not allowed to replace them). Without a key configured, only STUN is
-offered. **[D80]** Credentials live `TURN_TTL_S` (6 h). Each peer's ICE servers are minted again
-when they are half that old and sent in its next `grant`, so a session longer than the TTL
-keeps working; a reconnecting peer's `welcome` carries fresh ones too. URLs on port 53 are left
-out (browsers block it; Cloudflare's own advice). Credentials go only to the socket of the peer
-they were minted for: they are not kept in the core's attachment or storage, not in `/tree`,
-metrics or logs.
+offered. **[D80]** Credentials live `TURN_TTL_S` (6 h). The ICE servers of a peer that may need
+TURN (one behind TURN, or whose NAT is not "open" or "cone") are minted again when they are half
+that old, or soon when its `welcome` had no TURN, and sent in a `grant`, so a session longer than
+the TTL keeps working; a reconnecting peer's `welcome` carries fresh ones too. A mint gives up
+after 3 s, and a housekeeping's mints (20 at most) run at once. When mints bring no TURN the room
+backs off: no mint for 30 s, doubling with each failure up to 30 minutes, and meanwhile a
+`welcome` gets STUN without waiting on one. URLs on port 53 are left out (browsers block it;
+Cloudflare's own advice). Credentials go only to the socket of the peer they were minted for:
+they are not kept in the core's attachment or storage, not in `/tree`, metrics or logs. Why a
+mint failed is logged (an HTTP status, a timeout), and "TURN key not configured" when there is
+no key. The app's `GET /api/live` says `{ turn }`: whether a mint from the key returns TURN
+servers, which "How it works" reads.
 
 ---
 
@@ -895,8 +905,9 @@ it (D37's over-fan-out aside). The coordinator's placement and relief, and the n
 
 **[D80] A peer behind TURN only watches** (decided by the coordinator, 2026-11-23). TURN is
 paid for by the byte ($0.05/GB after 1,000 GB a month), and a peer that relays through TURN
-pays for every byte twice, in and out. So a viewer whose link to its parent goes through TURN
-(§5.1, `link.turn`) says so in `status` (`turn: true`) from then on for the rest of the session,
+pays for every byte twice, in and out. So a viewer whose own end of the link to its parent is a
+TURN relay (§5.1, `link.localTurn`; a parent's relay, such as a host on a strict network, does
+not count) says so in `status` (`turn: true`) from then on for the rest of the session,
 and sets its own `caps.nat` to "relay", which makes it ineligible by the table above (so a
 coordinator that does not know `turn` keeps it a leaf too, and the peer does not run the uplink
 probe, which would go through TURN). The coordinator:
@@ -1628,7 +1639,7 @@ Rotating speakers on the overlay. Out of scope.
 | D51 | `sourceAloneFanout`, an optional param (6), the ceiling of D49; fixed-tree scenarios set it to `sourceFanout` (integrator, 2026-11-22) | 8.1 |
 | D54 | A joiner goes under the shallowest feeder with room, dead ends included (integrator, 2026-11-22) | 6.6 |
 | D55 | A repair's lost frames exclude those of a layer above the new parent's lowest announced cap (integrator, 2026-11-22) | 12.2 |
-| D80 | A peer whose link to its parent goes through TURN only watches: never promoted, never offered as a parent or backup, demoted at once; TURN credentials refreshed at half their life, relayed links restart ICE (coordinator, 2026-11-23) | 5.1, 6.3, 6.7, 8.1 |
+| D80 | A peer whose own end of the link to its parent is a TURN relay only watches: never promoted, never offered as a parent or backup, demoted at once; TURN credentials refreshed at half their life for peers that may need them, with a 3 s timeout and a room-wide backoff; a refresh, not a reconnection, restarts ICE on links relayed at this end (coordinator, 2026-11-23; amended after review the same day) | 5.1, 6.3, 6.7, 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
