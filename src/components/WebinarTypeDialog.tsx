@@ -91,7 +91,7 @@ export function WebinarTypeDialog({
               {standardOffered && <ChevronRight className={chevron} aria-hidden="true" />}
             </button>
 
-            <Link href="/live" className={option} data-webinar-type="serverless">
+            <Link href="/live" className={option} onNavigate={() => onOpenChange(false)} data-webinar-type="serverless">
               <span className={`${tile} bg-accent/12 text-accent`} aria-hidden="true">
                 <ServerOff className="size-[1.125rem] sm:size-5" />
               </span>

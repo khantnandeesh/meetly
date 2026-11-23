@@ -575,6 +575,35 @@ async function home(browser) {
     await p.ctx.close();
   }
 
+  /* Leaving with the chooser open leaves no dialog behind. Cache Components keep the home page,
+     hidden, in the document; a dialog left there (open, or caught mid exit animation) is taken by
+     the Toaster for one with the person's attention, and every notice in the call is held back. */
+  for (const how of ["standard", "serverless", "back"]) {
+    const p = await person(browser);
+    await p.page.route("**/api/meeting", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}");
+      if (body.action === "webinars") return route.fulfill({ json: { enabled: true } });
+      // A made-up code: the call page that opens is not what is tested, only what home leaves behind.
+      if (body.action === "create") return route.fulfill({ json: { code: "qaq-chooser-gon" } });
+      return route.continue();
+    });
+    if (how === "back") {
+      await p.page.goto(`${BASE}/live/abc-defg-hij`);
+      await p.page.locator("header a[href='/']:visible").click();
+      await p.page.waitForURL(`${BASE}/`);
+    } else await p.page.goto(`${BASE}/`);
+    await p.page.getByRole("button", { name: "More ways to start a meeting" }).click();
+    await p.page.getByRole("menuitem", { name: "New webinar…" }).click();
+    await p.page.getByRole("dialog", { name: "Start a webinar" }).waitFor();
+    if (how === "back") await p.page.goBack();
+    else await p.page.locator(`[data-webinar-type="${how}"]`).click();
+    await p.page.waitForURL((url) => url.pathname !== "/");
+    await sleep(2000);
+    const left = await p.page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => `${d.textContent.slice(0, 20)} (${d.dataset.state})`));
+    ok(`leaving home by ${how} with the chooser open leaves no dialog in the document`, left.length === 0, left.join("; "));
+    await p.ctx.close();
+  }
+
   /* 375 px: every page fits, nothing scrolls sideways */
   const phone = await person(browser, { viewport: PHONE });
   const overflow = (page) => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

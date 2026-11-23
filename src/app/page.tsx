@@ -2,7 +2,7 @@
 
 import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
@@ -38,10 +38,18 @@ export default function Home() {
   const webinarsOffered = useWebinarsOffered();
   const [choosingWebinar, setChoosingWebinar] = useState(false);
   const moreWays = useRef<HTMLButtonElement>(null);
+  // Leaving this page hides it (Cache Components keep it in an <Activity>) rather than unmounting
+  // it, and a dialog left open, or still closing, stays in the document: the Toaster takes it for
+  // one that has the person's attention and holds every notice back on the next page, the call
+  // included. So the chooser closes as the page goes: before Standard's push, on Serverless's
+  // link (WebinarTypeDialog), and here for any other way out (Back).
+  useLayoutEffect(() => () => setChoosingWebinar(false), []);
   async function startWebinar() {
     setStarting(true);
     try {
-      router.push(`/${await createWebinar()}`);
+      const code = await createWebinar();
+      setChoosingWebinar(false);
+      router.push(`/${code}`);
     } catch (error) {
       setStarting(false);
       toast.push({
@@ -138,14 +146,18 @@ export default function Home() {
       </main>
 
       <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />
-      <WebinarTypeDialog
-        open={choosingWebinar}
-        onOpenChange={setChoosingWebinar}
-        standardOffered={webinarsOffered}
-        startingStandard={starting}
-        onStandard={() => void startWebinar()}
-        returnFocus={moreWays}
-      />
+      {/* Mounted only while open, so it leaves the document the moment it closes: its exit
+          animation never ends on a page that is being hidden (see the useLayoutEffect above). */}
+      {choosingWebinar && (
+        <WebinarTypeDialog
+          open
+          onOpenChange={setChoosingWebinar}
+          standardOffered={webinarsOffered}
+          startingStandard={starting}
+          onStandard={() => void startWebinar()}
+          returnFocus={moreWays}
+        />
+      )}
     </div>
   );
 }
