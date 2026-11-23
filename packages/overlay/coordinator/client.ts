@@ -318,6 +318,8 @@ class Client implements CoordinatorClient {
         break;
       case "grant":
         this.currentGrant = message.grant;
+        // [D80] Fresh ICE servers ride on it: the engine gives them to the links.
+        if (message.ice) this.emit("message", message);
         break;
       case "peer-gone":
         for (const listener of [...this.onPeerGoneListeners]) listener(message.peer);

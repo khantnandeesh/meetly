@@ -18,7 +18,7 @@ import {
   verifyGrant,
   verifyTicket,
 } from "../protocol";
-import type { Assignment, Capabilities, ClientMessage, ClientMessageOf, MetricsSample, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
+import type { Assignment, Capabilities, ClientMessage, ClientMessageOf, IceServer, MetricsSample, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
 import type { ConnId, ConnMeta, CoordinatorCore, CoordinatorCoreOptions, CoreRequest, CoreResponse, Effect, RoomSnapshot, RoomStats } from "./types";
 import { scoring } from "./scoring";
 import { DEPTH_UNKNOWN, FORGET_MS, MOVE_SHARE, REBALANCE_EVERY_MS, SUSPECT_MS, TreeMap, newNode } from "./treeMap";
@@ -48,6 +48,11 @@ const HINT = { downShare: 0.3, downAfterMs: 10_000, upShare: 0.1, upAfterMs: 60_
 const RATES: Record<string, number> = { signal: 50, need: 5, status: 2, metrics: 1, time: 20, report: 20, streams: 2 };
 /** Refusals for rate, or messages that do not parse, in ten seconds, before the socket is closed. */
 const STRIKES = 30;
+/** [D80] The most peers whose ICE servers are minted again in one housekeeping: each is a request to the TURN key's API. */
+const ICE_REFRESH_PER_TICK = 20;
+/** [D80] A refresh that brought no TURN server is tried again this much later, not sent. */
+const ICE_RETRY_MS = 60_000;
+const hasTurn = (ice: readonly IceServer[]) => ice.some((server) => server.urls.some((url) => /^turns?:/i.test(url)));
 
 type Bucket = { tokens: number; at: number };
 
@@ -65,7 +70,7 @@ type Conn = {
 };
 
 /** What `attach` keeps with a socket: enough to rebuild `Conn`, and the peer's record, after a restart. */
-type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number; pv?: boolean };
+type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number; pv?: boolean; tu?: boolean; ia?: number };
 
 type SessionKey = { kid: string; privateKey: CryptoKey; publicKey: CryptoKey; pub: string; idKey: CryptoKey; epochMs: number };
 type StoredSession = { kid: string; pkcs8: string; pub: string; idSecret: string; epochMs: number };
@@ -135,6 +140,9 @@ class Core implements CoordinatorCore {
         node.lastStatusAt = 0;
         node.grantExp = a.x ?? 0;
         node.provisional = node.role === "relay" && a.pv === true;
+        // [D80] Behind TURN is for the session: a coordinator that wakes does not forget it.
+        node.turn = a.tu === true && node.role !== "source";
+        node.iceAt = a.ia ?? now;
         conn.peer = node.peer;
         this.map.add(node, now);
         this.byIdentity.set(node.identity, node.peer);
@@ -208,7 +216,10 @@ class Core implements CoordinatorCore {
           // for those waiting (D38): look again at once.
           {
             const uplink = node.caps.uplinkKbps;
+            const turn = node.turn;
             if (this.map.applyStatus(node, message, now) || (node.caps.uplinkKbps !== uplink && this.map.waiting().length > 0)) await this.serveWaiting(fx, now);
+            // [D80] Kept with the socket from now on. A relay is demoted at the next housekeeping (`demotable`).
+            if (node.turn !== turn) this.reattach(fx, node);
           }
           break;
         case "report":
@@ -356,7 +367,8 @@ class Core implements CoordinatorCore {
 
   private attach(fx: Effect[], conn: Conn, node: TreeNode | null): void {
     const value: Attachment = { i: conn.identity, n: conn.name.slice(0, 64), r: conn.ticketRole, g: conn.region, o: conn.openedAt };
-    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp, ...(node.provisional ? { pv: true } : {}) });
+    // Never the ICE servers: TURN credentials go to the peer's socket and nowhere else (SPEC §6.7).
+    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp, ia: node.iceAt, ...(node.provisional ? { pv: true } : {}), ...(node.turn ? { tu: true } : {}) });
     fx.push({ type: "attach", conn: conn.id, value: JSON.stringify(value) });
   }
 
@@ -505,6 +517,7 @@ class Core implements CoordinatorCore {
     } catch (error) {
       this.o.logger?.warn("coordinator", "no ICE servers", error);
     }
+    node.iceAt = now;
     this.attach(fx, conn, node);
     this.send(fx, conn.id, {
       t: "welcome",
@@ -753,9 +766,28 @@ class Core implements CoordinatorCore {
     for (const node of [...this.map.nodes.values()]) if (node.conn === null && node.closedAt !== null && now - node.closedAt >= FORGET_MS) this.forget(fx, node);
     if (this.ended !== null) return;
 
+    let refreshes = 0;
     for (const node of this.map.nodes.values()) {
-      if (node.conn === null || node.grantExp - now / 1000 > GRANT_RENEW_S) continue;
-      this.send(fx, node.conn, { t: "grant", grant: await this.grantFor(node, now) });
+      if (node.conn === null) continue;
+      // [D80] TURN credentials expire (SPEC §6.7): fresh ones at half their life, in the next grant.
+      const iceDue = this.o.iceRefreshMs !== undefined && now - node.iceAt >= this.o.iceRefreshMs && refreshes < ICE_REFRESH_PER_TICK;
+      if (!iceDue && node.grantExp - now / 1000 > GRANT_RENEW_S) continue;
+      let ice: IceServer[] = [];
+      if (iceDue) {
+        refreshes++;
+        try {
+          ice = await this.o.iceServers();
+        } catch (error) {
+          this.o.logger?.warn("coordinator", "no ICE servers", error);
+        }
+        // Servers with no TURN would take the relay away from the links that need it: not sent.
+        if (hasTurn(ice)) node.iceAt = now;
+        else {
+          ice = [];
+          node.iceAt = now - this.o.iceRefreshMs! + ICE_RETRY_MS;
+        }
+      }
+      this.send(fx, node.conn, { t: "grant", grant: await this.grantFor(node, now), ...(ice.length > 0 ? { ice } : {}) });
       this.reattach(fx, node);
     }
 

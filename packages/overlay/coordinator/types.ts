@@ -96,6 +96,11 @@ export type CoordinatorCoreOptions = {
   viewerCap: number;
   /** STUN and TURN servers for a new peer, with fresh credentials. */
   iceServers: () => Promise<IceServer[]>;
+  /**
+   * [D80] How old a peer's ICE servers may be before fresh ones are minted and sent in its next
+   * `grant`: half the TURN credentials' life. Undefined (no TURN, STUN only): never.
+   */
+  iceRefreshMs?: number;
   /** Injected, so placement is repeatable in tests. Returns 0..1. */
   random: () => number;
   logger?: Logger;
@@ -172,7 +177,7 @@ export type CoordinatorClientEvents = {
   welcome: [welcome: ServerMessageOf<"welcome">];
   /** The socket dropped; the client is reconnecting with `resume`. The overlay carries on. */
   offline: [];
-  /** A message the client does not handle itself. */
+  /** A message the client does not handle itself, and a `grant` that carries fresh ICE servers ([D80]). */
   message: [message: ServerMessage];
   /** Removed, or the session ended: do not reconnect. */
   closed: [reason: "kicked" | "ended" | "denied" | "full" | "left", detail: string];
@@ -189,7 +194,7 @@ export interface CoordinatorClient extends Listenable<CoordinatorClientEvents>, 
   readonly signaler: Signaler;
   /** The grant currently held: renewed by the coordinator before it expires. */
   grant(): string;
-  sendStatus(status: { depth: number; links: PeerRecord["links"]; children: number; standby: number; free: number; caps: Capabilities; lossPct: number; rttMs: number | null }): void;
+  sendStatus(status: { depth: number; links: PeerRecord["links"]; children: number; standby: number; free: number; caps: Capabilities; lossPct: number; rttMs: number | null; turn?: boolean }): void;
   sendMetrics(sample: MetricsSample): void;
   /** The source only. */
   sendStreams(streams: StreamConfig[]): void;

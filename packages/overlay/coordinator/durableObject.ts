@@ -77,8 +77,8 @@ const ROOM_HEADER = "x-overlay-room";
 const CORE_PREFIX = "core:";
 const ROOM_KEY = "room";
 const STUN: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
-/** TURN credentials last this long: a session's length, near enough (SPEC §6.7). */
-const TURN_TTL_S = 6 * 3600;
+/** TURN credentials last this long, and each peer is given fresh ones at half that (SPEC §6.7, [D80]). */
+export const TURN_TTL_S = 6 * 3600;
 
 /** What a socket carries with it across hibernation: its id, and what the core attached. */
 type SocketAttachment = { id: ConnId; core?: string };
@@ -105,24 +105,69 @@ export type OverlayRoomOptions = {
   stun?: IceServer[];
   /** The most viewers admitted, over `OVERLAY_VIEWER_CAP` and the default. */
   viewerCap?: number;
+  /**
+   * Tests only: a TURN server of the test's own (coturn with `use-auth-secret`), whose
+   * credentials are minted here by the TURN REST API's rule from its shared secret, to last
+   * `ttlS`. Used when no Cloudflare TURN key is configured. Never set in production.
+   */
+  testTurn?: { urls: string[]; secret: string; ttlS: number };
 };
 
-/** STUN, and TURN minted for this peer from a Cloudflare TURN key when one is configured. */
-async function iceServers(env: CoordinatorEnv, stun: IceServer[] = STUN): Promise<IceServer[]> {
-  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return stun;
-  const response = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, "content-type": "application/json" },
-    body: JSON.stringify({ ttl: TURN_TTL_S }),
-  });
-  if (!response.ok) return stun;
-  const body = (await response.json()) as { iceServers?: { urls: string | string[]; username?: string; credential?: string }[] };
-  const servers = (body.iceServers ?? []).map((server) => ({
-    urls: (Array.isArray(server.urls) ? server.urls : [server.urls]).slice(0, 8),
-    ...(server.username ? { username: server.username } : {}),
-    ...(server.credential ? { credential: server.credential } : {}),
-  }));
-  return servers.length > 0 ? servers.slice(0, 8) : stun;
+type MintedServer = { urls: string | string[]; username?: string; credential?: string };
+
+/**
+ * Cloudflare's TURN servers for one peer, from its answer: TURN URLs only (the configured STUN
+ * servers are kept, see `iceServers`), and none on port 53, which browsers block (Cloudflare's
+ * own advice: an ICE agent would wait on it for nothing).
+ */
+export function turnFrom(answer: unknown): IceServer[] {
+  const raw = (answer as { iceServers?: MintedServer | MintedServer[] } | null)?.iceServers;
+  // The older `generate` endpoint answers with one object, `generate-ice-servers` with a list.
+  const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
+  const out: IceServer[] = [];
+  for (const server of list) {
+    const urls = (Array.isArray(server?.urls) ? server.urls : [server?.urls]).filter((url): url is string => typeof url === "string" && /^turns?:/i.test(url) && !/:53(\?|$)/.test(url));
+    if (urls.length === 0 || typeof server.username !== "string" || typeof server.credential !== "string") continue;
+    out.push({ urls: urls.slice(0, 8), username: server.username, credential: server.credential });
+  }
+  return out;
+}
+
+/** The TURN REST API's credentials (what coturn's `use-auth-secret` checks): "<expiry>:<name>", and its HMAC-SHA1. */
+async function restCredentials(secret: string, ttlS: number): Promise<{ username: string; credential: string }> {
+  const username = `${Math.floor(Date.now() / 1000) + ttlS}:overlay`;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(username)));
+  return { username, credential: btoa(String.fromCharCode(...mac)) };
+}
+
+/**
+ * The configured STUN servers, and TURN minted for this peer from a Cloudflare TURN key when one
+ * is configured. The STUN servers stay: the NAT probe needs two of them (SPEC §8.1), and
+ * Cloudflare's answer has one. If minting fails the peer gets STUN only, and the reason (a
+ * status code, never the key) is logged.
+ */
+async function iceServers(env: CoordinatorEnv, stun: IceServer[] = STUN, testTurn?: OverlayRoomOptions["testTurn"]): Promise<IceServer[]> {
+  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) {
+    if (!testTurn) return stun;
+    return [...stun, { urls: testTurn.urls.slice(0, 8), ...(await restCredentials(testTurn.secret, testTurn.ttlS)) }].slice(0, 8);
+  }
+  try {
+    const response = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify({ ttl: TURN_TTL_S }),
+    });
+    if (!response.ok) {
+      console.warn(`overlay: TURN credentials not minted (HTTP ${response.status}); STUN only`);
+      return stun;
+    }
+    return [...stun, ...turnFrom(await response.json())].slice(0, 8);
+  } catch {
+    // Not reached, or not JSON: the peer still gets STUN, not nothing.
+    console.warn("overlay: TURN credentials not minted (no answer); STUN only");
+    return stun;
+  }
 }
 
 /** One session. The class name is what wrangler.jsonc's `durable_objects` and `migrations` refer to. */
@@ -151,7 +196,9 @@ export class OverlayRoom {
       serverSecret: this.env.OVERLAY_SERVER_SECRET ?? "",
       params: params(this.env),
       viewerCap: this.options.viewerCap ?? (Number(this.env.OVERLAY_VIEWER_CAP) > 0 ? Number(this.env.OVERLAY_VIEWER_CAP) : 10_000),
-      iceServers: () => iceServers(this.env, this.options.stun),
+      iceServers: () => iceServers(this.env, this.options.stun, this.options.testTurn),
+      // [D80] Fresh credentials at half their life, when there is TURN at all.
+      iceRefreshMs: this.env.TURN_KEY_ID && this.env.TURN_KEY_API_TOKEN ? (TURN_TTL_S * 1000) / 2 : this.options.testTurn ? (this.options.testTurn.ttlS * 1000) / 2 : undefined,
       random: Math.random,
     });
     const stored: Record<string, string> = {};

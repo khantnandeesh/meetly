@@ -1194,6 +1194,11 @@ const clientMessage = tagged({
     /** Share of packets from the parent lost over the last ten seconds, in percent. */
     lossPct: num(0, 100),
     rttMs: nullable(durationMs),
+    /**
+     * SPEC §8.1 [D80]: my link to my parent has gone through TURN in this session. Optional, so a
+     * peer that does not send it, and a coordinator that does not read it, still work.
+     */
+    turn: optional(bool),
   },
   /** Something happened in the overlay that the coordinator should know, after the fact. */
   report: {
@@ -1251,8 +1256,11 @@ const serverMessage = tagged({
    * its verdict's, [D50]); the node never takes more than it, nor than `maxFanout`.
    */
   role: { role: overlayRole, grant: token, fanout: optional(int(1, 64)) },
-  /** A grant to replace the one you hold, before it expires. */
-  grant: { grant: token },
+  /**
+   * A grant to replace the one you hold, before it expires. [D80] `ice`: fresh ICE servers (new
+   * TURN credentials), before those you hold expire; optional, and ignored by a peer that does not know it.
+   */
+  grant: { grant: token, ice: optional(list(iceServer, 8)) },
   streams: { streams: list(streamConfig, 16) },
   /** To the source: the audience as a whole would do better at this bitrate. */
   hint: { stream: streamId, bitrateKbps: num(1, 1_000_000) },

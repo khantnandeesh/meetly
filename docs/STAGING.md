@@ -15,6 +15,7 @@ It is `env.staging` in `wrangler.jsonc`: the same build as production, with
 | Worker | `meetly-staging` | `meetly` |
 | Live (beta) Durable Objects | its own namespace (`OverlayRoom` in `meetly-staging`) | its own |
 | Secrets | `OVERLAY_ADMISSION_SECRET`, `OVERLAY_SERVER_SECRET`, `MEETLY_SESSION_SECRET`, each its own random value | its own |
+| Live (beta) TURN, for viewers behind strict NATs (SPEC §6.7, §8.1 [D80]) | secrets `TURN_KEY_ID`, `TURN_KEY_API_TOKEN` (a Cloudflare Realtime TURN key) | not yet: set at release; without them those viewers can't connect |
 | Cron Trigger (cost guard) | **none** | every minute |
 | Webinars | off (`MEETLY_WEBINARS_ENABLED=0`) | on |
 | Meetings (RealtimeKit) | off: no `CLOUDFLARE_API_TOKEN` secret | on |
