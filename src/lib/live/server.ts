@@ -1,5 +1,6 @@
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { PROTOCOL_VERSION, signTicket } from "@meetly/overlay/protocol";
+import { mintTurn } from "@meetly/overlay/coordinator/turn";
 import type { RoomSnapshot } from "@meetly/overlay/coordinator/types";
 import { isValidCode } from "@/lib/code";
 import { LIVE_VIEWER_CAP, anonymize, type LiveTree } from "./tree";
@@ -20,15 +21,28 @@ import { LIVE_VIEWER_CAP, anonymize, type LiveTree } from "./tree";
 
 export class LiveUnavailable extends Error {}
 
+/** How long a TURN check's answer is kept: a working key for five minutes, a failing one for thirty seconds. */
+const TURN_CHECK_OK_MS = 5 * 60_000;
+const TURN_CHECK_FAILED_MS = 30_000;
+let turnCheck: { key: string; at: number; ok: boolean } | null = null;
+
 /**
- * Whether this deployment offers TURN to Live's viewers (SPEC §6.7, §8.1 [D80]): with the
- * Cloudflare TURN key's two secrets, a viewer on a strict network connects through a relay and
- * only watches; without them it can't connect. A local run's test TURN server counts too
- * (custom-worker.ts). Says nothing about the key itself.
+ * Whether TURN works on this deployment (SPEC §6.7, §8.1 [D80]), so that a viewer on a strict
+ * network can watch through a relay: a mint from the Cloudflare TURN key returned TURN servers
+ * (the same mint the coordinator makes, with a one-minute life, never shown to anyone). Kept a
+ * while (see above). Without a key, false and no request. A local run's test TURN server
+ * (custom-worker.ts) counts as working. Why a mint failed is logged, never the key.
  */
-export function liveTurn(): boolean {
+export async function liveTurn(fetcher: typeof fetch = fetch, now = Date.now()): Promise<boolean> {
   const env = process.env;
-  return Boolean(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) || (env.OVERLAY_LOCAL_ONE_NETWORK === "1" && Boolean(env.OVERLAY_TEST_TURN_URL && env.OVERLAY_TEST_TURN_SECRET));
+  if (env.OVERLAY_LOCAL_ONE_NETWORK === "1" && env.OVERLAY_TEST_TURN_URL && env.OVERLAY_TEST_TURN_SECRET) return true;
+  const key = env.TURN_KEY_ID?.trim() ?? "";
+  if (!key || !env.TURN_KEY_API_TOKEN?.trim()) return false;
+  if (turnCheck && turnCheck.key === key && now - turnCheck.at < (turnCheck.ok ? TURN_CHECK_OK_MS : TURN_CHECK_FAILED_MS)) return turnCheck.ok;
+  const minted = await mintTurn(key, env.TURN_KEY_API_TOKEN, 60, fetcher);
+  if (minted.problem) console.warn(`live: TURN credentials not minted (${minted.problem})`);
+  turnCheck = { key, at: now, ok: minted.servers.length > 0 };
+  return turnCheck.ok;
 }
 
 type LiveEnv = {

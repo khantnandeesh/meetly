@@ -70,23 +70,38 @@ test("no Live route reads a body larger than BODY_MAX", async () => {
   assert.deepEqual(await readJsonBody(post({ a: 1 })), { a: 1 });
 });
 
-test("says whether viewers on strict networks can watch (GET /api/live): TURN needs both of its key's secrets", () => {
+test("says whether viewers on strict networks can watch (GET /api/live): only when a mint from the TURN key returns TURN", async () => {
   // The route itself reads it at request time (`connection()`), which only runs inside Next.js.
+  let mints = 0;
+  let working = false;
+  const cloudflare: typeof fetch = async () => {
+    mints++;
+    return working ? Response.json({ iceServers: [{ urls: ["turn:turn.cloudflare.com:3478"], username: "u", credential: "c" }] }, { status: 201 }) : new Response("", { status: 401 });
+  };
   delete process.env.TURN_KEY_ID;
   delete process.env.TURN_KEY_API_TOKEN;
-  assert.equal(liveTurn(), false);
+  assert.equal(await liveTurn(cloudflare), false);
   process.env.TURN_KEY_ID = "key-id-for-tests";
-  assert.equal(liveTurn(), false, "one of the two is not enough");
+  assert.equal(await liveTurn(cloudflare), false, "one of the two is not enough");
+  assert.equal(mints, 0, "and nothing is asked without both");
   process.env.TURN_KEY_API_TOKEN = "token-for-tests";
-  assert.equal(liveTurn(), true);
+  const t = 1_000_000;
+  assert.equal(await liveTurn(cloudflare, t), false, "a key that does not mint: not working");
+  working = true;
+  assert.equal(await liveTurn(cloudflare, t + 10_000), false, "a failure is kept 30 s");
+  assert.equal(await liveTurn(cloudflare, t + 31_000), true, "then asked again");
+  working = false;
+  assert.equal(await liveTurn(cloudflare, t + 200_000), true, "a success is kept five minutes");
+  assert.equal(await liveTurn(cloudflare, t + 400_000), false);
+  assert.equal(mints, 3);
   delete process.env.TURN_KEY_ID;
   delete process.env.TURN_KEY_API_TOKEN;
   // A local run's test TURN server, only on a local one-network run.
   process.env.OVERLAY_TEST_TURN_URL = "turn:192.0.2.2:3478";
   process.env.OVERLAY_TEST_TURN_SECRET = "s";
-  assert.equal(liveTurn(), false);
+  assert.equal(await liveTurn(cloudflare), false);
   process.env.OVERLAY_LOCAL_ONE_NETWORK = "1";
-  assert.equal(liveTurn(), true);
+  assert.equal(await liveTurn(cloudflare), true);
   delete process.env.OVERLAY_TEST_TURN_URL;
   delete process.env.OVERLAY_TEST_TURN_SECRET;
   delete process.env.OVERLAY_LOCAL_ONE_NETWORK;

@@ -222,7 +222,7 @@ export async function fetchTree(id: string): Promise<LiveTree> {
 const TREE_EVERY_MS = 2000;
 
 /** The stream's tree, asked for every two seconds while `id` is set and the page is visible. */
-/** Whether this deployment offers TURN (GET /api/live), asked once per page load and shared. */
+/** Whether TURN works on this deployment (GET /api/live): the server's answer, shared by the page; a failed request is asked again. */
 let turnAnswer: Promise<boolean> | null = null;
 
 /** True once the server says viewers on strict networks can watch through a relay ([D80]); null until it answers, false if not or on failure. */
@@ -230,11 +230,18 @@ export function useLiveTurn(): boolean | null {
   const [turn, setTurn] = useState<boolean | null>(null);
   useEffect(() => {
     let live = true;
-    turnAnswer ??= fetch("/api/live", { cache: "no-store" })
-      .then((response) => (response.ok ? (response.json() as Promise<{ turn?: unknown }>) : {}))
-      .then((body) => (body as { turn?: unknown }).turn === true)
-      .catch(() => false);
-    void turnAnswer.then((value) => live && setTurn(value));
+    const asked = (turnAnswer ??= fetch("/api/live", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error(`GET /api/live: ${response.status}`);
+      return ((await response.json()) as { turn?: unknown }).turn === true;
+    }));
+    asked.then(
+      (value) => live && setTurn(value),
+      () => {
+        // Not an answer: the next page that asks, asks again.
+        if (turnAnswer === asked) turnAnswer = null;
+        if (live) setTurn(false);
+      },
+    );
     return () => {
       live = false;
     };

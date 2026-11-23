@@ -5,12 +5,12 @@ import { signTitle } from "@/lib/live/title.server";
 
 /**
  * Live (beta): what the pages say of this deployment. GET → { turn }: whether viewers on strict
- * networks can watch (through TURN), for "How it works". Read at request time, not at build: the
- * secrets are the Worker's.
+ * networks can watch, because TURN works here (a mint from the TURN key returned servers), for
+ * "How it works". Read at request time, not at build: the secrets are the Worker's.
  */
 export async function GET() {
   await connection();
-  return json(200, { turn: liveTurn() });
+  return json(200, { turn: await liveTurn() });
 }
 
 /**
