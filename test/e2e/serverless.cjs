@@ -208,7 +208,7 @@ async function happy(browser) {
 
   await endWebinar(host);
   const summary = await page.locator('[data-testid="host-ended"]').innerText();
-  ok("host ended summary says how long and how many", /It was live for .+, with at most 3 viewers watching at once/.test(summary), summary.replace(/\s+/g, " "));
+  ok("host ended summary says how long and how many", /Live for .+, at most 3 viewers at once/.test(summary), summary.replace(/\s+/g, " "));
   const ended = await Promise.all(viewers.map((viewer) => viewer.page.locator('[data-testid="live-over"]').waitFor({ timeout: 15000 }).then(() => true, () => false)));
   ok("every viewer sees “This webinar has ended”", ended.every(Boolean), ended.join(","));
   ok("ended text", (await viewers[0].page.locator('[data-testid="live-over"]').innerText()) === "This webinar has ended");
