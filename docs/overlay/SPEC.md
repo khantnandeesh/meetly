@@ -720,7 +720,11 @@ and one in a million 100 ms late, so a live parent's own stall is not a silence 
 heartbeats lost in a row on a relay's link (relays have under 2% loss, §8.1; the gate mix's
 relays 1% or less) is about one in a million heartbeats, about two false alarms in a 200-peer,
 10-minute run. A false alarm costs a warm repair, which loses nothing. It takes 50 ms off every
-warm and wait repair.
+warm and wait repair. **Withdrawn 2026-11-23** (integration engineer): in gate run 45155864248,
+with fan-out 6 (D56), three storms of 190–230 cold repairs followed relay kills, and most of
+the parents found dead in them (25 of 42, 33 of 47, 56 of 63) were alive and sampling
+afterwards: a heartbeat waits in the channel behind a busy relay's media, and 150 ms was not
+enough. `deadMs` is 200 again.
 
 Also dead, at once: the link's state becomes "closed", or a `bye` arrives.
 
@@ -1635,7 +1639,7 @@ Rotating speakers on the overlay. Out of scope.
 | D56 | `maxFanout` 6: depth 3 for 200 peers; each relay still capped by its probe (integrator, 2026-11-23) | 8.1 |
 | D57 | The source keeps its probed fan-out (up to `sourceAloneFanout`), not only while alone (integrator, 2026-11-23) | 8.1 |
 | D58 | The honesty check compares light and decoding viewers at the same depths (integrator, 2026-11-23) | 13.2 |
-| D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23) | 7.4 |
+| D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23); withdrawn the same day, false alarms under fan-out 6 | 7.4 |
 | D60 | A join leaves a full relay's last slot (fan-out 4 or more) to repairs (integrator, 2026-11-23) | 6.6, 8.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
