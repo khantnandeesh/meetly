@@ -386,6 +386,21 @@ sorts later. **[D7]**
 ICE servers come from `welcome`. A peer first tries without a relay. The link's `turn` property
 says whether the chosen route goes through TURN.
 
+**[D83] A joiner's first link is offered in `hello`.** A viewer makes a connection with both
+channels and an SDP offer for it before it opens its socket, and sends the offer as
+`hello.offer`. If `welcome` places it, the coordinator sends that offer, as the joiner's `signal`,
+to the first parent of `welcome.assign`, right after `welcome`, and names that parent in
+`welcome.offered`. The joiner makes its link to that parent with the connection it prepared: it
+sets the ICE servers from `welcome` on it (nothing has been gathered yet), applies the same offer,
+and does not send it again; the parent's answer comes as any `signal`. Without `offered` (no place
+yet, a `resume`, a coordinator that does not know the field) the prepared connection is closed
+and the join goes as before. The parent's side does not change: an offer from a peer it was
+introduced to starts a link. *(Integration engineer, 2026-11-23.)* Why: the offer used to leave
+only once `welcome` had arrived, so a join crossed the coordinator twice (offer, answer) before
+ICE could start. Through the gate's tunnels a crossing is about 200 ms, and welcome to a parent
+linked was p50 431 ms, p95 1,217 ms (gate run 45272584683). Now the offer crosses while `welcome`
+does.
+
 ### 5.2 `hello`
 
 The first message each side sends on `ctl` is `hello { v, peer, grant }`. The other side checks
@@ -494,7 +509,7 @@ JSON text, one message per frame, each with a `t`.
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `hello` | `v`, `caps`, `resume?` | first message. `resume { peer, grant }`: I was this peer a moment ago |
+| `hello` | `v`, `caps`, `resume?`, `offer?` | first message. `resume { peer, grant }`: I was this peer a moment ago. [D83] `offer`: an SDP offer for the link to the parent I am placed under (§5.1) |
 | `time` | `t0` | a clock probe (§4.1) |
 | `signal` | `to`, `data` | signalling for another peer |
 | `need` | `id`, `stream`, `stripe`, `want` ("parent" \| "backup"), `exclude` | I need someone to connect to |
@@ -508,7 +523,7 @@ JSON text, one message per frame, each with a `t`.
 
 | `t` | Fields | Meaning |
 | --- | --- | --- |
-| `welcome` | `v`, `peer`, `room`, `role`, `grant`, `key`, `epochMs`, `ice`, `params`, `streams`, `assign` | you are in; everything needed to start |
+| `welcome` | `v`, `peer`, `room`, `role`, `grant`, `key`, `epochMs`, `ice`, `params`, `streams`, `assign`, `offered?` | you are in; everything needed to start. [D83] `offered`: `hello.offer` went to this parent |
 | `time` | `t0`, `t1` | the answer to `time` |
 | `signal` | `from`, `data` | signalling from another peer |
 | `assign` | `id?`, `reason`, `assign` | connect to these (answers `need`, or unasked for a rebalance) |
@@ -1962,6 +1977,7 @@ Rotating speakers on the overlay. Out of scope.
 | D72 | An eligible leaf shallower than the depth the tree needs is made a relay whatever the free slots; the needed depth counts the source's own fan-out (integration engineer, 2026-11-23); withdrawn the same day, deeper in the gate run, not shallower | 6.6 |
 | D74 | A parent that is not STALLED nor the source, holding a keyframe the child has not decoded for 2.5 s while nothing has become decodable, is left as `frozen` (integration engineer, 2026-11-23); withdrawn the same day, 2.5 s freezes surfaced as repairs, none saved | 7.4 |
 | D75 | The source probes toward up to three of its children, 500 ms apart, while under `sourceAloneFanout`, and keeps the best (integration engineer, 2026-11-23) | 8.1 |
+| D83 | A joiner's first link is offered in `hello`; the coordinator gives the offer to the first parent with `welcome` and says so in `welcome.offered` (integration engineer, 2026-11-23) | 5.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
