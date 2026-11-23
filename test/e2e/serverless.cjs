@@ -7,9 +7,19 @@
 //
 // with OVERLAY_ADMISSION_SECRET and OVERLAY_SERVER_SECRET (16+ characters each, any value) in a
 // local .dev.vars, and OVERLAY_LOCAL_ONE_NETWORK=1 on a machine with no route out for STUN.
-// Sections: happy scale viewer host home a11y (all by default). LIVE_VIEWERS sets the audience of
-// `scale` (default 12). Every viewer's picture is checked to move: frames counted by the <video>
-// and its pixels changing, not just a <video> being there.
+// Sections: happy scale viewer host home a11y (all by default), and strict-nat and strict-host
+// (only when named).
+// LIVE_VIEWERS sets the audience of `scale` (default 12). Every viewer's picture is checked to
+// move: frames counted by the <video> and its pixels changing, not just a <video> being there.
+//
+// strict-nat (SPEC §8.1 [D82]) needs TURN: on staging, Cloudflare's (the Worker's TURN key); locally,
+// a TURN server of the test's own, e.g. coturn with
+//   turnserver -n --listening-ip=<ip> --relay-ip=<ip> --use-auth-secret --static-auth-secret=<s>
+//     --realm=meetly.local --no-tls --no-dtls --max-allocate-lifetime=90
+// and, in .dev.vars next to OVERLAY_LOCAL_ONE_NETWORK=1, OVERLAY_TEST_TURN_URL=turn:<ip>:3478,
+// OVERLAY_TEST_TURN_SECRET=<s> and OVERLAY_TEST_TURN_TTL_S=120: credentials that expire within the
+// run, and an allocation that dies with them unless the coordinator's refresh (at half the TTL)
+// reaches the links. STRICT_NAT_SECONDS (default 150) is how long it watches.
 const H = require("./lib.cjs");
 
 const { BASE, ok, sleep, until } = H;
@@ -804,11 +814,180 @@ async function a11y(browser) {
   for (const p of [host, ...viewers]) await p.ctx.close();
 }
 
-const SECTIONS = { happy, scale, "host-leaves": hostLeaves, viewer, host: hostCases, home, a11y };
+/* ------------------------------------------------------------------ 8. viewers behind a strict NAT */
+
+/**
+ * Every RTCPeerConnection the page links with is kept in `window.__pcs` (its first data channel
+ * says it is one); `relayOnly` also makes them TURN-only, as behind a strict NAT, which needs the
+ * constructor replaced. A direct viewer's constructor is left alone.
+ */
+const trackPeerConnections = (relayOnly) => `(() => {
+  window.__pcs = [];
+  const channel = RTCPeerConnection.prototype.createDataChannel;
+  RTCPeerConnection.prototype.createDataChannel = function (...args) {
+    if (!window.__pcs.includes(this)) window.__pcs.push(this);
+    return channel.apply(this, args);
+  };
+  if (${relayOnly}) {
+    const Native = window.RTCPeerConnection;
+    window.RTCPeerConnection = class extends Native {
+      constructor(config = {}) {
+        super({ ...config, iceTransportPolicy: "relay" });
+      }
+    };
+  }
+})();`;
+
+/** The page's open peer connections: each one's selected route (local and remote candidate types), and the bytes each has carried, by its index in `__pcs`. */
+const routes = (page) =>
+  page.evaluate(async () => {
+    const out = { links: [], bytes: {} };
+    for (const [index, pc] of (window.__pcs || []).entries()) {
+      if (pc.connectionState === "closed") continue;
+      const stats = new Map();
+      (await pc.getStats()).forEach((report) => stats.set(report.id, report));
+      for (const report of stats.values()) {
+        if (report.type !== "transport") continue;
+        out.bytes[index] = (report.bytesReceived || 0) + (report.bytesSent || 0);
+        const pair = stats.get(report.selectedCandidatePairId);
+        if (pair) out.links.push(`${stats.get(pair.localCandidateId)?.candidateType}/${stats.get(pair.remoteCandidateId)?.candidateType}`);
+      }
+    }
+    return out;
+  });
+
+async function strictNat(browser) {
+  const seconds = Number(process.env.STRICT_NAT_SECONDS || 150);
+  const host = await person(browser);
+  // With TURN, "How it works" says strict networks watch, not that they are blocked.
+  await host.page.goto(`${BASE}/live`);
+  ok(
+    "strict NAT: “How it works” says strict networks watch only",
+    await host.page.getByText("Strict networks: watch only").waitFor({ timeout: 15000 }).then(() => true, () => false),
+    (await host.page.getByRole("list", { name: "Beta limits" }).innerText().catch(() => "")).replace(/\s+/g, " "),
+  );
+  const { id, path } = await goLive(host, "QA strict NAT");
+  // Behind a strict NAT first, so that they sit next to the source: the shallowest viewers, the
+  // first a promotion would pick if being behind TURN did not rule them out.
+  const strict = [];
+  for (let i = 0; i < 2; i++) {
+    const viewer = await person(browser, { viewport: { width: 960, height: 700 }, init: trackPeerConnections(true) });
+    strict.push(viewer);
+    await watch(viewer, path);
+    await sleep(400);
+  }
+  const direct = [];
+  for (let i = 0; i < 5; i++) {
+    const viewer = await person(browser, { viewport: { width: 960, height: 700 }, init: trackPeerConnections(false) });
+    direct.push(viewer);
+    await watch(viewer, path);
+    await sleep(400);
+  }
+  const everyone = [...strict, ...direct];
+  const N = everyone.length;
+  // What the coordinator gave the links: its URLs only, never the credentials.
+  const offered = await direct[0].page.evaluate(() => [...new Set((window.__pcs || []).flatMap((pc) => pc.getConfiguration().iceServers.flatMap((server) => [].concat(server.urls))))]).catch(() => []);
+  ok("strict NAT: the coordinator offers TURN", offered.some((url) => /^turns?:/.test(url)), offered.join(" ") || "no links yet");
+  const times = await Promise.all(everyone.map((viewer) => untilMoving(viewer.page, 60000)));
+  ok("strict NAT: the viewers who can only connect through TURN get a moving picture", times.slice(0, strict.length).every((t) => t !== null), `ms: ${times.slice(0, strict.length).join(",")}`);
+  ok("strict NAT: …and so do the others", times.slice(strict.length).every((t) => t !== null), `ms: ${times.slice(strict.length).join(",")}`);
+  const strictRoutes = await Promise.all(strict.map((viewer) => routes(viewer.page)));
+  ok("strict NAT: their links go through TURN", strictRoutes.every((r) => r.links.length > 0 && r.links.every((link) => link.startsWith("relay/"))), strictRoutes.map((r) => r.links.join(" ")).join(" | "));
+  const counted = await until(async () => (await watchingOf(host.page, "host-viewers")) === N, 30000, 1000);
+  ok(`strict NAT: all ${N} counted, by the host`, counted, String(await watchingOf(host.page, "host-viewers")));
+  let t = await tree(id);
+  ok(`strict NAT: …and in the tree, all placed`, await until(async () => (t = await tree(id)).viewers === N && placed(t) === N, 30000, 1000), `viewers ${t.viewers}, placed ${placed(t)}`);
+
+  // Watched for `seconds`, past probation and the promotions it brings, and locally past the TURN
+  // credentials' life: never anyone's parent, while the tree grows relays from the others.
+  const owns = await Promise.all(strict.map((viewer) => ownNode(viewer)));
+  ok("strict NAT: each finds its own place in the tree", owns.every(Boolean), owns.map((own) => own && own.label).join(","));
+  const strictKids = [];
+  let relaysSeen = 0;
+  let deepest = 0;
+  const start = Date.now();
+  let bytesAt = null;
+  /** When a picture was found not moving, and whose ("12s:v3"): a stall mid-run, as when credentials expire, shows here. */
+  const stalls = [];
+  let looks = 0;
+  while (Date.now() - start < seconds * 1000) {
+    if (looks++ % 8 === 0) {
+      const now = await Promise.all(everyone.map((viewer) => pictureMoves(viewer.page, 700)));
+      now.forEach((m, i) => m.moves || stalls.push(`${Math.round((Date.now() - start) / 1000)}s:v${i + 1}`));
+    }
+    t = await tree(id).catch(() => t);
+    const byLabel = new Map(t.nodes.map((node) => [node.label, node]));
+    for (const own of owns) if (own) strictKids.push(byLabel.get(own.label)?.children ?? 0);
+    relaysSeen = Math.max(relaysSeen, t.nodes.filter((node) => !node.source && node.children > 0).length);
+    deepest = Math.max(deepest, maxDepth(t));
+    // The bytes, over the run's last 30 s: what a viewer through TURN costs, against a direct one.
+    if (bytesAt === null && Date.now() - start >= seconds * 1000 - 30000) bytesAt = { at: Date.now(), strict: await Promise.all(strict.map((v) => routes(v.page))), direct: await Promise.all(direct.map((v) => routes(v.page))) };
+    await sleep(2000);
+  }
+  ok("strict NAT: never a relay: nobody is ever placed under them", strictKids.length > 0 && strictKids.every((n) => n === 0), `${strictKids.length} looks over ${seconds} s; most children seen ${Math.max(0, ...strictKids)}`);
+  ok("strict NAT: …while the others relay (the tree did promote)", relaysSeen > 0 && deepest >= 2, `relays ${relaysSeen}, depth ${deepest}`);
+  const moving = await Promise.all(everyone.map((viewer) => pictureMoves(viewer.page)));
+  ok(`strict NAT: every picture still moves after ${seconds} s`, moving.every((m) => m.moves), `${moving.map((m) => `${m.frames}f`).join(",")}; not moving when looked at (v1, v2 through TURN): ${stalls.join(" ") || "never"}`);
+  const after = await Promise.all(strict.map((viewer) => routes(viewer.page)));
+  ok("strict NAT: …still through TURN", after.every((r) => r.links.length > 0 && r.links.every((link) => link.startsWith("relay/"))), after.map((r) => r.links.join(" ")).join(" | "));
+  if (bytesAt) {
+    const s = (Date.now() - bytesAt.at) / 1000;
+    // Over the connections open at the second look (one made since counts from nothing; one closed
+    // since is lost, so this is a floor).
+    const kbps = (before, now) => Math.round((Object.keys(now.bytes).reduce((sum, i) => sum + now.bytes[i] - (before.bytes[i] ?? 0), 0) * 8) / s / 1000);
+    const strictKbps = after.map((now, i) => kbps(bytesAt.strict[i], now));
+    const directNow = await Promise.all(direct.map((v) => routes(v.page)));
+    const directKbps = directNow.map((now, i) => kbps(bytesAt.direct[i], now)).sort((a, b) => a - b);
+    const median = directKbps[Math.floor(directKbps.length / 2)];
+    ok(
+      "strict NAT: a viewer through TURN carries no more than a direct viewer (no extra layers for it)",
+      strictKbps.every((k) => k <= median * 1.2 + 50),
+      `through TURN ${strictKbps.join(", ")} kbps (${strictKbps.map((k) => ((k * 3600) / 8 / 1e6).toFixed(2)).join(", ")} GB an hour); direct ${directKbps.join(", ")} kbps`,
+    );
+  }
+  await endWebinar(host);
+  noErrors("strict NAT", [host, ...everyone]);
+  for (const p of [host, ...everyone]) await p.ctx.close();
+}
+
+/**
+ * The host on a strict network: every viewer's link to it has the host's relay at the other end.
+ * That is the host's TURN, not theirs: they must still be made relays (SPEC §8.1 [D82]). Judged by
+ * either end, every one of them said it was behind TURN, and the audience stopped at the host's
+ * own fan-out.
+ */
+async function strictHost(browser) {
+  const host = await person(browser, { init: trackPeerConnections(true) });
+  const { id, path } = await goLive(host, "QA strict host");
+  const viewers = [];
+  for (let i = 0; i < 6; i++) {
+    const viewer = await person(browser, { viewport: { width: 960, height: 700 }, init: trackPeerConnections(false) });
+    viewers.push(viewer);
+    await watch(viewer, path);
+    await sleep(400);
+  }
+  const times = await Promise.all(viewers.map((viewer) => untilMoving(viewer.page, 60000)));
+  ok("strict host: every viewer's picture moves, from a host that only connects through TURN", times.every((t) => t !== null), `ms: ${times.join(",")}`);
+  const hostRoutes = await routes(host.page);
+  ok("strict host: the host's links go through its TURN", hostRoutes.links.length > 0 && hostRoutes.links.every((link) => link.startsWith("relay/")), hostRoutes.links.join(" "));
+  let t = null;
+  const grew = await until(async () => {
+    t = await tree(id);
+    return t.viewers === viewers.length && placed(t) === viewers.length && t.nodes.some((node) => !node.source && node.children > 0);
+  }, 90000, 1000);
+  ok("strict host: …and its viewers are still made relays", grew, t && `viewers ${t.viewers}, placed ${placed(t)}, relays ${t.nodes.filter((n) => !n.source && n.children > 0).map((n) => `${n.label}→${n.children}`).join(" ") || "none"}`);
+  await endWebinar(host);
+  noErrors("strict host", [host, ...viewers]);
+  for (const p of [host, ...viewers]) await p.ctx.close();
+}
+
+const SECTIONS = { happy, scale, "host-leaves": hostLeaves, viewer, host: hostCases, home, a11y, "strict-nat": strictNat, "strict-host": strictHost };
+/** Run only when named: they need TURN. */
+const ON_REQUEST = new Set(["strict-nat", "strict-host"]);
 
 (async () => {
   const wanted = process.argv.slice(2);
-  const names = wanted.length ? wanted : Object.keys(SECTIONS);
+  const names = wanted.length ? wanted : Object.keys(SECTIONS).filter((name) => !ON_REQUEST.has(name));
   console.log(`Meetly (Worker preview) at ${BASE}`);
   const browser = await H.launch();
   for (const name of names) {

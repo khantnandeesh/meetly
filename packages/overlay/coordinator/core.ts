@@ -18,7 +18,7 @@ import {
   verifyGrant,
   verifyTicket,
 } from "../protocol";
-import type { Assignment, Capabilities, ClientMessage, ClientMessageOf, MetricsSample, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
+import type { Assignment, Capabilities, ClientMessage, ClientMessageOf, IceServer, MetricsSample, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
 import type { ConnId, ConnMeta, CoordinatorCore, CoordinatorCoreOptions, CoreRequest, CoreResponse, Effect, RoomSnapshot, RoomStats } from "./types";
 import { scoring } from "./scoring";
 import { DEPTH_UNKNOWN, FORGET_MS, MOVE_SHARE, REBALANCE_EVERY_MS, SUSPECT_MS, TreeMap, newNode } from "./treeMap";
@@ -48,6 +48,14 @@ const HINT = { downShare: 0.3, downAfterMs: 10_000, upShare: 0.1, upAfterMs: 60_
 const RATES: Record<string, number> = { signal: 50, need: 5, status: 2, metrics: 1, time: 20, report: 20, streams: 2 };
 /** Refusals for rate, or messages that do not parse, in ten seconds, before the socket is closed. */
 const STRIKES = 30;
+/** [D82] The most peers whose ICE servers are minted again in one housekeeping, all at once: each is a request to the TURN key's API. */
+const ICE_REFRESH_PER_TICK = 20;
+/** [D82] After a mint brings no TURN, the room mints nothing for this long, doubling with each failure up to `ICE_BACKOFF_MAX_MS`. */
+const ICE_BACKOFF_MS = 30_000;
+const ICE_BACKOFF_MAX_MS = 30 * 60_000;
+const hasTurn = (ice: readonly IceServer[]) => ice.some((server) => server.urls.some((url) => /^turns?:/i.test(url)));
+/** [D82] A peer that may need TURN on its next link: one behind TURN already, or whose NAT is not known to be reachable. */
+const mayNeedTurn = (node: TreeNode) => node.turn || (node.caps.nat !== "open" && node.caps.nat !== "cone");
 
 type Bucket = { tokens: number; at: number };
 
@@ -65,7 +73,7 @@ type Conn = {
 };
 
 /** What `attach` keeps with a socket: enough to rebuild `Conn`, and the peer's record, after a restart. */
-type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number; pv?: boolean };
+type Attachment = { i: string; n: string; r: "source" | "viewer"; g: string | null; o: number; p?: PeerId; role?: OverlayRole; j?: number; c?: Capabilities; x?: number; pv?: boolean; tu?: boolean; ia?: number; it?: boolean };
 
 type SessionKey = { kid: string; privateKey: CryptoKey; publicKey: CryptoKey; pub: string; idKey: CryptoKey; epochMs: number };
 type StoredSession = { kid: string; pkcs8: string; pub: string; idSecret: string; epochMs: number };
@@ -135,6 +143,10 @@ class Core implements CoordinatorCore {
         node.lastStatusAt = 0;
         node.grantExp = a.x ?? 0;
         node.provisional = node.role === "relay" && a.pv === true;
+        // [D82] Behind TURN is for the session: a coordinator that wakes does not forget it.
+        node.turn = a.tu === true && node.role !== "source";
+        node.iceAt = a.ia ?? now;
+        node.iceTurn = a.it !== false;
         conn.peer = node.peer;
         this.map.add(node, now);
         this.byIdentity.set(node.identity, node.peer);
@@ -208,7 +220,10 @@ class Core implements CoordinatorCore {
           // for those waiting (D38): look again at once.
           {
             const uplink = node.caps.uplinkKbps;
+            const turn = node.turn;
             if (this.map.applyStatus(node, message, now) || (node.caps.uplinkKbps !== uplink && this.map.waiting().length > 0)) await this.serveWaiting(fx, now);
+            // [D82] Kept with the socket from now on. A relay is demoted at the next housekeeping (`demotable`).
+            if (node.turn !== turn) this.reattach(fx, node);
           }
           break;
         case "report":
@@ -356,7 +371,8 @@ class Core implements CoordinatorCore {
 
   private attach(fx: Effect[], conn: Conn, node: TreeNode | null): void {
     const value: Attachment = { i: conn.identity, n: conn.name.slice(0, 64), r: conn.ticketRole, g: conn.region, o: conn.openedAt };
-    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp, ...(node.provisional ? { pv: true } : {}) });
+    // Never the ICE servers: TURN credentials go to the peer's socket and nowhere else (SPEC §6.7).
+    if (node) Object.assign(value, { p: node.peer, role: node.role, j: node.joinedAt, c: node.caps, x: node.grantExp, ia: node.iceAt, ...(node.iceTurn ? {} : { it: false }), ...(node.provisional ? { pv: true } : {}), ...(node.turn ? { tu: true } : {}) });
     fx.push({ type: "attach", conn: conn.id, value: JSON.stringify(value) });
   }
 
@@ -499,12 +515,7 @@ class Core implements CoordinatorCore {
     const grant = await this.grantFor(node, now);
     // Someone coming back is where it was; it asks (`need`) if that is no longer true.
     const assign = resumed || node.role === "source" ? [] : await this.offer(fx, node, now);
-    let ice: ServerMessageOf<"welcome">["ice"] = [];
-    try {
-      ice = await this.o.iceServers();
-    } catch (error) {
-      this.o.logger?.warn("coordinator", "no ICE servers", error);
-    }
+    const ice: ServerMessageOf<"welcome">["ice"] = (await this.mintIce([node], now))[0];
     this.attach(fx, conn, node);
     this.send(fx, conn.id, {
       t: "welcome",
@@ -753,8 +764,22 @@ class Core implements CoordinatorCore {
     for (const node of [...this.map.nodes.values()]) if (node.conn === null && node.closedAt !== null && now - node.closedAt >= FORGET_MS) this.forget(fx, node);
     if (this.ended !== null) return;
 
+    // [D82] TURN credentials expire (SPEC §6.7): fresh ones at half their life, in a grant, for
+    // the peers that may need TURN; and soon for one whose welcome had none. Minted all at once.
+    const refresh = this.o.iceRefreshMs;
+    const due =
+      refresh === undefined || now < this.iceBackoff.until
+        ? []
+        : [...this.map.nodes.values()].filter((node) => node.conn !== null && mayNeedTurn(node) && (!node.iceTurn || now - node.iceAt >= refresh)).slice(0, ICE_REFRESH_PER_TICK);
+    const fresh = await this.mintIce(due, now);
+    for (const [i, node] of due.entries()) {
+      // Servers with no TURN would take the relay away from the links that need it: not sent.
+      if (node.conn === null || !hasTurn(fresh[i])) continue;
+      this.send(fx, node.conn, { t: "grant", grant: await this.grantFor(node, now), ice: fresh[i] });
+      this.reattach(fx, node);
+    }
     for (const node of this.map.nodes.values()) {
-      if (node.conn === null || node.grantExp - now / 1000 > GRANT_RENEW_S) continue;
+      if (node.conn === null || due.includes(node) || node.grantExp - now / 1000 > GRANT_RENEW_S) continue;
       this.send(fx, node.conn, { t: "grant", grant: await this.grantFor(node, now) });
       this.reattach(fx, node);
     }
@@ -869,6 +894,45 @@ class Core implements CoordinatorCore {
         for (const [peer, until] of node.avoid) if (until <= now) node.avoid.delete(peer);
       }
     }
+  }
+
+  /** [D82] Failed mints in a row, and until when the room mints nothing. */
+  private iceBackoff = { failures: 0, until: 0 };
+
+  /**
+   * ICE servers for these peers, minted at once. With TURN in this room (`iceRefreshMs`), a batch
+   * that brings no TURN at all (the key's API down, or refusing) pauses the room's mints: 30 s,
+   * doubling to 30 minutes; meanwhile peers are given STUN only, without waiting on a mint.
+   */
+  private async mintIce(nodes: TreeNode[], now: number): Promise<IceServer[][]> {
+    if (nodes.length === 0) return [];
+    const turn = this.o.iceRefreshMs !== undefined;
+    const want = turn && now < this.iceBackoff.until ? { turn: false } : undefined;
+    const minted = await Promise.all(
+      nodes.map((node) =>
+        this.o.iceServers(want).then(
+          (ice) => ice,
+          (error: unknown) => {
+            this.o.logger?.warn("coordinator", `no ICE servers for ${node.peer}`, error);
+            return [] as IceServer[];
+          },
+        ),
+      ),
+    );
+    for (const [i, node] of nodes.entries()) {
+      if (nodes.length === 1 || hasTurn(minted[i])) {
+        node.iceAt = now;
+        node.iceTurn = hasTurn(minted[i]);
+      }
+    }
+    if (turn && want === undefined) {
+      if (minted.some(hasTurn)) this.iceBackoff = { failures: 0, until: 0 };
+      else {
+        const failures = this.iceBackoff.failures + 1;
+        this.iceBackoff = { failures, until: now + Math.min(ICE_BACKOFF_MAX_MS, ICE_BACKOFF_MS * 2 ** (failures - 1)) };
+      }
+    }
+    return minted;
   }
 
   private reattach(fx: Effect[], node: TreeNode): void {

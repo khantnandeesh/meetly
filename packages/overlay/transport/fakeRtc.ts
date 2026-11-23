@@ -94,8 +94,25 @@ export class FakePeerConnection {
   private remoteId: number | null = null;
   private sentCandidate = false;
   private busy = 0;
-  /** Tests set this to make the route look like a TURN one. */
+  /** Tests set this to make the route look like a TURN one: this end's candidate is a relay. */
   relayed = false;
+  /** The same for the other end's candidate: the route goes through the other side's TURN. */
+  remoteRelayed = false;
+  /** What `setConfiguration` was last given, and how many times ICE was restarted ([D82]). */
+  configuration: { iceServers?: unknown[] } = {};
+  iceRestarts = 0;
+
+  getConfiguration(): { iceServers?: unknown[] } {
+    return { ...this.configuration };
+  }
+
+  setConfiguration(configuration: { iceServers?: unknown[] }): void {
+    this.configuration = configuration;
+  }
+
+  restartIce(): void {
+    this.iceRestarts++;
+  }
 
   constructor(
     private readonly net: FakeNet,
@@ -168,7 +185,7 @@ export class FakePeerConnection {
     return new Map<string, Record<string, unknown>>([
       ["pair", { id: "pair", type: "candidate-pair", state: "succeeded", nominated: true, localCandidateId: "local", remoteCandidateId: "remote" }],
       ["local", { id: "local", type: "local-candidate", candidateType: this.relayed ? "relay" : "host" }],
-      ["remote", { id: "remote", type: "remote-candidate", candidateType: "host" }],
+      ["remote", { id: "remote", type: "remote-candidate", candidateType: this.remoteRelayed ? "relay" : "host" }],
     ]);
   }
 

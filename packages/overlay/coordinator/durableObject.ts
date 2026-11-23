@@ -18,6 +18,7 @@ import { DEFAULT_PARAMS, encodeServerMessage } from "../protocol";
 import type { IceServer, OverlayParams } from "../protocol";
 import { createCore } from "./core";
 import { HEALTH_PATH, createSerial, parseRoomPath } from "./routing";
+import { mintTurn } from "./turn";
 import type { ConnId, CoordinatorCore, CoreRequest, Effect } from "./types";
 
 /** What this file uses of a Durable Object's state. */
@@ -77,7 +78,7 @@ const ROOM_HEADER = "x-overlay-room";
 const CORE_PREFIX = "core:";
 const ROOM_KEY = "room";
 const STUN: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }];
-/** TURN credentials last this long: a session's length, near enough (SPEC §6.7). */
+/** TURN credentials last this long, and each peer is given fresh ones at half that (SPEC §6.7, [D82]). */
 const TURN_TTL_S = 6 * 3600;
 
 /** What a socket carries with it across hibernation: its id, and what the core attached. */
@@ -105,24 +106,40 @@ export type OverlayRoomOptions = {
   stun?: IceServer[];
   /** The most viewers admitted, over `OVERLAY_VIEWER_CAP` and the default. */
   viewerCap?: number;
+  /**
+   * Tests only: a TURN server of the test's own (coturn with `use-auth-secret`), whose
+   * credentials are minted here by the TURN REST API's rule from its shared secret, to last
+   * `ttlS`. Used when no Cloudflare TURN key is configured. Never set in production.
+   */
+  testTurn?: { urls: string[]; secret: string; ttlS: number };
 };
 
-/** STUN, and TURN minted for this peer from a Cloudflare TURN key when one is configured. */
-async function iceServers(env: CoordinatorEnv, stun: IceServer[] = STUN): Promise<IceServer[]> {
-  if (!env.TURN_KEY_ID || !env.TURN_KEY_API_TOKEN) return stun;
-  const response = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.TURN_KEY_ID)}/credentials/generate-ice-servers`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${env.TURN_KEY_API_TOKEN}`, "content-type": "application/json" },
-    body: JSON.stringify({ ttl: TURN_TTL_S }),
-  });
-  if (!response.ok) return stun;
-  const body = (await response.json()) as { iceServers?: { urls: string | string[]; username?: string; credential?: string }[] };
-  const servers = (body.iceServers ?? []).map((server) => ({
-    urls: (Array.isArray(server.urls) ? server.urls : [server.urls]).slice(0, 8),
-    ...(server.username ? { username: server.username } : {}),
-    ...(server.credential ? { credential: server.credential } : {}),
-  }));
-  return servers.length > 0 ? servers.slice(0, 8) : stun;
+/** The TURN REST API's credentials (what coturn's `use-auth-secret` checks): "<expiry>:<name>", and its HMAC-SHA1. */
+async function restCredentials(secret: string, ttlS: number): Promise<{ username: string; credential: string }> {
+  const username = `${Math.floor(Date.now() / 1000) + ttlS}:overlay`;
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(username)));
+  return { username, credential: btoa(String.fromCharCode(...mac)) };
+}
+
+/**
+ * The configured STUN servers, and TURN minted for this peer from a Cloudflare TURN key when one
+ * is configured and the core wants it (`want.turn` is false while the room backs off after failed
+ * mints, [D82]). The STUN servers stay: the NAT probe needs two of them (SPEC §8.1), and
+ * Cloudflare's answer has one. If minting fails the peer gets STUN only, and why (a status code,
+ * never the key) is logged when it changes: "TURN key not configured" when this object has no
+ * key at all, which is not a failure to mint.
+ */
+async function iceServers(env: CoordinatorEnv, stun: IceServer[], testTurn: OverlayRoomOptions["testTurn"], want: { turn?: boolean } | undefined, log: (problem: string | null) => void): Promise<IceServer[]> {
+  if (want?.turn === false) return stun;
+  if (!env.TURN_KEY_ID?.trim() || !env.TURN_KEY_API_TOKEN?.trim()) {
+    if (testTurn) return [...stun, { urls: testTurn.urls.slice(0, 8), ...(await restCredentials(testTurn.secret, testTurn.ttlS)) }].slice(0, 8);
+    log("TURN key not configured");
+    return stun;
+  }
+  const minted = await mintTurn(env.TURN_KEY_ID, env.TURN_KEY_API_TOKEN, TURN_TTL_S);
+  log(minted.problem);
+  return [...stun, ...minted.servers].slice(0, 8);
 }
 
 /** One session. The class name is what wrangler.jsonc's `durable_objects` and `migrations` refer to. */
@@ -132,6 +149,16 @@ export class OverlayRoom {
   private readonly sockets = new Map<ConnId, WebSocketLike>();
   private readonly serial = createSerial();
   private alarmAt: number | null = null;
+  /** What the last mint said was wrong, so that it is logged when it changes, not for every peer. */
+  private turnProblem: string | null | undefined = undefined;
+
+  /** Logs why this room's peers get no TURN, once each time the reason changes. */
+  private readonly logTurn = (problem: string | null) => {
+    if (problem === this.turnProblem) return;
+    this.turnProblem = problem;
+    if (problem === "TURN key not configured") console.log("overlay: TURN key not configured; STUN only");
+    else if (problem) console.warn(`overlay: TURN credentials not minted (${problem}); STUN only`);
+  };
 
   constructor(
     readonly state: DurableObjectStateLike,
@@ -151,7 +178,9 @@ export class OverlayRoom {
       serverSecret: this.env.OVERLAY_SERVER_SECRET ?? "",
       params: params(this.env),
       viewerCap: this.options.viewerCap ?? (Number(this.env.OVERLAY_VIEWER_CAP) > 0 ? Number(this.env.OVERLAY_VIEWER_CAP) : 10_000),
-      iceServers: () => iceServers(this.env, this.options.stun),
+      iceServers: (want) => iceServers(this.env, this.options.stun ?? STUN, this.options.testTurn, want, this.logTurn),
+      // [D82] Fresh credentials at half their life, when there is TURN at all.
+      iceRefreshMs: this.env.TURN_KEY_ID?.trim() && this.env.TURN_KEY_API_TOKEN?.trim() ? (TURN_TTL_S * 1000) / 2 : this.options.testTurn ? (this.options.testTurn.ttlS * 1000) / 2 : undefined,
       random: Math.random,
     });
     const stored: Record<string, string> = {};

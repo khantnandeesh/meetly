@@ -66,7 +66,8 @@ export function earlyNat(candidates: readonly GatheredCandidate[], stunServers: 
 export async function probeNat(ice: IceServer[]): Promise<Capabilities["nat"]> {
   const stun = ice.flatMap((server) => server.urls).filter((url) => url.startsWith("stun:"));
   if (typeof RTCPeerConnection === "undefined") return "unknown";
-  const pc = new RTCPeerConnection({ iceServers: ice.map((server) => ({ urls: server.urls, username: server.username, credential: server.credential })) });
+  // STUN only: the probe compares mapped addresses, and a TURN allocation for it would be paid for ([D82]).
+  const pc = new RTCPeerConnection({ iceServers: stun.map((url) => ({ urls: url })) });
   const gathered: GatheredCandidate[] = [];
   try {
     pc.createDataChannel("probe");

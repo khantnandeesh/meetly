@@ -23,6 +23,9 @@ registerHooks({
       if ((wanted.startsWith(".") || wanted.startsWith("file:")) && !/\.[cm]?[jt]sx?$/.test(wanted)) {
         return nextResolve(`${wanted}.ts`, context);
       }
+      // Next.js's own entry points ("next/server") are CommonJS files that a bundler finds without
+      // the extension, and Node's ESM resolver does not.
+      if (/^next\/[\w/-]+$/.test(wanted)) return nextResolve(`${wanted}.js`, context);
       throw error;
     }
   },

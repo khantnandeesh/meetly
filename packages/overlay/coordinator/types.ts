@@ -94,8 +94,17 @@ export type CoordinatorCoreOptions = {
   leafPlacement?: "deep" | "shallow";
   /** The most viewers admitted. The source is never refused. */
   viewerCap: number;
-  /** STUN and TURN servers for a new peer, with fresh credentials. */
-  iceServers: () => Promise<IceServer[]>;
+  /**
+   * STUN and TURN servers for a peer, with fresh credentials. `want.turn` false: STUN only, no
+   * mint ([D82]: the room is backing off after mints that failed). A mint must not take long
+   * (the Durable Object's gives up after 3 s): the core waits for it.
+   */
+  iceServers: (want?: { turn?: boolean }) => Promise<IceServer[]>;
+  /**
+   * [D82] How old a peer's ICE servers may be before fresh ones are minted and sent in its next
+   * `grant`: half the TURN credentials' life. Undefined (no TURN, STUN only): never.
+   */
+  iceRefreshMs?: number;
   /** Injected, so placement is repeatable in tests. Returns 0..1. */
   random: () => number;
   logger?: Logger;
@@ -172,7 +181,7 @@ export type CoordinatorClientEvents = {
   welcome: [welcome: ServerMessageOf<"welcome">];
   /** The socket dropped; the client is reconnecting with `resume`. The overlay carries on. */
   offline: [];
-  /** A message the client does not handle itself. */
+  /** A message the client does not handle itself, and a `grant` that carries fresh ICE servers ([D82]). */
   message: [message: ServerMessage];
   /** Removed, or the session ended: do not reconnect. */
   closed: [reason: "kicked" | "ended" | "denied" | "full" | "left", detail: string];
@@ -189,7 +198,7 @@ export interface CoordinatorClient extends Listenable<CoordinatorClientEvents>, 
   readonly signaler: Signaler;
   /** The grant currently held: renewed by the coordinator before it expires. */
   grant(): string;
-  sendStatus(status: { depth: number; links: PeerRecord["links"]; children: number; standby: number; free: number; caps: Capabilities; lossPct: number; rttMs: number | null }): void;
+  sendStatus(status: { depth: number; links: PeerRecord["links"]; children: number; standby: number; free: number; caps: Capabilities; lossPct: number; rttMs: number | null; turn?: boolean }): void;
   sendMetrics(sample: MetricsSample): void;
   /** The source only. */
   sendStreams(streams: StreamConfig[]): void;

@@ -100,6 +100,14 @@ export type TreeNode = Omit<PeerRecord, "conn"> & {
   grantExp: number;
   /** Peers the coordinator has named to this one, or this one to them, and when (SPEC §6.4). */
   introduced: Map<PeerId, number>;
+  /**
+   * [D82] Its link to its parent has gone through TURN in this session, as it said in `status`:
+   * it only watches. Never promoted, never offered to anyone, demoted at once. Never the source's.
+   */
+  turn: boolean;
+  /** [D82] When its ICE servers (and TURN credentials) were last minted, and whether they held TURN. */
+  iceAt: number;
+  iceTurn: boolean;
 };
 
 export function newNode(init: Pick<TreeNode, "peer" | "identity" | "name" | "ticketRole" | "role" | "caps" | "region" | "conn" | "joinedAt">): TreeNode {
@@ -138,6 +146,9 @@ export function newNode(init: Pick<TreeNode, "peer" | "identity" | "name" | "tic
     grant: "",
     grantExp: 0,
     introduced: new Map(),
+    turn: false,
+    iceAt: init.joinedAt,
+    iceTurn: true,
   };
 }
 
@@ -150,6 +161,8 @@ export type StatusFields = {
   caps: Capabilities;
   lossPct: number;
   rttMs: number | null;
+  /** [D82] Optional: a peer that does not send it is taken as not behind TURN. */
+  turn?: boolean;
 };
 
 export type Placement = { parents: PeerHint[]; backups: PeerHint[] };
@@ -299,7 +312,7 @@ export class TreeMap {
     const judge = this.scoring.judgeProvisional;
     if (!judge || this.judge(node, now).eligible) return false;
     const observed: Observed = { uptimeMs: now - node.joinedAt, spareUplinkKbps: node.caps.uplinkKbps, lossPct: node.lossPct, churnPerMin: node.parentChanges.length };
-    return judge(node.caps, observed, this.streamKbps(), this.params).eligible;
+    return judge(capsOf(node), observed, this.streamKbps(), this.params).eligible;
   }
 
   /** What a peer said of itself. True if it may have made room for someone. */
@@ -315,6 +328,8 @@ export class TreeMap {
     node.lastStatusAt = now;
     node.reported = true;
     node.suspectUntil = 0;
+    // [D82] Once behind TURN, for the rest of the session. The source has to send in any case.
+    if (status.turn === true && node.role !== "source") node.turn = true;
     // Only the source is at depth 0, whatever anyone says.
     node.depth = node.role === "source" ? 0 : status.depth === 0 ? DEPTH_UNKNOWN : status.depth;
     const parent = node.role === "source" ? null : (status.links[0]?.parent ?? null);
@@ -337,10 +352,10 @@ export class TreeMap {
     while (node.parentChanges.length > 0 && now - node.parentChanges[0] > 60_000) node.parentChanges.shift();
     const kbps = this.streamKbps();
     const observed: Observed = { uptimeMs: now - node.joinedAt, spareUplinkKbps: node.caps.uplinkKbps, lossPct: node.lossPct, churnPerMin: node.parentChanges.length };
-    node.verdict = this.scoring.judgeRelay(node.caps, observed, kbps, this.params);
+    const caps = capsOf(node);
+    node.verdict = this.scoring.judgeRelay(caps, observed, kbps, this.params);
     // "Could relay one day": what it says of itself passes, whatever has been measured so far.
-    node.canRelay =
-      node.role !== "source" && this.scoring.judgeRelay(node.caps, { uptimeMs: 3_600_000, spareUplinkKbps: 1e9, lossPct: 0, churnPerMin: 0 }, kbps, this.params).eligible;
+    node.canRelay = node.role !== "source" && this.scoring.judgeRelay(caps, { uptimeMs: 3_600_000, spareUplinkKbps: 1e9, lossPct: 0, churnPerMin: 0 }, kbps, this.params).eligible;
     return node.verdict;
   }
 
@@ -374,6 +389,8 @@ export class TreeMap {
   /** Whether a joiner may be sent to this peer at all, slots aside. */
   offerable(node: TreeNode, now: number): boolean {
     if (node.role === "leaf" || node.conn === null || node.demotingSince !== null) return false;
+    // [D82] Behind TURN: nobody's parent or backup, from the moment it says so.
+    if (node.turn) return false;
     if (this.isStale(node, now) || node.suspectUntil > now) return false;
     return node.role === "source" || (node.parent !== null && node.depth !== DEPTH_UNKNOWN && this.reachesSource(node.peer));
   }
@@ -701,7 +718,8 @@ export class TreeMap {
       const failing = ineligible || (lossy >= 2 && lossy * 2 > reporting);
       if (!failing) node.ineligibleSince = null;
       else if (node.ineligibleSince === null) node.ineligibleSince = now;
-      if (failing && now - node.ineligibleSince! >= (node.provisional ? PROVISIONAL_DEMOTE_AFTER_MS : DEMOTE_AFTER_MS)) out.push(node);
+      // [D82] A relay behind TURN pays for every byte it forwards, twice: no waiting to see.
+      if (failing && (node.turn || now - node.ineligibleSince! >= (node.provisional ? PROVISIONAL_DEMOTE_AFTER_MS : DEMOTE_AFTER_MS))) out.push(node);
     }
     return out;
   }
@@ -868,3 +886,11 @@ export class TreeMap {
 }
 
 const EMPTY: ReadonlySet<PeerId> = new Set();
+
+/**
+ * What a peer may do is judged on: what it says of itself, and [D82] behind TURN its NAT is
+ * "relay", whatever it says, which topology's `judgeRelay` (SPEC §8.1) makes leaf-only.
+ */
+function capsOf(node: TreeNode): Capabilities {
+  return node.turn && node.caps.nat !== "relay" ? { ...node.caps, nat: "relay" } : node.caps;
+}

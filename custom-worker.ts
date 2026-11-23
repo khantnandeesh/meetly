@@ -28,21 +28,32 @@ const settings = (env: Env): CostGuardEnv =>
   Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
 
 /**
- * Live (beta)'s STUN servers. There is no TURN yet, so a viewer behind a strict NAT (symmetric
- * NAT, a strict firewall, some mobile carriers) can't connect to anyone, and never relays.
- * Cloudflare TURN (TURN_KEY_ID and TURN_KEY_API_TOKEN, SPEC §6.7) is the fix; it is not set up.
+ * Live (beta)'s STUN servers. With a Cloudflare TURN key (the secrets TURN_KEY_ID and
+ * TURN_KEY_API_TOKEN, SPEC §6.7) each peer is also given TURN credentials of its own, so a viewer
+ * behind a strict NAT (symmetric NAT, a strict firewall, some mobile carriers) can watch; such a
+ * viewer only watches and never relays ([D82]). Without the key, it can't connect to anyone.
  */
 const LIVE_STUN: IceServer[] = [{ urls: ["stun:stun.cloudflare.com:3478"] }, { urls: ["stun:stun.l.google.com:19302"] }];
+
+/** A local run's own settings: in a local .dev.vars only, never deployed. */
+type LocalEnv = { OVERLAY_LOCAL_ONE_NETWORK?: string; OVERLAY_TEST_TURN_URL?: string; OVERLAY_TEST_TURN_SECRET?: string; OVERLAY_TEST_TURN_TTL_S?: string };
 
 /**
  * Live (beta)'s coordinator: one Durable Object per stream (bound as OVERLAY_ROOM in
  * wrangler.jsonc), with Live's STUN servers and its audience of 50. `OVERLAY_LOCAL_ONE_NETWORK`
  * ("1", in a local .dev.vars only, never deployed) offers no STUN, for a local run on a machine
- * with no route out: every browser on it reaches the others by its host candidates.
+ * with no route out: every browser on it reaches the others by its host candidates. With it, the
+ * `OVERLAY_TEST_TURN_*` variables point the coordinator at a local TURN server (coturn with
+ * `use-auth-secret`) for the strict-NAT browser test (test/e2e/serverless.cjs `strict-nat`).
  */
 export class OverlayRoom extends CoordinatorRoom {
-  constructor(state: DurableObjectStateLike, env: CoordinatorEnv & { OVERLAY_LOCAL_ONE_NETWORK?: string }) {
-    super(state, env, { stun: env.OVERLAY_LOCAL_ONE_NETWORK === "1" ? [] : LIVE_STUN, viewerCap: LIVE_VIEWER_CAP });
+  constructor(state: DurableObjectStateLike, env: CoordinatorEnv & LocalEnv) {
+    const local = env.OVERLAY_LOCAL_ONE_NETWORK === "1";
+    const testTurn =
+      local && env.OVERLAY_TEST_TURN_URL && env.OVERLAY_TEST_TURN_SECRET
+        ? { urls: env.OVERLAY_TEST_TURN_URL.split(","), secret: env.OVERLAY_TEST_TURN_SECRET, ttlS: Number(env.OVERLAY_TEST_TURN_TTL_S) > 0 ? Number(env.OVERLAY_TEST_TURN_TTL_S) : 3600 }
+        : undefined;
+    super(state, env, { stun: local ? [] : LIVE_STUN, viewerCap: LIVE_VIEWER_CAP, testTurn });
   }
 }
 

@@ -65,8 +65,18 @@ export type LinkEvents = {
 export interface Link extends Listenable<LinkEvents> {
   readonly peer: PeerId;
   readonly state: LinkState;
-  /** The connection goes through a TURN server. Known once `state` is "open". */
+  /**
+   * The connection goes through a TURN server: the selected candidate pair's local or remote
+   * candidate is "relay" (either end's). What it costs, not who is behind TURN. Known once
+   * `state` is "open", and read again when the selected pair changes or ICE reconnects (SPEC §5.1).
+   */
   readonly turn: boolean;
+  /**
+   * [D82] This end's own candidate in the selected pair is "relay": this peer reaches the other
+   * through its own TURN allocation. The other end's relay says nothing of this peer. Optional: a
+   * test double may leave it out (false).
+   */
+  readonly localTurn?: boolean;
   /** Bytes the media channel is holding (`bufferedAmount`). */
   readonly bufferedAmount: number;
   /**
@@ -93,6 +103,7 @@ export type TransportOptions = {
   /** Checks the other side's `hello`. A link whose peer fails it is closed with "auth-failed". */
   verifyPeer: (peer: PeerId, grant: string) => Promise<boolean>;
   signaler: Signaler;
+  /** The ICE servers links start with; `LinkManager.setIce` replaces them. */
   ice: IceServer[];
   clock: Clock;
   logger?: Logger;
@@ -121,6 +132,13 @@ export interface LinkManager extends Listenable<LinkManagerEvents> {
   get(peer: PeerId): Link | undefined;
   links(): Link[];
   closeAll(): void;
+  /**
+   * SPEC §5.1 [D82]: fresh ICE servers. Links made from now on use them and open links are given
+   * them. With `restart` (new TURN credentials before the old ones expire), an open link whose own
+   * end goes through TURN also restarts ICE, make-before-break, to be allocated a relay with them.
+   * Optional: a test double may leave it out.
+   */
+  setIce?(ice: IceServer[], options?: { restart?: boolean }): void;
 }
 
 /**

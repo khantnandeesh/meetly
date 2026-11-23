@@ -6,7 +6,7 @@ import { CHANNELS, createLinkManager } from "@meetly/overlay/transport/index";
 import { FakeClock } from "@meetly/overlay/transport/fakes";
 import { FakeNet, type FakeDataChannel, type FakePeerConnection } from "@meetly/overlay/transport/fakeRtc";
 import { CONNECT_TIMEOUT_MS, HELLO_TIMEOUT_MS } from "@meetly/overlay/transport/link";
-import { classifyNat } from "@meetly/overlay/transport/nat";
+import { classifyNat, probeNat } from "@meetly/overlay/transport/nat";
 import type { Link, LinkCloseReason, PacketChannel, TransportOptions } from "@meetly/overlay/transport/types";
 
 /** Signalling between managers in one process, as the coordinator would relay it. */
@@ -184,6 +184,62 @@ describe("links: making one (SPEC §5.1)", () => {
     await w.run(40);
     assert.equal(ab.state, "open");
     assert.equal(ab.turn, true);
+  });
+
+  it("[D82] takes fresh ICE servers: new links start with them, open links are given them, and a relayed one restarts ICE", async () => {
+    const w = world();
+    const started: RTCConfiguration[] = [];
+    const first = [{ urls: ["turn:t.example.org:3478"], username: "old", credential: "old" }];
+    const fresh = [{ urls: ["turn:t.example.org:3478"], username: "new", credential: "new" }];
+    const a = w.peer("a", {
+      ice: first,
+      peerConnection: (config) => {
+        started.push(config);
+        const pc = w.net.factory();
+        w.pcs.set("a", [...(w.pcs.get("a") ?? []), pc as unknown as FakePeerConnection]);
+        return pc;
+      },
+    });
+    w.peer("b");
+    w.peer("c");
+    const ab = a.manager.connect("b");
+    const ac = a.manager.connect("c");
+    w.pcs.get("a")![0].relayed = true;
+    await w.run(40);
+    assert.deepEqual([ab.state, ab.turn, ac.state, ac.turn], ["open", true, "open", false]);
+    const [toB, toC] = w.pcs.get("a")!;
+    // A reconnection's servers: given to the links, no ICE restart.
+    a.manager.setIce!(fresh);
+    assert.deepEqual(toB.configuration.iceServers, fresh);
+    assert.deepEqual(toC.configuration.iceServers, fresh);
+    assert.deepEqual([toB.iceRestarts, toC.iceRestarts], [0, 0]);
+    // A refresh before the credentials expire: the link whose own end is relayed restarts ICE.
+    a.manager.setIce!(fresh, { restart: true });
+    assert.deepEqual([toB.iceRestarts, toC.iceRestarts], [1, 0], "only the relayed link restarts ICE");
+    w.peer("d");
+    a.manager.connect("d");
+    assert.deepEqual(started.map((config) => (config.iceServers as { username?: string }[])[0].username), ["old", "old", "new"]);
+  });
+
+  it("[D82] tells its own relay from the other end's: `localTurn` only when this end's candidate is a relay", async () => {
+    const w = world();
+    const a = w.peer("a");
+    w.peer("b");
+    w.peer("c");
+    const ab = a.manager.connect("b");
+    const ac = a.manager.connect("c");
+    // b is behind a strict network (its candidate is a relay); a's own link to c goes through a's TURN.
+    w.pcs.get("a")![0].remoteRelayed = true;
+    w.pcs.get("a")![1].relayed = true;
+    await w.run(40);
+    assert.deepEqual([ab.turn, ab.localTurn], [true, false], "the other end's relay: TURN on the route, but not this peer's");
+    assert.deepEqual([ac.turn, ac.localTurn], [true, true]);
+    // And a refresh does not restart ICE on a link whose relay is the other end's: it is not this peer's allocation.
+    a.manager.setIce!([{ urls: ["turn:t.example.org:3478"], username: "u", credential: "c" }], { restart: true });
+    assert.deepEqual(
+      w.pcs.get("a")!.map((pc) => pc.iceRestarts),
+      [0, 1],
+    );
   });
 
   it("gives up with \"timeout\" on a peer that never answers", async () => {
@@ -489,6 +545,30 @@ describe("links: the send queue", () => {
 });
 
 describe("NAT type from gathered candidates (SPEC §8.1)", () => {
+  it("[D82] probes with the STUN servers only: no TURN allocation is paid for it", async () => {
+    const configs: RTCConfiguration[] = [];
+    class Probe {
+      onicecandidate: ((event: { candidate: null }) => void) | null = null;
+      constructor(config: RTCConfiguration) {
+        configs.push(config);
+      }
+      createDataChannel() {}
+      async setLocalDescription() {
+        setTimeout(() => this.onicecandidate?.({ candidate: null }), 0);
+      }
+      close() {}
+    }
+    const global = globalThis as { RTCPeerConnection?: unknown };
+    const before = global.RTCPeerConnection;
+    global.RTCPeerConnection = Probe;
+    try {
+      await probeNat([{ urls: ["stun:a.example.org:3478", "stun:b.example.org:3478"] }, { urls: ["turn:t.example.org:3478", "turns:t.example.org:443"], username: "u", credential: "c" }]);
+    } finally {
+      global.RTCPeerConnection = before;
+    }
+    assert.deepEqual(configs[0].iceServers, [{ urls: "stun:a.example.org:3478" }, { urls: "stun:b.example.org:3478" }]);
+  });
+
   const host = { type: "host", address: "192.168.1.5", port: 5000 };
   const srflx = (port: number, base = 5000) => ({ type: "srflx", address: "203.0.113.9", port, relatedAddress: "192.168.1.5", relatedPort: base });
 

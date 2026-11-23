@@ -251,6 +251,8 @@ export type SimPeer = {
   switchedAt?: number;
   /** For `badNetworks`: this peer's link loses packets. */
   bad?: boolean;
+  /** [D82] Its link to its parent goes through TURN: it says `turn: true` in every `status`. */
+  turn?: boolean;
 };
 
 export type SwarmOptions = {
@@ -650,7 +652,7 @@ export class Swarm {
     peer.statusAt = this.rig.now;
     const free = Math.max(0, this.fanout(peer) - peer.kids.size);
     const links = peer.parent === null && peer.role !== "source" ? [] : this.streams.map((stream) => ({ stream: stream.id, stripe: 0, parent: peer.parent, backup: peer.backup }));
-    await this.say(peer, { t: "status", depth: peer.parent === null && peer.role !== "source" ? 255 : peer.depth, links, children: peer.kids.size, standby: 0, free, caps: peer.caps, lossPct: this.lossOf(peer), rttMs: 20 });
+    await this.say(peer, { t: "status", depth: peer.parent === null && peer.role !== "source" ? 255 : peer.depth, links, children: peer.kids.size, standby: 0, free, caps: peer.caps, lossPct: this.lossOf(peer), rttMs: 20, ...(peer.turn ? { turn: true } : {}) });
   }
 
   private lossOf(peer: SimPeer): number {
