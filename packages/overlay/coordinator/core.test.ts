@@ -286,6 +286,20 @@ describe("coordinator core: signalling (SPEC §6.4, D10)", () => {
     assert.deepEqual([assign.id, assign.reason, assign.assign[0].parents[0].peer], [7, "need", source.peer]);
     assert.deepEqual(await rig.say(ana.conn, { t: "signal", to: source.peer, data: offer }), []);
   });
+
+  it("[D64] a need that excludes the source, while the source is connected and reporting, is answered with the source", async () => {
+    const rig = new Rig();
+    const source = await withSource(rig);
+    const ana = await rig.join("ana");
+    await rig.say(source.conn, { t: "status", depth: 0, links: [], children: 0, standby: 0, free: 3, caps: relayCaps(), lossPct: 0, rttMs: null });
+    // Excluded with what hangs below it, the source would leave nowhere at all: everyone is below it.
+    const [assign] = of(await rig.say(ana.conn, { t: "need", id: 8, stream: 0, stripe: 0, want: "parent", exclude: [source.peer] }), "assign");
+    assert.equal(assign.assign[0].parents[0]?.peer, source.peer);
+    // A source whose socket has gone is excluded as asked.
+    await rig.drop(source.conn);
+    const [after] = of(await rig.say(ana.conn, { t: "need", id: 9, stream: 0, stripe: 0, want: "parent", exclude: [source.peer] }), "assign");
+    assert.ok(!after.assign[0].parents.some((hint) => hint.peer === source.peer));
+  });
 });
 
 describe("coordinator core: every client message (SPEC §6.3)", () => {

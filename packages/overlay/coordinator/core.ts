@@ -627,6 +627,12 @@ class Core implements CoordinatorCore {
       this.send(fx, node.conn, { t: "error", code: "denied", message: "the source needs no parent", id: need.id });
       return;
     }
+    // [D64] A peer that takes the source for dead is wrong while the source's socket is up and it
+    // reports: and excluded with what hangs below it, the source would leave nowhere to go at all.
+    const source = this.map.source !== null ? this.map.nodes.get(this.map.source) : undefined;
+    if (source && source.conn !== null && now - source.lastStatusAt <= 3 * this.o.params.statusMs && need.exclude.includes(source.peer)) {
+      need = { ...need, exclude: need.exclude.filter((peer) => peer !== source.peer) };
+    }
     let placement = this.map.place(node, { want: need.want, exclude: need.exclude, excludeBelow: true, now });
     if (need.want === "parent" && placement.parents.length === 0) {
       // A peer that has lost its parent: make room by promotion; failing that, a parent over its

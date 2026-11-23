@@ -89,6 +89,13 @@ export const COLD_RETRY_MS = 500;
 export const BACKUP_RETRY_MS = 2000;
 /** A peer refused as a backup (it is below this one, or full) is not tried again for this long. */
 export const BACKUP_REJECT_MS = 10_000;
+/**
+ * [D64] Silence from the source, over a link that is still open, is waited out this long before it
+ * is taken for a death. Nobody else has the stream: a child that repairs away from the source has
+ * nowhere to go, and its whole subtree stalls behind it (gate run 45202616067: a 200 ms hiccup at
+ * the source sent five of its six children, and 182 peers below them, into cold repairs).
+ */
+export const SOURCE_SILENT_MS = 1_000;
 /** A parent takes a peer with nothing to watch over its fan-out, up to this many times it. */
 export const OVER_FANOUT_FACTOR = 2;
 /** One replay a second per child and stream (SPEC §14). */
@@ -508,6 +515,8 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   };
   let rejoinAttempt = 0;
   let waitingSince = 0;
+  /** [D64] The source, as the first heartbeat at depth 0 named it. */
+  let sourceId: PeerId | null = null;
   let backupPending: Peer | null = null;
   let backupDeadline = 0;
   let backupRetryAt = 0;
@@ -1003,6 +1012,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
   function onHeartbeat(peer: Peer, heartbeat: Heartbeat, now: number): void {
     peer.estimator.onHeartbeat(heartbeat, now);
     peer.depth = heartbeat.depth;
+    if (heartbeat.depth === 0) sourceId = peer.id;
     peer.full = (heartbeat.flags & HeartbeatFlag.Full) !== 0;
     const wasStalled = peer.stalled;
     peer.stalled = (heartbeat.flags & HeartbeatFlag.Stalled) !== 0;
@@ -1716,7 +1726,10 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
     const lastHeard = why === "grace" && repair ? repair.lastHeard : dead.lastHeardAt;
     repair = { dead: dead.id, next: null, kind: "warm", lastHeard, detected: now, resubscribed: now, firstPacket: null, usedCoordinator: false, minCap: 15, replayPackets: 0, replayBytes: 0, lastReplayAt: null };
     forgetPending(dead);
-    if (why !== "loop") markUnreachable(dead.id, now);
+    // [D64] The source is never ruled out: nobody else has the stream, and the coordinator, which
+    // sees its socket, offers it again if it is there.
+    const isSource = dead.depth === 0 || dead.id === sourceId;
+    if (why !== "loop" && !isSource) markUnreachable(dead.id, now);
     if (previous && previous !== dead) {
       const older = previous;
       previous = null;
@@ -1733,7 +1746,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
       release(dead);
     }
     tried.clear();
-    tried.add(dead.id);
+    if (!isSource) tried.add(dead.id);
     candidates = dead.alt.filter((alt) => alt.peer !== self && alt.peer !== dead.id);
     const warm = backup;
     // A backup that is itself cut off (STALLED), or that is below the parent just lost, cannot
@@ -2147,7 +2160,9 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
 
     // The failure detector (SPEC §7.4).
     if (parent && (state === "active" || state === "waiting")) {
-      if (now - parent.lastHeardAt >= params.deadMs) parentDied(now, "silent");
+      // [D64] The source is waited for longer, while its link is open.
+      const deadMs = parent.depth === 0 && parent.link.state === "open" ? Math.max(params.deadMs, SOURCE_SILENT_MS) : params.deadMs;
+      if (now - parent.lastHeardAt >= deadMs) parentDied(now, "silent");
       else if (state === "waiting" && now - waitingSince >= params.stallGraceMs) parentDied(now, "grace");
     }
     if (next && now >= nextDeadline) attemptFailed(next, now);
@@ -2171,7 +2186,7 @@ export function createOverlayNode(options: OverlayNodeOptions): OverlayNode {
         // Nothing worked: start again, with backoff (SPEC §7.5).
         setState("rejoining");
         tried.clear();
-        if (repair) tried.add(repair.dead);
+        if (repair && repair.dead !== sourceId) tried.add(repair.dead);
         coldRetryAt = now + REJOIN_BACKOFF_MS[Math.min(rejoinAttempt++, REJOIN_BACKOFF_MS.length - 1)];
         events.emit("error", new Error("overlay: no parent could be found; rejoining"));
         changed();
