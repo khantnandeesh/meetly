@@ -1354,11 +1354,21 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
 | `t` | Fields | |
 | --- | --- | --- |
 | `join` | `start`, `welcome`, `linked`, `firstPacket`, `firstFrame`, `turn` | once per join |
-| `repair` | `stream`, `stripe`, `dead`, `next`, `kind` (warm \| cold \| wait), `lastHeard`, `detected`, `resubscribed`, `firstPacket`, `freezeMs`, `framesLost`, `usedCoordinator` | once per lost parent |
+| `repair` | `stream`, `stripe`, `dead`, `next`, `kind` (warm \| cold \| wait), `lastHeard`, `detected`, `resubscribed`, `firstPacket`, `freezeMs`, `framesLost`, `usedCoordinator`, and [D61] `staleMs?`, `firstDecodable?`, `firstKey?`, `laterGapMs?`, `replayPackets?`, `replayBytes?`, `replayMs?` | once per lost parent |
 | `switch` | `stream`, `stripe`, `from`, `to`, `at`, `freezeMs`, `reason?` | a voluntary change of parent; `reason`: `move` (the coordinator's), `rebalance` (the node's own, §7.6), `starved` (§11.3) |
 | `layer` | `stream`, `peer`, `at`, `maxTemporal`, `reason` | a cap changed |
 | `freeze` | `stream`, `at`, `ms` | rendering stopped, for any reason |
 | `error` | `at`, `where`, `message` | |
+
+**[D61] A `repair` event says where its freeze went** (integration engineer, 2026-11-23;
+additive, every field optional). `staleMs`: how long before `lastHeard` the last decodable frame
+had come, so a freeze that had begun before the parent went is seen as that. `firstDecodable`:
+when the first frame became decodable after `lastHeard`, and `firstKey` whether it was a keyframe
+(the GOP in between was given up). `laterGapMs`: the longest gap after that frame within the
+repair's window: `freezeMs` is the larger of the gap up to `firstDecodable` and this one.
+`replayPackets`, `replayBytes`, `replayMs`: what the new parent sent marked Replay, and how long
+after `firstPacket` its last came. Gate run 45130383283 put first packet to decodable at 444 ms
+(warm) and 503 ms (wait) at p95 and could not say why.
 
 ### 12.2 Definitions
 
@@ -1645,6 +1655,7 @@ Rotating speakers on the overlay. Out of scope.
 | D58 | The honesty check compares light and decoding viewers at the same depths (integrator, 2026-11-23) | 13.2 |
 | D59 | `deadMs` 150: three heartbeats missed (integrator, 2026-11-23); withdrawn the same day, false alarms under fan-out 6 | 7.4 |
 | D60 | A join leaves a full relay's last slot (fan-out 4 or more) to repairs (integrator, 2026-11-23) | 6.6, 8.1 |
+| D61 | A `repair` event carries where its freeze went: stale before, first decodable, later gap, the replay's size and time (integration engineer, 2026-11-23) | 12.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told

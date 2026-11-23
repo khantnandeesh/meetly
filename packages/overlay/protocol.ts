@@ -1073,6 +1073,21 @@ const metricsEvent = tagged({
     framesLost: int(0, 0xffffffff),
     /** The coordinator was asked for something before media flowed again. */
     usedCoordinator: bool,
+    /**
+     * [D61] Where the freeze went; absent from a peer that does not say. `staleMs`: how long before
+     * `lastHeard` the last decodable frame had come (the freeze had begun before the parent went).
+     * `firstDecodable`: the first frame to become decodable after `lastHeard`; `firstKey`: it was a
+     * keyframe (the GOP in between was given up). `laterGapMs`: the longest gap after that frame,
+     * within the repair's window. `replayPackets`, `replayBytes`: what the new parent sent marked
+     * Replay; `replayMs`: from `firstPacket` to the last of them.
+     */
+    staleMs: optional(durationMs),
+    firstDecodable: optional(nullable(sessionMs)),
+    firstKey: optional(bool),
+    laterGapMs: optional(durationMs),
+    replayPackets: optional(int(0, 0xffffffff)),
+    replayBytes: optional(int(0, 0xffffffff)),
+    replayMs: optional(durationMs),
   },
   /** A voluntary change of parent. */
   /**
