@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { POST as create } from "../src/app/api/live/route";
 import { POST as end } from "../src/app/api/live/[id]/end/route";
 import { POST as ticket } from "../src/app/api/live/[id]/ticket/route";
-import { BODY_MAX, BodyTooLarge, isViewerPass, readJsonBody, viewerPass } from "../src/lib/live/server";
+import { BODY_MAX, BodyTooLarge, isViewerPass, liveTurn, readJsonBody, viewerPass } from "../src/lib/live/server";
 
 /**
  * Live (beta)'s routes: a viewer's ticket needs the pass from the full link, not just the id, and
@@ -68,4 +68,26 @@ test("no Live route reads a body larger than BODY_MAX", async () => {
   const chunked = new Request("https://meet.example/api/live", { method: "POST", body: stream, duplex: "half" } as RequestInit);
   await assert.rejects(readJsonBody(chunked), BodyTooLarge);
   assert.deepEqual(await readJsonBody(post({ a: 1 })), { a: 1 });
+});
+
+test("says whether viewers on strict networks can watch (GET /api/live): TURN needs both of its key's secrets", () => {
+  // The route itself reads it at request time (`connection()`), which only runs inside Next.js.
+  delete process.env.TURN_KEY_ID;
+  delete process.env.TURN_KEY_API_TOKEN;
+  assert.equal(liveTurn(), false);
+  process.env.TURN_KEY_ID = "key-id-for-tests";
+  assert.equal(liveTurn(), false, "one of the two is not enough");
+  process.env.TURN_KEY_API_TOKEN = "token-for-tests";
+  assert.equal(liveTurn(), true);
+  delete process.env.TURN_KEY_ID;
+  delete process.env.TURN_KEY_API_TOKEN;
+  // A local run's test TURN server, only on a local one-network run.
+  process.env.OVERLAY_TEST_TURN_URL = "turn:192.0.2.2:3478";
+  process.env.OVERLAY_TEST_TURN_SECRET = "s";
+  assert.equal(liveTurn(), false);
+  process.env.OVERLAY_LOCAL_ONE_NETWORK = "1";
+  assert.equal(liveTurn(), true);
+  delete process.env.OVERLAY_TEST_TURN_URL;
+  delete process.env.OVERLAY_TEST_TURN_SECRET;
+  delete process.env.OVERLAY_LOCAL_ONE_NETWORK;
 });

@@ -20,6 +20,17 @@ import { LIVE_VIEWER_CAP, anonymize, type LiveTree } from "./tree";
 
 export class LiveUnavailable extends Error {}
 
+/**
+ * Whether this deployment offers TURN to Live's viewers (SPEC §6.7, §8.1 [D80]): with the
+ * Cloudflare TURN key's two secrets, a viewer on a strict network connects through a relay and
+ * only watches; without them it can't connect. A local run's test TURN server counts too
+ * (custom-worker.ts). Says nothing about the key itself.
+ */
+export function liveTurn(): boolean {
+  const env = process.env;
+  return Boolean(env.TURN_KEY_ID && env.TURN_KEY_API_TOKEN) || (env.OVERLAY_LOCAL_ONE_NETWORK === "1" && Boolean(env.OVERLAY_TEST_TURN_URL && env.OVERLAY_TEST_TURN_SECRET));
+}
+
 type LiveEnv = {
   OVERLAY_ROOM?: { idFromName(name: string): unknown; get(id: unknown): { fetch(request: Request): Promise<Response> } };
 };

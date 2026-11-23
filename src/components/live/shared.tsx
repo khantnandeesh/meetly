@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, Globe, LockKeyhole, ServerOff, Share2, Users, WifiOff } from "lucide-react";
+import { ChevronDown, Globe, LockKeyhole, ServerOff, Share2, Users, Waypoints, WifiOff } from "lucide-react";
 import { Fact } from "@/components/ui/Fact";
 import { useEffect, useId, useRef, useState } from "react";
 import { Logo } from "@/components/ui/Logo";
@@ -113,9 +113,15 @@ export function HowItWorks() {
       detail: "Our server only introduces browsers to each other. It never receives the video or the sound.",
     },
   ];
+  // Strict networks: with TURN on this deployment ([D80]) they connect through a relay and only
+  // watch; without it, or until the server has said, they can't connect.
+  const turn = useLiveTurn();
+  const strict = turn
+    ? { icon: <Waypoints />, label: "Strict networks: watch only", detail: "On strict networks (some offices, schools and mobile carriers), viewers connect through a relay and only watch. They never pass the video on." }
+    : { icon: <WifiOff />, label: "Some networks block it", detail: "Some strict networks (some offices, schools and mobile carriers) can’t connect yet." };
   const limits = [
     { icon: <Users />, label: `Up to ${LIVE_VIEWER_CAP} viewers, 1 camera`, detail: `Up to ${LIVE_VIEWER_CAP} viewers, with one person on camera.` },
-    { icon: <WifiOff />, label: "Some networks block it", detail: "Some strict networks (some offices, schools and mobile carriers) can’t connect yet." },
+    strict,
     { icon: <Globe />, label: "Peers see your IP address", detail: "Browsers connected to each other can see each other’s IP address." },
   ];
   return (
@@ -216,6 +222,26 @@ export async function fetchTree(id: string): Promise<LiveTree> {
 const TREE_EVERY_MS = 2000;
 
 /** The stream's tree, asked for every two seconds while `id` is set and the page is visible. */
+/** Whether this deployment offers TURN (GET /api/live), asked once per page load and shared. */
+let turnAnswer: Promise<boolean> | null = null;
+
+/** True once the server says viewers on strict networks can watch through a relay ([D80]); null until it answers, false if not or on failure. */
+export function useLiveTurn(): boolean | null {
+  const [turn, setTurn] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    turnAnswer ??= fetch("/api/live", { cache: "no-store" })
+      .then((response) => (response.ok ? (response.json() as Promise<{ turn?: unknown }>) : {}))
+      .then((body) => (body as { turn?: unknown }).turn === true)
+      .catch(() => false);
+    void turnAnswer.then((value) => live && setTurn(value));
+    return () => {
+      live = false;
+    };
+  }, []);
+  return turn;
+}
+
 export function useLiveTree(id: string | null): LiveTree | null {
   const [tree, setTree] = useState<LiveTree | null>(null);
   useEffect(() => {
