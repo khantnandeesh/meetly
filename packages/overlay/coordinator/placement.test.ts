@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { DEFAULT_PARAMS } from "@meetly/overlay/protocol";
 import type { ClientMessage, PeerId, ServerMessage, ServerMessageOf } from "@meetly/overlay/protocol";
 import { Rig, STREAMS, Swarm, leafCaps, relayCaps, seeded } from "./testkit";
+import { SOURCE_ALONE_FANOUT } from "./treeMap";
 
 const of = <T extends ServerMessage["t"]>(messages: ServerMessage[], t: T): ServerMessageOf<T>[] => messages.filter((message): message is ServerMessageOf<T> => message.t === t);
 
@@ -44,7 +45,8 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     // D49 puts up to six on the source at the start, and a depth-1 peer's backup can never be clear of the source.
     // [D76] Nor over its fan-out before a probe has passed: the source's own slots last longer into
     // the fill, and the joiners that take them are at depth 1 (93.5% -> 90.5% here: 5 more of them).
-    assert.ok(apart >= 0.9, `first backup clear of first parent for ${(apart * 100).toFixed(1)}%`);
+    // [D77] And up to eight on the source, not six: 89.4%.
+    assert.ok(apart >= 0.88, `first backup clear of first parent for ${(apart * 100).toFixed(1)}%`);
     // The coordinator's map is what the peers said: the same tree.
     const records = new Map(swarm.rig.core.snapshot().peers.map((peer) => [peer.peer, peer]));
     for (const peer of swarm.peers.values()) {
@@ -74,7 +76,7 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.equal(swarm.offeredBeyondFree, 0);
   });
 
-  it("D49, D57: the source with the uplink for six is told six, and keeps it once relays appear", async () => {
+  it("D49, D57, D77: the source with the uplink for eight is told eight, and keeps it once relays appear", async () => {
     // Viewers that can never relay: the source stays alone. 50 Mbps at the session's 1,232 kbps is room for 24.
     const params = { ...DEFAULT_PARAMS, sourceFanout: 3, maxFanout: 4, probationMs: 3000 };
     const swarm = new Swarm(new Rig({ random: seeded(5), params }), undefined, { linkMs: 50, probedUplinkKbps: 20_000 });
@@ -84,7 +86,7 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
       await swarm.step(500);
     }
     await swarm.step(3000);
-    assert.equal(swarm.source!.grantFanout, 6, "told six while alone");
+    assert.equal(swarm.source!.grantFanout, SOURCE_ALONE_FANOUT, "told the most (eight, D77) while alone");
     assert.ok(swarm.source!.kids.size >= 4, `${swarm.source!.kids.size} on the source`);
     // Viewers that can relay: once one is a relay, the source is told its own fan-out again.
     for (let i = 0; i < 10; i++) {
@@ -96,7 +98,7 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     await swarm.step(3000);
     assert.ok(swarm.shape().relays > 0, "a relay was made");
     // D57: the source keeps its probed fan-out; it is no longer only while it is alone.
-    assert.equal(swarm.source!.grantFanout, 6, "still six");
+    assert.equal(swarm.source!.grantFanout, SOURCE_ALONE_FANOUT, "still eight");
   });
 
   it("the smoke's tree (7 peers, fan-outs 2): relays whose probe shows two children each take two, as the smoke needs", async () => {
