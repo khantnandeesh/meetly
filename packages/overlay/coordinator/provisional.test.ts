@@ -246,7 +246,9 @@ describe("coordinator: provisional relays (D38)", () => {
       // The probe put off is the slower (D49's source fan-out has made both faster than the gate's 4 s).
       assert.ok(skipped.p95 > waited.p95, `put off ${skipped.p95} s, waiting ${waited.p95} s`);
       // [D71] A joiner with nowhere to go is sent over a fan-out after 1 s, not 3 (2 s and 3.2 s at p95 before).
-      assert.ok(waited.p95 <= 2, `p95 ${waited.p95} s`);
+      // [D76] But never over the source's before its probe has passed: at the gate's 4 a second
+      // that costs 1.0 -> 1.3 s at p95, at 6.7 a second 1.6 -> 3.5 s (the first relays are a probe away).
+      assert.ok(waited.p95 <= (perSecond <= 4 ? 2 : 4), `p95 ${waited.p95} s`);
     }
   });
 });

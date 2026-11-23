@@ -356,11 +356,63 @@ export class TreeMap {
     const kbps = this.streamKbps();
     const observed: Observed = { uptimeMs: now - node.joinedAt, spareUplinkKbps: node.caps.uplinkKbps, lossPct: node.lossPct, churnPerMin: node.parentChanges.length };
     node.verdict = this.scoring.judgeRelay(node.caps, observed, kbps, this.params);
-    // "Could relay one day": what it says of itself passes, whatever has been measured so far.
+    // "Could relay one day": what it says of itself passes, and so does its uplink if a probe
+    // has measured it. [D76] A peer whose probe found no room for two children (the gate's
+    // "slow" viewer) is a dead end from then on, until a later probe says otherwise: before, it
+    // counted as able to relay for the whole session, so nothing ever moved it out of a place
+    // a relay needed, and nobody waited behind it as behind a dead end.
     node.canRelay =
-      node.role !== "source" && this.scoring.judgeRelay(node.caps, { uptimeMs: 3_600_000, spareUplinkKbps: 1e9, lossPct: 0, churnPerMin: 0 }, kbps, this.params).eligible;
+      node.role !== "source" &&
+      this.scoring.judgeRelay(node.caps, { uptimeMs: 3_600_000, spareUplinkKbps: node.caps.uplinkKbps ?? 1e9, lossPct: 0, churnPerMin: 0 }, kbps, this.params).eligible;
     return node.verdict;
   }
+
+  /** [D76] Its probe has measured its uplink, and found the room a relay needs. */
+  passedProbe(node: TreeNode): boolean {
+    return node.caps.uplinkKbps !== null && node.caps.uplinkKbps !== undefined && node.canRelay;
+  }
+
+  /**
+   * [D76] Every viewer on the source has shown it cannot relay: a probe found no room, or it was
+   * a dead end by what it says of itself. None of them is still to be probed.
+   */
+  sourceChildrenKnown(): boolean {
+    if (this.source === null) return true;
+    for (const child of this.childrenOf(this.source)) {
+      const kid = this.nodes.get(child);
+      if (kid && kid.conn !== null && kid.role === "leaf" && kid.canRelay) return false;
+    }
+    return true;
+  }
+
+  /**
+   * [D76] A viewer that could relay, waiting with no relay anywhere and viewers on the source that
+   * cannot, is sent to the source one over its fan-out, in place of one of them: once it relays,
+   * the source's excess goes under it (D67's relief). As many at once as there are such viewers
+   * on the source, and never beyond twice its fan-out (the most its node takes in, D37). Null if
+   * not so.
+   */
+  swapFor(joiner: TreeNode, now: number): Placement | null {
+    if (this.source === null || !this.sourceAlone() || !joiner.canRelay || joiner.role !== "leaf" || this.swaps.has(joiner.peer)) return null;
+    const source = this.nodes.get(this.source)!;
+    if (!this.offerable(source, now) || (joiner.avoid.get(source.peer) ?? 0) > now) return null;
+    for (const [peer] of this.swaps) if (this.nodes.get(peer)?.conn == null) this.swaps.delete(peer);
+    let deadEnds = 0;
+    for (const child of this.childrenOf(source.peer)) {
+      const kid = this.nodes.get(child);
+      if (kid && kid.conn !== null && kid.role === "leaf" && !kid.canRelay && !this.swaps.has(child)) deadEnds++;
+    }
+    const children = Math.max(source.children, this.childrenOf(source.peer).size);
+    // Those sent and not yet linked count too.
+    let coming = 0;
+    for (const [peer] of this.swaps) if (this.nodes.get(peer)?.parent !== source.peer) coming++;
+    if (deadEnds <= this.swaps.size || children + coming >= 2 * this.fanout(source)) return null;
+    this.swaps.set(joiner.peer, now);
+    return { parents: [{ peer: source.peer, depth: 0, free: 0, ...(source.region ? { region: source.region } : {}) }], backups: [] };
+  }
+
+  /** [D76] Viewers sent to the source in place of ones that cannot relay, while their probes are out, and when. */
+  readonly swaps = new Map<PeerId, number>();
 
   /* ------------------------------ reading the map ------------------------------ */
 
@@ -533,14 +585,22 @@ export class TreeMap {
       // Everyone is full. The least over its fan-out first, then the shallowest.
       const load = (candidate: Ranked) => Math.max(this.childrenOf(candidate.node.peer).size, candidate.node.children) - this.fanout(candidate.node);
       // Up to twice the fan-out (D37): beyond that, nobody.
+      // [D76] Never the source for a peer that has not passed its probe: at a session's start six
+      // "slow" viewers took its slots and the three over its fan-out, and nobody could relay.
       const parents = pool
         .filter((candidate) => load(candidate) < this.fanout(candidate.node))
+        .filter((candidate) => candidate.node.role !== "source" || this.passedProbe(joiner))
         .sort((a, b) => load(a) - load(b) || a.cost - b.cost || order(a, b))
         .slice(0, 3);
       return { parents: parents.map((candidate) => ({ ...candidate.hint, free: 0 })), backups: [] };
     }
+    // [D76] While no relay exists, the source's last slot is kept for a peer that has passed its
+    // probe, or, once every viewer on the source has shown it cannot relay, for one that could:
+    // the first relay must have somewhere to stand and probe.
+    const sourceReserve = forParent && !moving && this.sourceAlone() && !this.passedProbe(joiner) && !(joiner.canRelay && this.sourceChildrenKnown()) ? 1 : 0;
     // D38: a provisional relay only when no full relay (or the source) has a free slot.
-    const reserved = (candidate: Ranked) => (options.join === true && !candidate.node.provisional && candidate.node.role === "relay" && this.fanout(candidate.node) >= 4 ? 1 : 0);
+    const reserved = (candidate: Ranked) =>
+      candidate.node.role === "source" ? sourceReserve : options.join === true && !candidate.node.provisional && candidate.node.role === "relay" && this.fanout(candidate.node) >= 4 ? 1 : 0;
     const fullRoom = pool.some((candidate) => !candidate.node.provisional && candidate.free > reserved(candidate) && over(candidate) === 0);
     const parents = forParent
       ? pool

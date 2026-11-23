@@ -42,7 +42,9 @@ describe("coordinator placement: a growing tree (SPEC §6.6)", () => {
     assert.ok(shape.maxDepth <= bound(200), `depth ${shape.maxDepth}`);
     assert.equal(swarm.offeredBeyondFree, 0);
     // D49 puts up to six on the source at the start, and a depth-1 peer's backup can never be clear of the source.
-    assert.ok(apart >= 0.93, `first backup clear of first parent for ${(apart * 100).toFixed(1)}%`);
+    // [D76] Nor over its fan-out before a probe has passed: the source's own slots last longer into
+    // the fill, and the joiners that take them are at depth 1 (93.5% -> 90.5% here: 5 more of them).
+    assert.ok(apart >= 0.9, `first backup clear of first parent for ${(apart * 100).toFixed(1)}%`);
     // The coordinator's map is what the peers said: the same tree.
     const records = new Map(swarm.rig.core.snapshot().peers.map((peer) => [peer.peer, peer]));
     for (const peer of swarm.peers.values()) {

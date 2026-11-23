@@ -21,7 +21,7 @@ import {
 import type { Assignment, Capabilities, ClientMessage, ClientMessageOf, MetricsSample, OverlayRole, PeerId, ServerMessage, ServerMessageOf, StreamConfig } from "../protocol";
 import type { ConnId, ConnMeta, CoordinatorCore, CoordinatorCoreOptions, CoreRequest, CoreResponse, Effect, RoomSnapshot, RoomStats } from "./types";
 import { scoring } from "./scoring";
-import { BAD_REPORTS_TO_DISTRUST, BAD_REPORT_WINDOW_MS, DEPTH_UNKNOWN, DISTRUST_MS, FORGET_MS, MOVE_SHARE, REBALANCE_EVERY_MS, SUSPECT_MS, TreeMap, newNode } from "./treeMap";
+import { BAD_REPORTS_TO_DISTRUST, BAD_REPORT_WINDOW_MS, DEPTH_UNKNOWN, DISTRUST_MS, FORGET_MS, HOLD_MS, MOVE_SHARE, REBALANCE_EVERY_MS, SUSPECT_MS, TreeMap, newNode } from "./treeMap";
 import type { Placement, TreeNode } from "./treeMap";
 
 /** WebSocket close codes (SPEC §6.2). Repeated in ./index.ts for callers. */
@@ -37,6 +37,13 @@ const CLOSE = { normal: 1000, badTicket: 4001, full: 4002, kicked: 4003, ended: 
 const JOIN_OVER_FANOUT_AFTER_MS = 1_000;
 /** [D71] ... and in a tree whose `maxFanout` is under four, as before: 3 s. */
 const JOIN_OVER_FANOUT_SMALL_TREE_MS = 3_000;
+/**
+ * [D76] A viewer sent to the source in place of one that cannot relay has this long, from then,
+ * to be made a relay: a link (0.5 s), the NAT type (up to 3 s from its welcome) and the short
+ * probe (1 s), with room to spare. Past it, or once its probe finds no room, it leaves the source
+ * again (`peer-gone` to the source: close the link) and the next viewer waiting has its turn.
+ */
+export const SWAP_MS = 8_000;
 /** The share of the audience offered a better backup in one second, at most. */
 const BACKUP_ADVICE_SHARE = 0.05;
 /** SPEC §6.5: a grant lives ten minutes and is replaced two minutes before it expires. */
@@ -612,10 +619,47 @@ class Core implements CoordinatorCore {
     // first relay must stand.
     if (!node.canRelay && (this.map.couldGrow() || this.map.relayCount() === 0)) return { parents: [], backups: [] };
     const over = this.map.place(node, { want: "parent", exclude: [], now, join: true, overload: true });
-    if (over.parents.length === 0) return over;
+    // [D76] No relay anywhere, and the source full of viewers that cannot relay: this one, which
+    // could, goes to the source in place of one of them, to probe and be made a relay.
+    if (over.parents.length === 0) return this.map.swapFor(node, now) ?? over;
     // Backups clear of the parent it is sent to: one death must not take both (SPEC §6.6).
     const backups = this.map.place(node, { want: "backup", exclude: [], now }).backups.filter((hint) => hint.peer !== over.parents[0].peer && !this.map.path(hint.peer).includes(over.parents[0].peer));
     return { parents: over.parents, backups };
+  }
+
+  /**
+   * [D76] The viewer sent to the source in place of one that cannot relay: made a relay as soon as
+   * its probe allows (that is what it was sent for); out of the source again once its probe has
+   * shown it cannot relay, or `SWAP_MS` has passed, so that the next viewer waiting has the place.
+   */
+  private async settleSwap(fx: Effect[], now: number): Promise<void> {
+    const source = this.map.source !== null ? this.map.nodes.get(this.map.source) : undefined;
+    for (const [peer, at] of [...this.map.swaps]) {
+      const node = this.map.nodes.get(peer);
+      if (!node || node.conn === null || !source || source.conn === null || node.role !== "leaf") {
+        this.map.swaps.delete(peer);
+        continue;
+      }
+      if (node.parent !== source.peer) {
+        // Never linked to the source: its place is held for HOLD_MS, then given up.
+        if (now - at > HOLD_MS) this.map.swaps.delete(peer);
+        continue;
+      }
+      if (this.map.passedProbe(node)) {
+        const verdict = this.map.judge(node, now);
+        if (verdict.eligible && verdict.fanout > 0) await this.setRole(fx, node, "relay", now, false);
+        else if (this.o.provisionalRelays !== false && this.map.provisionallyEligible(node, now)) await this.setRole(fx, node, "relay", now, true);
+        // Room for one child or none: kept as any viewer, and the source sheds a layer until relief.
+        this.map.swaps.delete(peer);
+        continue;
+      }
+      if (node.canRelay && now - at < SWAP_MS) continue;
+      // It cannot relay after all: the source closes its link (SPEC §6.3 `peer-gone`, "close any
+      // link to it"), and it waits as a dead end for the first relay.
+      this.map.swaps.delete(peer);
+      node.avoid.set(source.peer, now + SWAP_MS);
+      this.send(fx, source.conn, { t: "peer-gone", peer: node.peer });
+    }
   }
 
   /**
@@ -860,6 +904,7 @@ class Core implements CoordinatorCore {
       }
     }
     for (const node of this.map.demoted(now)) await this.setRole(fx, node, "leaf", now);
+    await this.settleSwap(fx, now);
     // D38: provisional relays at the end of probation become full ones, with a grant that says so.
     for (const node of this.map.graduating(now)) await this.setRole(fx, node, "relay", now, false);
     // The fifth-of-the-audience rule makes full relays only: a provisional one is made when someone has nowhere to go (`promoteFor`).
