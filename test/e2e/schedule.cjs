@@ -4,6 +4,8 @@ const H = require("./lib.cjs");
 
 const dialog = (person) => person.page.locator("[data-schedule-dialog]");
 const CODE = /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/;
+/** The focused element's accessible name, or its tag when it has none ("BODY"). */
+const focused = (person) => person.page.evaluate(() => document.activeElement?.getAttribute("aria-label") || document.activeElement?.tagName || "");
 
 async function openMenu(person) {
   await person.page.goto(`${H.BASE}/`);
@@ -126,6 +128,8 @@ module.exports = async function schedule(browser) {
   );
   await ada.page.keyboard.press("Escape");
   await dialog(ada).waitFor({ state: "detached" });
+  // The menu item it was opened from is gone: the focus goes back to the menu's arrow, not <body>.
+  H.ok("closed with Escape, the focus is back on the menu's arrow", (await focused(ada)) === "More ways to start a meeting", await focused(ada));
 
   // Whoever made the link is its host when they come back to it, as with "New meeting".
   await ada.page.goto(later);
@@ -247,6 +251,8 @@ module.exports = async function schedule(browser) {
   );
   await H.shot(ada, "schedule-past-desktop");
   await ada.page.keyboard.press("Escape");
+  await dialog(ada).waitFor({ state: "detached" });
+  H.ok("Schedule… closed with Escape: the focus is back on the menu's arrow", (await focused(ada)) === "More ways to start a meeting", await focused(ada));
 
   /* ------------------------------------------------ time zones and the clocks changing */
   await checkZone(browser, { timeZone: "Asia/Kolkata", date: "2027-06-15", time: "09:00", minutes: 60, startUtc: "20270615T033000Z", endUtc: "20270615T043000Z", note: "UTC+5:30" });

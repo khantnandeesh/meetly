@@ -2,7 +2,7 @@
 
 import * as Dialog from "@radix-ui/react-dialog";
 import { CalendarPlus, CircleAlert, Download, ExternalLink, X } from "lucide-react";
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type RefObject } from "react";
 import {
   DEFAULT_TITLE,
   DURATIONS,
@@ -31,18 +31,23 @@ const durationLabel = (minutes: number) =>
  * on the calendar form; "follow-up" is the same form for the meeting that just ended, offered
  * to its host on the screen after it (never during it: while the meeting runs, the people it
  * would be sent to are in it).
+ *
+ * Closed, the focus goes back to `returnFocus` when one is given: on the home page the dialog opens
+ * from a menu item, which is gone by then, so it would otherwise be left on <body>.
  */
 export function ScheduleDialog({
   code,
   mode = "schedule",
   open,
   onOpenChange,
+  returnFocus,
 }: {
   /** The meeting to schedule. Null while there is none (the dialog is closed). */
   code: string | null;
   mode?: Mode;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  returnFocus?: RefObject<HTMLElement | null>;
 }) {
   return (
     <Dialog.Root open={open && code !== null} onOpenChange={onOpenChange}>
@@ -51,6 +56,11 @@ export function ScheduleDialog({
         <Dialog.Content
           aria-describedby={undefined}
           data-schedule-dialog
+          onCloseAutoFocus={(event) => {
+            if (!returnFocus?.current) return;
+            event.preventDefault();
+            returnFocus.current.focus();
+          }}
           className="dialog fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-[min(30rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-3xl bg-surface shadow-[inset_0_0_0_1px_var(--border-strong),0_30px_80px_-20px_rgb(0_0_0/0.8)]"
         >
           <div className="flex items-center justify-between py-3 pr-3 pl-6">

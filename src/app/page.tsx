@@ -2,7 +2,7 @@
 
 import { CalendarPlus, ChevronDown, CircleAlert, Link2, LoaderCircle, Plus, Presentation, Radio } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { HeroArt } from "@/components/HeroArt";
 import { FeatureGrid } from "@/components/home/FeatureGrid";
 import { JoinForm } from "@/components/JoinForm";
@@ -19,6 +19,8 @@ export default function Home() {
   const [starting, setStarting] = useState(false);
   // The menu covers part of the illustration on a phone; its floating message steps aside.
   const [menuOpen, setMenuOpen] = useState(false);
+  // Where the focus goes back to when a dialog opened from that menu closes.
+  const moreWays = useRef<HTMLButtonElement>(null);
 
   // The server makes the meeting, with this browser as its host. If it cannot be asked, any new
   // code works as well: the first person into it becomes host instead.
@@ -90,6 +92,7 @@ export default function Home() {
                 </button>
                 <Dropdown.Root onOpenChange={setMenuOpen}>
                   <Dropdown.Trigger
+                    ref={moreWays}
                     className="btn btn-primary group w-11 rounded-l-md px-0"
                     aria-label="More ways to start a meeting"
                     disabled={starting || preparing}
@@ -140,7 +143,7 @@ export default function Home() {
         <FeatureGrid />
       </main>
 
-      <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} />
+      <ScheduleDialog code={planned?.code ?? null} mode={planned?.mode} open={planning} onOpenChange={setPlanning} returnFocus={moreWays} />
     </div>
   );
 }
