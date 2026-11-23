@@ -6,7 +6,9 @@ import { LiveHeader } from "@/components/live/shared";
 import { isValidCode } from "@/lib/code";
 import { verifiedTitle } from "@/lib/live/title.server";
 
-export const metadata: Metadata = { title: "Serverless webinar (beta) · Meetly" };
+// No Referer leaves these pages: browsers never put the link's fragment (the key, #k=…) in one,
+// and this keeps the rest of the link (the id, the title) to the page too.
+export const metadata: Metadata = { title: "Serverless webinar (beta) · Meetly", referrer: "no-referrer" };
 
 export default function LiveStreamPage(props: PageProps<"/live/[id]">) {
   // The id is only known at request time, so the viewer renders inside Suspense.

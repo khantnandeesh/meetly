@@ -9,6 +9,7 @@ import { CopyIcon } from "@/components/ui/CopyIcon";
 import { Tip } from "@/components/ui/Tip";
 import { copyText, useCopied } from "@/lib/hooks";
 import { LIVE_VIEWER_CAP, audience } from "@/lib/live/tree";
+import { exposeE2eeStats, newWebinarKey, withoutKey } from "@/lib/live/e2ee";
 import { TITLE_MAX, cleanTitle, durationWords, viewerLink } from "@/lib/live/webinar";
 import { CTRL, Card, FocusedHeading, HowItWorks, LiveChip, LiveHeader, ServerlessNote, WebinarHeading, coordinatorUrl, postJson, useLiveTree, useOwnKey } from "./shared";
 import { WhoIsConnected } from "./WhoIsConnected";
@@ -65,6 +66,11 @@ export function LiveHost() {
   const preview = useRef<HTMLVideoElement>(null);
   const source = useRef<OverlaySource | null>(null);
   const hostKey = useRef<string | null>(null);
+  /**
+   * The webinar's end-to-end key (src/lib/live/e2ee.ts), made in this browser when it goes live.
+   * It is only ever in the share link's fragment, which browsers never send to a server.
+   */
+  const [mediaKey, setMediaKey] = useState<{ key: Uint8Array; publicKey: Uint8Array } | null>(null);
   const titleId = useId();
 
   const id = phase.t === "live" || phase.t === "ending" || phase.t === "ended" ? phase.id : null;
@@ -76,7 +82,7 @@ export function LiveHost() {
   // The largest audience so far, for the summary at the end (adjusted while rendering, not in an effect).
   if (onAir && watching > peak) setPeak(watching);
 
-  const shareUrl = id ? viewerLink(location.origin, id, signed) : "";
+  const shareUrl = id && mediaKey ? viewerLink(location.origin, id, signed, mediaKey.key, mediaKey.publicKey) : "";
   const copyLink = useCopied(() => copyText(shareUrl));
 
   const askForMedia = useCallback(async () => {
@@ -172,8 +178,17 @@ export function LiveHost() {
       // The key lives as long as this page: a reload is a new webinar (beta).
       hostKey.current = created.hostKey;
       setSigned(created.title ?? null);
-      const { createOverlaySource } = await import("@meetly/overlay");
+      const { createOverlaySource, createSFrameEncryptor, generateSFrameSigner, importSFrameKey, sframeTransform } = await import("@meetly/overlay");
+      // A new key for every webinar, made here and never sent anywhere: each frame is encrypted
+      // with it before it leaves this browser, and signed with a key pair whose private half
+      // never leaves this page (packages/overlay/media/sframe.ts).
+      const key = await newWebinarKey();
+      const { signer, publicKey } = await generateSFrameSigner();
+      const encryptor = createSFrameEncryptor(await importSFrameKey(key), { signer });
+      exposeE2eeStats(() => encryptor.stats());
+      setMediaKey({ key, publicKey });
       const overlay = createOverlaySource({
+        frameTransform: sframeTransform({ encryptor }),
         coordinatorUrl: coordinatorUrl(created.id),
         ticket: async () => (await postJson<{ ticket: string }>(`/api/live/${created.id}/ticket`, { role: "source", hostKey: hostKey.current })).ticket,
       });
@@ -432,13 +447,16 @@ export function LiveHost() {
                     className="btn btn-secondary h-12 w-full justify-between rounded-xl bg-surface-2 px-3.5 text-sm"
                     data-testid="share-link"
                   >
-                    <span className="min-w-0 truncate font-mono font-medium">{shareUrl.replace(/^https?:\/\//, "")}</span>
+                    {/* Shown without its key, which is copied with it: the page may be on a shared screen. */}
+                    <span className="min-w-0 truncate font-mono font-medium">{withoutKey(shareUrl).replace(/^https?:\/\//, "")}</span>
                     <span className="inline-flex shrink-0 items-center gap-1.5 text-accent" role="status">
                       <CopyIcon copied={copyLink.copied} />
                       {copyLink.copied ? "Copied" : "Copy link"}
                     </span>
                   </button>
-                  <p className="text-sm text-muted">Anyone with the link can watch, up to {tree?.cap ?? LIVE_VIEWER_CAP} at once.</p>
+                  <p className="text-sm text-muted">
+                    The copied link ends with the video’s key. Anyone with the full link can watch, up to {tree?.cap ?? LIVE_VIEWER_CAP} at once.
+                  </p>
                 </Card>
 
                 <ServerlessNote />

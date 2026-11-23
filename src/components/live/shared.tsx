@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, ServerOff } from "lucide-react";
+import { ChevronDown, LockKeyhole, ServerOff } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { Logo } from "@/components/ui/Logo";
 import { elapsedSeconds, formatElapsed } from "@/lib/meetingTime";
@@ -96,17 +96,23 @@ export function ServerlessNote({ className = "" }: { className?: string }) {
 /** How a serverless webinar works, and what it cannot do yet, in plain words. */
 export function HowItWorks() {
   const steps = [
-    "The host’s browser sends the video to a few viewers’ browsers.",
-    "Those browsers pass it on to others, so a viewer’s browser may relay the video it is already watching.",
+    "The host’s browser encrypts the video and sends it to a few viewers’ browsers. The key is in the link the host shares, and never reaches our server.",
+    "Those browsers pass the encrypted video on to others, so a viewer’s browser may relay the video it is already watching.",
     "Our server only introduces browsers to each other. It never receives the video or the sound.",
   ];
   const limits = [
     `Up to ${LIVE_VIEWER_CAP} viewers, with one person on camera.`,
     "Some strict networks (some offices, schools and mobile carriers) can’t connect yet.",
-    "Every connection is encrypted, but not end to end. Browsers connected to each other can see each other’s IP address.",
+    "Browsers connected to each other can see each other’s IP address.",
   ];
   return (
     <div className="flex flex-col gap-4 text-sm">
+      <p className="flex items-start gap-2.5 text-pretty" data-testid="e2ee-note">
+        <LockKeyhole className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden="true" />
+        <span>
+          <span className="font-semibold">End-to-end encrypted:</span> only people with the full link can see the video — not us, not anyone in between.
+        </span>
+      </p>
       <ol className="flex flex-col gap-3">
         {steps.map((step, index) => (
           <li key={index} className="flex gap-3">

@@ -1,10 +1,11 @@
 "use client";
 
-import { LoaderCircle, Maximize, Minimize, Play, Radio, RotateCw, Volume2, VolumeX, WifiOff } from "lucide-react";
+import { KeyRound, LoaderCircle, Maximize, Minimize, Play, Radio, RotateCw, Volume2, VolumeX, WifiOff } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import type { OverlayState, OverlayViewer } from "@meetly/overlay";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { OverlayState, OverlayViewer, SFrameDecryptor } from "@meetly/overlay";
 import { Tip } from "@/components/ui/Tip";
+import { exposeE2eeStats, keyFromHash } from "@/lib/live/e2ee";
 import { LIVE_VIEWER_CAP, audience, type LiveTree } from "@/lib/live/tree";
 import { SERVERLESS_LINE } from "@/lib/live/webinar";
 import { Card, FocusedHeading, LiveChip, LiveHeader, LiveRequestError, ServerlessNote, WebinarHeading, coordinatorUrl, fetchTree, postJson, useLiveTree, useOwnKey } from "./shared";
@@ -20,7 +21,9 @@ type Phase =
   /** The browser could not get the picture on this network, and gave up its place: see STUCK_AFTER_MS. */
   | { t: "stuck" }
   /** The webinar cannot be watched: ended, full, removed, or not set up. Said plainly. */
-  | ({ t: "over" } & Over);
+  | ({ t: "over" } & Over)
+  /** The video is end-to-end encrypted and this link's key does not open it. */
+  | { t: "wrong-key" };
 
 const ENDED: Over = { title: "This webinar has ended", body: "The host has ended it. Thanks for watching.", action: "home" };
 const FULL: Over = {
@@ -36,6 +39,39 @@ const FULL: Over = {
  * does not hold one of the places or count as watching.
  */
 const STUCK_AFTER_MS = 20_000;
+
+/**
+ * Frames under another key, or not signed by the link's signing key, with none yet played,
+ * before the page says the link does not open the video. Such a frame could also be a relay's
+ * doing; while real frames still open, those are dropped and counted, and the picture plays on.
+ */
+const WRONG_KEY_AFTER = 5;
+
+/** The key in this page's link (`#k=…`, src/lib/live/e2ee.ts): read in the browser only. */
+const onHashChange = (changed: () => void) => {
+  window.addEventListener("hashchange", changed);
+  return () => window.removeEventListener("hashchange", changed);
+};
+function useLinkKey() {
+  const hash = useSyncExternalStore(
+    onHashChange,
+    () => location.hash,
+    () => null,
+  );
+  return useMemo(() => (hash === null ? null : keyFromHash(hash)), [hash]);
+}
+
+/** Copy for a link whose key is missing, or does not open the video. */
+const KEY_PROBLEM = {
+  missing: {
+    title: "This link is missing its key",
+    body: "This webinar is end-to-end encrypted. Its key is the last part of the link the host shares, after “#k=”, and this link doesn’t have it. Ask the host for the full link.",
+  },
+  wrong: {
+    title: "Can’t decrypt — ask the host for the full link",
+    body: "This webinar is end-to-end encrypted, and the key in this link doesn’t open its video. The link may have been cut short when it was copied.",
+  },
+};
 
 /** A round button laid on the picture, in the status chip's dark glass. */
 const onPicture =
@@ -70,8 +106,13 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
   const stage = useRef<HTMLDivElement>(null);
   const viewer = useRef<OverlayViewer | null>(null);
   const identity = useRef<string | null>(null);
+  const linkKey = useLinkKey();
+  const decryptor = useRef<SFrameDecryptor | null>(null);
+  /** Frames that did not open, or were not the host's, and were dropped, not played: counted. */
+  const [dropped, setDropped] = useState(0);
+  const keyProblem = linkKey?.t === "none" ? KEY_PROBLEM.missing : linkKey?.t === "malformed" || phase.t === "wrong-key" ? KEY_PROBLEM.wrong : null;
 
-  const tree = useLiveTree(phase.t === "over" ? null : id);
+  const tree = useLiveTree(phase.t === "over" || keyProblem ? null : id);
   const ownKey = useOwnKey(peer);
   const started = !!tree?.started;
 
@@ -115,6 +156,16 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
     }
   }, [hasPicture, phase.t]);
 
+  // Frames dropped for not opening, counted once a second while watching (the stage's data-e2ee-dropped).
+  useEffect(() => {
+    if (phase.t !== "watching") return;
+    const timer = setInterval(() => {
+      const stats = decryptor.current?.stats();
+      if (stats) setDropped(stats.tampered + stats.forged + stats.unencrypted + stats["wrong-key"]);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [phase.t]);
+
   useEffect(() => {
     const changed = () => setFullscreen(document.fullscreenElement === stage.current && !!stage.current);
     document.addEventListener("fullscreenchange", changed);
@@ -136,11 +187,38 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
   }, [waitingForPicture]);
 
   async function watch() {
+    if (linkKey?.t !== "ok") return;
     setPhase({ t: "joining" });
     setHasPicture(false);
+    setDropped(0);
     try {
-      const { createOverlayViewer } = await import("@meetly/overlay");
+      const { createOverlayViewer, createSFrameDecryptor, importSFrameKey, importSFrameVerifier, sframeTransform } = await import("@meetly/overlay");
+      // The host's public signing key, when the link has one: then only frames the host signed play.
+      const verifier = linkKey.publicKey ? await importSFrameVerifier(linkKey.publicKey).catch(() => null) : undefined;
+      if (verifier === null) {
+        setPhase({ t: "wrong-key" });
+        return;
+      }
+      // Each frame is decrypted just before it is played, with the key from this page's link; one
+      // that does not open is dropped and counted (packages/overlay/media/sframe.ts).
+      const opener = createSFrameDecryptor(await importSFrameKey(linkKey.raw), {
+        verifier,
+        onOutcome: (outcome) => {
+          if ((outcome !== "wrong-key" && outcome !== "forged") || viewer.current !== overlay) return;
+          const stats = opener.stats();
+          if (stats.ok > 0 || stats["wrong-key"] + stats.forged < WRONG_KEY_AFTER) return;
+          // Nothing has played: this link's keys are not the webinar's. Its place goes back.
+          viewer.current = null;
+          setPeer(null);
+          setHasPicture(false);
+          setPhase({ t: "wrong-key" });
+          void overlay.close().catch(() => undefined);
+        },
+      });
+      decryptor.current = opener;
+      exposeE2eeStats(() => opener.stats());
       const overlay = createOverlayViewer({
+        frameTransform: sframeTransform({ decryptor: opener }),
         coordinatorUrl: coordinatorUrl(id),
         ticket: async () => {
           const answer = await postJson<{ ticket: string; identity: string }>(`/api/live/${id}/ticket`, { role: "viewer", identity: identity.current });
@@ -160,6 +238,7 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
         else if (reason === "kicked" || reason === "denied") setPhase({ t: "over", title: "You can’t watch this webinar", body: "The webinar didn’t let this browser in.", action: "home" });
       });
       await overlay.connect();
+      if (viewer.current !== overlay) return;
       overlay.setVolume(muted ? 0 : 1);
       setPeer(overlay.status()?.path[0] ?? null);
       setPhase({ t: "watching" });
@@ -214,7 +293,19 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
       <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-5 px-4 pb-16 sm:px-8">
         <WebinarHeading title={name} />
 
-        {phase.t === "over" ? (
+        {phase.t !== "over" && keyProblem ? (
+          <Card className="flex flex-col gap-4" data-testid="live-key-problem" data-problem={keyProblem === KEY_PROBLEM.missing ? "missing" : "wrong"}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+              <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-warn/12 text-warn" aria-hidden="true">
+                <KeyRound className="size-5" />
+              </span>
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <FocusedHeading>{keyProblem.title}</FocusedHeading>
+                <p className="max-w-[40rem] text-pretty text-muted">{keyProblem.body}</p>
+              </div>
+            </div>
+          </Card>
+        ) : phase.t === "over" ? (
           <Card className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
               <FocusedHeading data-testid="live-over">{phase.title}</FocusedHeading>
@@ -252,7 +343,12 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
           </Card>
         ) : phase.t === "watching" || phase.t === "joining" ? (
           <div className="flex flex-col gap-3">
-            <div ref={stage} className="relative aspect-video overflow-hidden rounded-3xl bg-surface-2 ring-1 ring-border data-[fullscreen=true]:rounded-none" data-fullscreen={fullscreen}>
+            <div
+              ref={stage}
+              className="relative aspect-video overflow-hidden rounded-3xl bg-surface-2 ring-1 ring-border data-[fullscreen=true]:rounded-none"
+              data-fullscreen={fullscreen}
+              data-e2ee-dropped={dropped}
+            >
               <video ref={video} className={`size-full object-contain ${hasPicture ? "" : "opacity-0"}`} autoPlay muted playsInline data-testid="live-video" />
               {!hasPicture ? (
                 <div className="absolute inset-0 grid place-items-center p-6 text-center" data-testid="live-status" role="status">
@@ -312,7 +408,7 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
               )}
             </div>
           </div>
-        ) : (
+        ) : phase.t === "wrong-key" ? null : (
           <Card className="flex flex-col gap-5">
             <p className="flex items-start gap-2 text-sm font-medium" data-testid="live-start-state">
               {phase.t === "checking" ? (
@@ -350,9 +446,9 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
               <p className="text-pretty">{SERVERLESS_LINE}</p>
               <ul className="flex flex-col gap-1.5 text-sm text-muted">
                 {[
-                  "While you watch, your browser may pass the video on to a few other viewers.",
-                  "Browsers connected to yours can see your IP address.",
-                  "Each connection is encrypted, but not end to end. This is a beta.",
+                  "End-to-end encrypted: only people with the full link can see the video — not us, not anyone in between.",
+                  "While you watch, your browser may pass the encrypted video on to a few other viewers.",
+                  "Browsers connected to yours can see your IP address. This is a beta.",
                 ].map((line) => (
                   <li key={line} className="flex gap-2.5 text-pretty">
                     <span className="mt-2 size-1 shrink-0 rounded-full bg-faint" aria-hidden="true" />
@@ -368,10 +464,10 @@ export function LiveViewer({ id, title }: { id: string; title: string }) {
           </Card>
         )}
 
-        {(phase.t === "watching" || phase.t === "joining") && <ServerlessNote />}
+        {(phase.t === "watching" || phase.t === "joining") && !keyProblem && <ServerlessNote />}
 
         {/* Not once over, nor once this browser has given up its place: the tree would be stale. */}
-        {phase.t !== "over" && phase.t !== "stuck" && <WhoIsConnected tree={tree} ownKey={ownKey} collapsible />}
+        {phase.t !== "over" && phase.t !== "stuck" && !keyProblem && <WhoIsConnected tree={tree} ownKey={ownKey} collapsible />}
       </main>
     </div>
   );
