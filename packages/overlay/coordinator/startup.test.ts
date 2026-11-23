@@ -8,6 +8,7 @@
  */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { DEFAULT_PARAMS } from "@meetly/overlay/protocol";
 import { Rig, Swarm, seeded } from "./testkit";
 
 /** The gate's "slow" viewer: claims all a relay needs, and its probe finds 900 kbps (SPEC §12.3). */
@@ -21,8 +22,8 @@ const probeAt = ({ joinedAt, placedAt }: { joinedAt: number; placedAt: number })
  * The source probed toward slow children (fan-out 3); `slow` viewers join first, then `able`
  * ones, all at the gate's 4 a second; then `settleS` seconds pass.
  */
-async function startUp(slow: number, able: number, settleS: number, seed = 1) {
-  const swarm = new Swarm(new Rig({ random: seeded(seed) }), undefined, { probeAt, linkMs: LINK_MS });
+async function startUp(slow: number, able: number, settleS: number, seed = 1, params = DEFAULT_PARAMS) {
+  const swarm = new Swarm(new Rig({ random: seeded(seed), params }), undefined, { probeAt, linkMs: LINK_MS });
   await swarm.addSource(SLOW_KBPS);
   const order = [...Array.from({ length: slow }, () => true), ...Array.from({ length: able }, () => false)];
   for (let t = 0, joined = 0; joined < order.length; t += 100) {
@@ -51,6 +52,15 @@ describe("coordinator: start-up with no relay anywhere (D76)", () => {
     for (const slow of [3, 9, 12]) {
       const { shape, p95, placed } = await startUp(slow, 30, 30);
       console.log(`      ${slow} slow first, then 30: placed ${placed} of ${slow + 30}, waiting ${shape.waiting}, relays ${shape.relays}, welcome to parent p95 ${p95} ms`);
+      assert.equal(shape.waiting, 0, `${slow} slow first: ${shape.waiting} viewers never had a parent`);
+    }
+  });
+
+  it("the proof's tree (fan-outs of two, no slot kept at the source): slow viewers first still leave nobody out", { timeout: 120_000 }, async () => {
+    const params = { ...DEFAULT_PARAMS, sourceFanout: 2, maxFanout: 2, sourceAloneFanout: 2 };
+    for (const slow of [2, 4]) {
+      const { shape, p95, placed } = await startUp(slow, 10, 40, 1, params);
+      console.log(`      fan-out 2, ${slow} slow first, then 10: placed ${placed} of ${slow + 10}, waiting ${shape.waiting}, relays ${shape.relays}, welcome to parent p95 ${p95} ms`);
       assert.equal(shape.waiting, 0, `${slow} slow first: ${shape.waiting} viewers never had a parent`);
     }
   });

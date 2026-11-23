@@ -320,7 +320,7 @@ export function buildReport(results: ShardResult[], options: ReportOptions = {})
   if (repairOffsets.length > 0) {
     const offsets = exactQuantiles(repairOffsets);
     notes.push(
-      `repair time (D79) is measured on rendered frames (SPEC §12.2); the old measure, frames decodable on arrival, p95 ${repairArrivalMs.p95 ?? "-"} ms against ${repairMs.p95 ?? "-"}; rendered minus arrival per repair p50 ${offsets.p50} ms, p95 ${offsets.p95} ms, over ${repairOffsets.length} of ${repairMs.n}`,
+      `repair time (D79) is measured on rendered frames (SPEC §12.2); the old measure, frames decodable on arrival, p95 ${repairArrivalMs.p95 ?? "-"} ms against ${repairMs.p95 ?? "-"}; rendered minus arrival per repair p50 ${Math.round(offsets.p50 ?? 0)} ms, p95 ${Math.round(offsets.p95 ?? 0)} ms, over ${repairOffsets.length} of ${repairMs.n}`,
     );
   }
   const glassToGlassMs = histogramQuantiles(glass);

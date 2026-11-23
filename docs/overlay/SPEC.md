@@ -755,7 +755,9 @@ could probe or be promoted, and welcome to linked was 60–107 s for the fill's 
   (D37, the overload placement for a joiner or a repair) goes only to a peer whose probe has
   passed.
 - *The source's last slot is kept while no relay exists:* for a peer whose probe has passed, or,
-  once every viewer on the source has shown it cannot relay, for one that could.
+  once every viewer on the source has shown it cannot relay, for one that could. Only where
+  `maxFanout` is 4 or more (as D71): with the proof's fan-outs of two it doubled the smoke test's
+  joins (welcome to linked p95 1.1 → 3.1 s), and the swap keeps such a tree live by itself.
 - *A dead-end swap.* While no relay exists, a viewer that could relay and has waited
   `JOIN_OVER_FANOUT_AFTER_MS` with nowhere to go is sent to the source one over its fan-out in
   place of one of its viewers that cannot relay (as many at once as there are such viewers, never

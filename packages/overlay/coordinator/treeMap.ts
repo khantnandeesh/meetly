@@ -596,8 +596,11 @@ export class TreeMap {
     }
     // [D76] While no relay exists, the source's last slot is kept for a peer that has passed its
     // probe, or, once every viewer on the source has shown it cannot relay, for one that could:
-    // the first relay must have somewhere to stand and probe.
-    const sourceReserve = forParent && !moving && this.sourceAlone() && !this.passedProbe(joiner) && !(joiner.canRelay && this.sourceChildrenKnown()) ? 1 : 0;
+    // the first relay must have somewhere to stand and probe. Only where `maxFanout` is 4 or more
+    // (as D71): in a tree of fan-outs one or two the source's slots are one or two, keeping one
+    // doubled the smoke test's joins (welcome to linked p95 1.1 -> 3.1 s), and the swap below
+    // keeps such a tree live by itself.
+    const sourceReserve = forParent && !moving && this.params.maxFanout >= 4 && this.sourceAlone() && !this.passedProbe(joiner) && !(joiner.canRelay && this.sourceChildrenKnown()) ? 1 : 0;
     // D38: a provisional relay only when no full relay (or the source) has a free slot.
     const reserved = (candidate: Ranked) =>
       candidate.node.role === "source" ? sourceReserve : options.join === true && !candidate.node.provisional && candidate.node.role === "relay" && this.fanout(candidate.node) >= 4 ? 1 : 0;
