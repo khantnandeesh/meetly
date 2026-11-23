@@ -1102,6 +1102,11 @@ const metricsEvent = tagged({
   layer: { stream: streamId, peer: peerId, at: sessionMs, maxTemporal: int(0, 15), reason: oneOf("congestion", "cpu", "viewport", "overload", "restore") },
   /** Rendering stopped for longer than the freeze threshold (SPEC §12), for any reason. */
   freeze: { stream: streamId, at: sessionMs, ms: durationMs },
+  /**
+   * [D69] The parent said nothing for `ms` (at least 150) from `at`, and then spoke again: a stall
+   * that was not a death. `depth`: the parent's. `media`: how long before `at` its last media had come.
+   */
+  silence: { peer: peerId, at: sessionMs, ms: durationMs, depth: int(0, 255), media: durationMs },
   error: { at: sessionMs, where: str(64), message: str(512) },
 });
 export type MetricsEvent = Infer<typeof metricsEvent>;
@@ -1178,6 +1183,13 @@ const metricsSample = object({
       bufferedMaxBytes: int(0, 0xffffffff),
       layerDrops: int(0, 0xffffffff),
       retransmitsSent: int(0, 0xffffffff),
+      /**
+       * [D69] How late the node's own 10 ms tick ran at worst (its page's main thread held up: a
+       * long task, garbage collection), and, on the source, the longest gap between two video
+       * frames it published (the encoder's or the rate control's). Absent from a peer that does not say.
+       */
+      tickLateMaxMs: optional(durationMs),
+      publishGapMaxMs: optional(durationMs),
     }),
   ),
   events: list(metricsEvent, 64),

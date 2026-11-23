@@ -609,6 +609,32 @@ A relay that stops being eligible gets `role: leaf`; it finishes with `bye { rea
 well and, at most once a minute per peer, to send an unasked `assign { reason: "rebalance" }`
 to a peer more than two levels deeper than the tree needs.
 
+**[D67] A parent's children do not crowd one backup, and the source sheds no excess.**
+*(Integration engineer, 2026-11-23.)* When a relay dies its children repair at once, each to its
+own backup (§7.5), which takes them in over its fan-out. A relay over its fan-out is relieved by
+moving a child to a place no deeper (above), but nothing is as shallow as the source's children:
+a child of the source that relays could never be moved, and the source, over its fan-out, shed
+the top layer for the whole tree (D37) for minutes. Gate run 45211601384: 7–10 children in 51% of
+depth-1 samples, from 60 s to 340 s; 18 of the 28 children it gained came by warm repair, when a
+depth-1 relay was killed and the children it had had stood by on the source. They had chosen it
+as the tree filled, while it still had room, and kept it. So:
+
+- *Placement.* Among backups at one level (§7.3's order), one that fewer of the parent's other
+  children stand by on comes first; one that more of them stand by on than it could take in if
+  the parent died (its fan-out less its children, plus the slot the parent leaves if it is the
+  parent's own parent) comes after the rest at that level, and the source so crowded comes after
+  every other backup, deeper ones included.
+- *Advice.* A peer standing by on the source beside more of its parent's children than the
+  source could take in (the first by peer id keep their places) is sent `assign { reason:
+  "rebalance" }` with backups at its parent's depth, and the node takes one of those in place of
+  the source (§7.6's advice otherwise only ever moves a backup nearer the source).
+- *Relief.* The source's excess child goes one level down, under another of its children with a
+  free slot, the smallest subtree first: the only exception to "no deeper" of §7.5's relief.
+
+In the coordinator's simulator (gate churn, 200 peers, standby backups as the node takes them,
+15 seeds), the source over its fan-out: 4,830 s of 9,000 → 10. Cold repairs 32 → 34; peers at
+depth 4 or more 10% → 22% (the over-full source had been keeping the tree shallow).
+
 ### 6.7 Deployment
 
 **[D13] The coordinator is its own Worker**, `meetly-overlay`, not part of the app's Worker
@@ -1020,6 +1046,30 @@ only for keyframes beyond 500 ms of *B*, not for the encoder's ordinary overshoo
 paces such a keyframe to each child (§4.2, below), and rules 3 and 6 of §11.3 read what of it
 the link has yet to absorb as the keyframe's, not as a backlog.
 
+**[D68] Frames the source does not encode for want of room are spread over the key interval.**
+*(Integration engineer, 2026-11-23.)* The source holds every two-second window of its stream to
+the bitrate + 15% by not encoding frames that would not fit (`media/rateControl.ts`, step 2). The
+window that binds is the one holding a keyframe and the delta frames after it, up to the next;
+checked frame by frame, it bound at the end of the interval, and every skip fell in the last few
+hundred milliseconds before a keyframe: a gap of 130–200 ms in the stream every 2 s. Worse, the
+room kept for the coming keyframe was counted against a window that still held the last one.
+Gate run 45211601384: 59,959 freezes, every viewer frozen 16% of the time (13.5% at depth 1),
+their spacing 2.0 s, in step at every depth; repeated on one machine (slow-child: 56 freezes, all
+peers at once, every keyframe). Now:
+
+- the coming keyframe's room is reserved against the window it will land in, which no longer
+  holds what is sent before it lands less a window's length (the last keyframe);
+- and from the start of each key interval the frames still to come before the next keyframe are
+  weighed against the room the interval has left (the window's limit, less the larger of the last
+  keyframe and the one expected, less what has been sent and is in the encoder since, less three
+  delta frames of slack): when they will not all fit, that share of them is skipped from then on,
+  one at a time.
+
+The encoder model of the unit tests with frame sizes spread ±60% (busy picture, five seeds):
+longest gap 100–167 ms → 67; skips in the 600 ms before a keyframe 56–89% → 0–14%; windows ≤ 108%
+(were ≤ 112%); 29 fps either way. In a browser (slow-child, the gate's program): freezes 56 → 22,
+all of them now on the capped child's branch while it was capped.
+
 ### 9.3 Keyframes
 
 **[D24] Stage 1 has no keyframe requests.** A keyframe comes every 2 s regardless. A joiner or a
@@ -1381,7 +1431,7 @@ audio?  { playedMs, concealedMs, underruns, glassToGlass: histogram, avOffsetMs 
 up?     { parent, rttMs, lossPct, queueDelayMs, rxKbps, nacksSent, retransmitsReceived,
           duplicates, turn }
 relay?  { children, standby, txKbps, forwardP50Us, forwardP95Us, bufferedMaxBytes, layerDrops,
-          retransmitsSent }
+          retransmitsSent, tickLateMaxMs?, publishGapMaxMs? }
 events: MetricsEvent[]
 ```
 
@@ -1400,7 +1450,18 @@ upper edge: it can overstate a latency by up to 10 ms below 500 ms, and never un
 | `switch` | `stream`, `stripe`, `from`, `to`, `at`, `freezeMs`, `reason?` | a voluntary change of parent; `reason`: `move` (the coordinator's), `rebalance` (the node's own, §7.6), `starved` (§11.3) |
 | `layer` | `stream`, `peer`, `at`, `maxTemporal`, `reason` | a cap changed |
 | `freeze` | `stream`, `at`, `ms` | rendering stopped, for any reason |
+| `silence` | `peer`, `at`, `ms`, `depth`, `media` | [D69] the parent was quiet 150 ms or more, then spoke again |
 | `error` | `at`, `where`, `message` | |
+
+**[D69] Stalls are reported** (integration engineer, 2026-11-23; additive, every field
+optional). A `silence` event: a peer's parent said nothing for `ms` (150 or more) from `at`, and
+then spoke again; `depth` is the parent's, and `media` how long before `at` its last media had
+come. `relay.tickLateMaxMs`: how late the node's own 10 ms tick ran at worst in the interval (its
+page's main thread held up); `relay.publishGapMaxMs`, on the source: the longest gap between two
+video frames it published. Gate run 45202616067 saw the source fall silent to five of its six
+children at one instant and could not say why; with these, a source that stalls shows as one
+moment in several children's `silence` and in its own tick or publishing, and a link that stalls
+as one child's alone.
 
 **[D61] A `repair` event says where its freeze went** (integration engineer, 2026-11-23;
 additive, every field optional). `staleMs`: how long before `lastHeard` the last decodable frame
@@ -1739,6 +1800,9 @@ Rotating speakers on the overlay. Out of scope.
 | D64 | Silence from the source is waited out for 1 s while its link is open; a child never rules the source out, and the coordinator ignores it in `exclude` while the source is connected (integration engineer, 2026-11-23) | 7.4, 6.6 |
 | D65 | A viewer leaves a parent whose frames fail integrity checks (5 in 2 s) and reports it (`parent-bad`); two children's reports and the coordinator offers that relay to nobody for 10 minutes (integration engineer, 2026-11-23) | 14 |
 | D66 | A stream configuration carries `sig` (the source's ECDSA signature, or an AES-GCM tag); a viewer with `verifyConfig` uses only one that checks out (integration engineer, 2026-11-23) | 14 |
+| D67 | A parent's children do not crowd one backup; the source crowded is the last backup offered; peers standing by on it beyond its room are advised to one at the parent's depth; the source's excess child goes one level down (integration engineer, 2026-11-23) | 6.6 |
+| D68 | Frames the source skips for want of room are spread over the key interval; the keyframe's room is reserved in the window it lands in (integration engineer, 2026-11-23) | 9.2 |
+| D69 | Stalls are reported: `silence` events, the tick's lateness, the source's longest gap between published frames (integration engineer, 2026-11-23) | 12.1 |
 | D50 | The probe is sized by the session's bitrate; every relay's `role` carries its fan-out, and the node holds to it (integrator, 2026-11-22) | 8.1 |
 
 Also decided by the integrator on 2026-11-21, without a number of their own: a gate is told
